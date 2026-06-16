@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "description": "Application de gestion de facturation pour In-Tel Services",
   "main": "main.js",
-  "author": "In-Tel Services",
+  "author": {
+    "name": "In-Tel Services",
+    "email": "infos_its@yahoo.fr"
+  },
   "scripts": {
     "start": "electron .",
     "dev": "concurrently \"npm run dev:react\" \"wait-on http://localhost:3000 && cross-env ELECTRON_START_URL=http://localhost:3000 electron .\"",
@@ -25,10 +28,27 @@
     ],
     "directories": {
       "output": "dist",
-      "buildResources": "build"
+      "buildResources": "build-resources"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "src/assets/logo.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Gestion Facturation"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "src/assets/logo.png",
+      "category": "Office"
     },
     "extraMetadata": {
       "main": "main.js"

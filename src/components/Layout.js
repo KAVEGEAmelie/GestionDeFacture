@@ -11,6 +11,7 @@ import {
   Settings 
 } from 'lucide-react';
 import './Layout.css';
+import logo from '../assets/logo.png';
 
 const Layout = () => {
   const menuItems = [
@@ -29,6 +30,7 @@ const Layout = () => {
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="sidebar-header">
+          <img src={logo} alt="In-Tel Services" className="sidebar-logo" />
           <div className="logo">
             <h2>In-Tel Services</h2>
             <p>Gestion Facturation</p>
