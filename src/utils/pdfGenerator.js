@@ -1,5 +1,6 @@
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
+import { getLogoDataURL } from './logo';
 
 // Fonction utilitaire pour formater les nombres avec des espaces insécables
 const formatNumber = (number) => {
@@ -108,15 +109,24 @@ export const generateProformaPDF = async (proforma, parametres) => {
   const pageHeight = doc.internal.pageSize.getHeight();
   let yPos = 15;
 
+  // LOGO à gauche
+  const logo = await getLogoDataURL();
+  const textX = logo ? 38 : 15; // décalage du texte si le logo est présent
+  if (logo) {
+    const logoW = 22;
+    const logoH = (logo.height / logo.width) * logoW;
+    doc.addImage(logo.dataUrl, 'PNG', 14, yPos - 8, logoW, logoH);
+  }
+
   // EN-TÊTE - Titre "In-Tel Services" à gauche
   doc.setFontSize(24);
-  doc.setFont('helvetica', 'bold');
+  doc.setFont('times', 'bold');
   doc.setTextColor(0, 51, 102); // Bleu marine pour "In-Tel"
-  doc.text('In-Tel ', 15, yPos);
+  doc.text('In-Tel ', textX, yPos);
   
   // "Services" en vert
   doc.setTextColor(0, 128, 0);
-  doc.text('Services', 37, yPos);
+  doc.text('Services', textX + doc.getTextWidth('In-Tel '), yPos);
 
   // Encadré à droite avec les services - AGRANDI
   const rightX = pageWidth - 15;
@@ -138,23 +148,23 @@ export const generateProformaPDF = async (proforma, parametres) => {
 
   // Coordonnées sous le titre
   doc.setFontSize(7);
-  doc.setFont('helvetica', 'italic');
+  doc.setFont('times', 'italic');
   doc.setTextColor(0, 0, 0);
-  doc.text(`20 Av. du RPT Face le Grand Collège du Plateau 04BP Lomé-TOGO`, 15, yPos);
+  doc.text(`20 Av. du RPT Face le Grand Collège du Plateau 04BP Lomé-TOGO`, textX, yPos);
   yPos += 3.5;
-  doc.text(`Tél. (+228) 22 22 14 54 – Cel. 90 11 66 86/99 32 98 98`, 15, yPos);
+  doc.text(`Tél. (+228) 22 22 14 54 – Cel. 90 11 66 86/99 32 98 98`, textX, yPos);
   yPos += 3.5;
-  doc.text(`E-Mail: infos_its@yahoo.fr`, 15, yPos);
+  doc.text(`E-Mail: infos_its@yahoo.fr`, textX, yPos);
 
   yPos += 6;
 
   // Ligne de séparation horizontale avec point bleu à droite
   doc.setDrawColor(0, 51, 102); // Bleu marine
   doc.setLineWidth(1);
-  doc.line(15, yPos, pageWidth - 15, yPos);
-  // Point bleu à droite de la ligne
+  doc.line(textX, yPos, boxLeft, yPos);
+  // Point bleu à droite de la ligne (début du rectangle orange)
   doc.setFillColor(0, 51, 102);
-  doc.circle(pageWidth - 15, yPos, 2, 'F');
+  doc.circle(boxLeft, yPos, 2, 'F');
 
   yPos += 8;
 
@@ -271,10 +281,18 @@ export const generateProformaPDF = async (proforma, parametres) => {
       4: { cellWidth: 30, halign: 'right' },
       5: { cellWidth: 30, halign: 'right' }
     },
-    margin: { left: 15, right: 15 }
+    margin: { left: 15, right: 15, bottom: 35 }
   });
 
   yPos = doc.lastAutoTable.finalY + 5;
+
+  // Si le bloc final (signature + totaux + pied de page) ne tient pas
+  // sur la page courante, on passe à une nouvelle page.
+  const blocFinHauteur = 60;
+  if (yPos + blocFinHauteur > pageHeight - 25) {
+    doc.addPage();
+    yPos = 20;
+  }
 
   // Signature à gauche
   const signatureYPos = yPos;
@@ -327,20 +345,24 @@ export const generateProformaPDF = async (proforma, parametres) => {
     }
   });
 
-  // Pied de page avec cadre
+  // Pied de page avec cadre - sur une seule ligne, centré
   yPos = pageHeight - 25;
-  doc.setFontSize(7);
   doc.setFont('helvetica', 'italic');
   const montantEnLettres = nombreEnLettres(proforma.total_ttc);
-  const piedPage = `Arrpetée la Présente Facture Proforma à la Somme de: ${montantEnLettres} (${formatNumber(proforma.total_ttc)}) Francs CFA TTC.`;
-  
+  const piedPage = `Arrêtée la présente facture proforma à la somme de : ${montantEnLettres} (${formatNumber(proforma.total_ttc)}) Francs CFA TTC.`;
+  // Réduit la taille de la police jusqu'à ce que le texte tienne sur une seule ligne
+  let piedFontSize = 7;
+  const maxPiedWidth = pageWidth - 36;
+  doc.setFontSize(piedFontSize);
+  while (doc.getTextWidth(piedPage) > maxPiedWidth && piedFontSize > 4.5) {
+    piedFontSize -= 0.25;
+    doc.setFontSize(piedFontSize);
+  }
   // Encadré pour le pied de page
   doc.setDrawColor(0, 0, 0);
   doc.setLineWidth(0.5);
   doc.rect(15, yPos - 3, pageWidth - 30, 10);
-  
-  const splitText = doc.splitTextToSize(piedPage, pageWidth - 35);
-  doc.text(splitText, 17, yPos);
+  doc.text(piedPage, pageWidth / 2, yPos + 3, { align: 'center' });
 
   return doc;
 };
@@ -352,15 +374,24 @@ export const generateFacturePDF = async (facture, parametres) => {
   const pageHeight = doc.internal.pageSize.getHeight();
   let yPos = 15;
 
+  // LOGO à gauche
+  const logo = await getLogoDataURL();
+  const textX = logo ? 38 : 15; // décalage du texte si le logo est présent
+  if (logo) {
+    const logoW = 22;
+    const logoH = (logo.height / logo.width) * logoW;
+    doc.addImage(logo.dataUrl, 'PNG', 14, yPos - 8, logoW, logoH);
+  }
+
   // EN-TÊTE - Titre "In-Tel Services" à gauche
   doc.setFontSize(24);
-  doc.setFont('helvetica', 'bold');
+  doc.setFont('times', 'bold');
   doc.setTextColor(0, 51, 102); // Bleu marine pour "In-Tel"
-  doc.text('In-Tel ', 15, yPos);
+  doc.text('In-Tel ', textX, yPos);
   
   // "Services" en vert
   doc.setTextColor(0, 128, 0);
-  doc.text('Services', 37, yPos);
+  doc.text('Services', textX + doc.getTextWidth('In-Tel '), yPos);
 
   // Encadré à droite avec les services - AGRANDI
   const rightX = pageWidth - 15;
@@ -382,23 +413,23 @@ export const generateFacturePDF = async (facture, parametres) => {
 
   // Coordonnées sous le titre
   doc.setFontSize(7);
-  doc.setFont('helvetica', 'italic');
+  doc.setFont('times', 'italic');
   doc.setTextColor(0, 0, 0);
-  doc.text(`20 Av. du RPT Face le Grand Collège du Plateau 04BP Lomé-TOGO`, 15, yPos);
+  doc.text(`20 Av. du RPT Face le Grand Collège du Plateau 04BP Lomé-TOGO`, textX, yPos);
   yPos += 3.5;
-  doc.text(`Tél. (+228) 22 22 14 54 – Cel. 90 11 66 86/99 32 98 98`, 15, yPos);
+  doc.text(`Tél. (+228) 22 22 14 54 – Cel. 90 11 66 86/99 32 98 98`, textX, yPos);
   yPos += 3.5;
-  doc.text(`E-Mail: infos_its@yahoo.fr`, 15, yPos);
+  doc.text(`E-Mail: infos_its@yahoo.fr`, textX, yPos);
 
   yPos += 6;
 
   // Ligne de séparation horizontale avec point bleu à droite
   doc.setDrawColor(0, 51, 102); // Bleu marine
   doc.setLineWidth(1);
-  doc.line(15, yPos, pageWidth - 15, yPos);
-  // Point bleu à droite de la ligne
+  doc.line(textX, yPos, boxLeft, yPos);
+  // Point bleu à droite de la ligne (début du rectangle orange)
   doc.setFillColor(0, 51, 102);
-  doc.circle(pageWidth - 15, yPos, 2, 'F');
+  doc.circle(boxLeft, yPos, 2, 'F');
 
   yPos += 8;
 
@@ -451,34 +482,35 @@ export const generateFacturePDF = async (facture, parametres) => {
   doc.setTextColor(255, 0, 0);
   doc.text(`N° ${facture.numero}`, pageWidth / 2, yPos, { align: 'center' });
 
-  // Cadre carré de vignette en haut à droite (au-dessus de la date)
-  const vignetteSize = 15; // Carré de 15x15mm
-  const vignetteX = rightX - vignetteSize;
-  const vignetteY = yPos - 15; // Descendre le carré
+  // Cadre de vignette (timbre fiscal) en haut à droite, au-dessus de la date
+  const vignetteW = 25; // Largeur d'un timbre fiscal
+  const vignetteH = 30; // Hauteur d'un timbre fiscal
+  const vignetteX = rightX - vignetteW;
+  const vignetteY = yPos - 14;
   doc.setDrawColor(0, 0, 0);
   doc.setLineWidth(0.5);
-  doc.rect(vignetteX, vignetteY, vignetteSize, vignetteSize);
+  doc.rect(vignetteX, vignetteY, vignetteW, vignetteH);
 
   // Date à droite - juste en dessous du cadre
   doc.setFontSize(9);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(0, 0, 0);
   const dateStr = new Date(facture.date).toLocaleDateString('fr-FR');
-  doc.text(`Date:  ${dateStr}`, rightX, vignetteY + vignetteSize + 3, { align: 'right' });
+  const dateY = vignetteY + vignetteH + 6;
+  doc.text(`Date:  ${dateStr}`, rightX, dateY, { align: 'right' });
 
-  yPos += 12;
-
-  // Section Client à droite
+  // Section Client - placée sous la date pour ne pas chevaucher le cadre
+  yPos = dateY + 8;
   doc.setFontSize(11);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(0, 0, 255);
-  doc.text('Client', rightX - 50, yPos);
+  doc.text('Client', rightX - 55, yPos);
   
   doc.setFontSize(9);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(0, 0, 0);
-  doc.text(`Nom       :  ${facture.client_nom}`, rightX - 50, yPos + 6);
-  doc.text(`Adresse  :  ${facture.client_adresse || ''}`, rightX - 50, yPos + 11);
+  doc.text(`Nom       :  ${facture.client_nom}`, rightX - 55, yPos + 6);
+  doc.text(`Adresse  :  ${facture.client_adresse || ''}`, rightX - 55, yPos + 11);
 
   yPos += 20;
 
@@ -522,10 +554,18 @@ export const generateFacturePDF = async (facture, parametres) => {
       4: { cellWidth: 30, halign: 'right' },
       5: { cellWidth: 30, halign: 'right' }
     },
-    margin: { left: 15, right: 15 }
+    margin: { left: 15, right: 15, bottom: 35 }
   });
 
   yPos = doc.lastAutoTable.finalY + 5;
+
+  // Si le bloc final (signature + totaux + pied de page) ne tient pas
+  // sur la page courante, on passe à une nouvelle page.
+  const blocFinHauteur = 60;
+  if (yPos + blocFinHauteur > pageHeight - 25) {
+    doc.addPage();
+    yPos = 20;
+  }
 
   // Signature à gauche
   const signatureYPos = yPos;
@@ -578,20 +618,24 @@ export const generateFacturePDF = async (facture, parametres) => {
     }
   });
 
-  // Pied de page avec cadre
+  // Pied de page avec cadre - sur une seule ligne, centré
   yPos = pageHeight - 25;
-  doc.setFontSize(7);
   doc.setFont('helvetica', 'italic');
   const montantEnLettres = nombreEnLettres(facture.total_ttc);
-  const piedPage = `Arrpetée la Présente Facture Proforma à la Somme de: ${montantEnLettres} (${formatNumber(facture.total_ttc)}) Francs CFA TTC.`;
-  
+  const piedPage = `Arrêtée la présente facture à la somme de : ${montantEnLettres} (${formatNumber(facture.total_ttc)}) Francs CFA TTC.`;
+  // Réduit la taille de la police jusqu'à ce que le texte tienne sur une seule ligne
+  let piedFontSize = 7;
+  const maxPiedWidth = pageWidth - 36;
+  doc.setFontSize(piedFontSize);
+  while (doc.getTextWidth(piedPage) > maxPiedWidth && piedFontSize > 4.5) {
+    piedFontSize -= 0.25;
+    doc.setFontSize(piedFontSize);
+  }
   // Encadré pour le pied de page
   doc.setDrawColor(0, 0, 0);
   doc.setLineWidth(0.5);
   doc.rect(15, yPos - 3, pageWidth - 30, 10);
-  
-  const splitText = doc.splitTextToSize(piedPage, pageWidth - 35);
-  doc.text(splitText, 17, yPos);
+  doc.text(piedPage, pageWidth / 2, yPos + 3, { align: 'center' });
 
   return doc;
 };
@@ -603,15 +647,24 @@ export const generateBordereauPDF = async (bordereau, parametres) => {
   const pageHeight = doc.internal.pageSize.getHeight();
   let yPos = 15;
 
+  // LOGO à gauche
+  const logo = await getLogoDataURL();
+  const textX = logo ? 38 : 15; // décalage du texte si le logo est présent
+  if (logo) {
+    const logoW = 22;
+    const logoH = (logo.height / logo.width) * logoW;
+    doc.addImage(logo.dataUrl, 'PNG', 14, yPos - 8, logoW, logoH);
+  }
+
   // EN-TÊTE - Titre "In-Tel Services" à gauche
   doc.setFontSize(24);
-  doc.setFont('helvetica', 'bold');
+  doc.setFont('times', 'bold');
   doc.setTextColor(0, 51, 102); // Bleu marine pour "In-Tel"
-  doc.text('In-Tel ', 15, yPos);
+  doc.text('In-Tel ', textX, yPos);
   
   // "Services" en vert
   doc.setTextColor(0, 128, 0);
-  doc.text('Services', 37, yPos);
+  doc.text('Services', textX + doc.getTextWidth('In-Tel '), yPos);
 
   // Encadré à droite avec les services - AGRANDI
   const rightX = pageWidth - 15;
@@ -633,23 +686,23 @@ export const generateBordereauPDF = async (bordereau, parametres) => {
 
   // Coordonnées sous le titre
   doc.setFontSize(7);
-  doc.setFont('helvetica', 'italic');
+  doc.setFont('times', 'italic');
   doc.setTextColor(0, 0, 0);
-  doc.text(`20 Av. du RPT Face le Grand Collège du Plateau 04BP Lomé-TOGO`, 15, yPos);
+  doc.text(`20 Av. du RPT Face le Grand Collège du Plateau 04BP Lomé-TOGO`, textX, yPos);
   yPos += 3.5;
-  doc.text(`Tél. (+228) 22 22 14 54 – Cel. 90 11 66 86/99 32 98 98`, 15, yPos);
+  doc.text(`Tél. (+228) 22 22 14 54 – Cel. 90 11 66 86/99 32 98 98`, textX, yPos);
   yPos += 3.5;
-  doc.text(`E-Mail: infos_its@yahoo.fr`, 15, yPos);
+  doc.text(`E-Mail: infos_its@yahoo.fr`, textX, yPos);
 
   yPos += 6;
 
   // Ligne de séparation horizontale avec point bleu à droite
   doc.setDrawColor(0, 51, 102); // Bleu marine
   doc.setLineWidth(1);
-  doc.line(15, yPos, pageWidth - 15, yPos);
-  // Point bleu à droite de la ligne
+  doc.line(textX, yPos, boxLeft, yPos);
+  // Point bleu à droite de la ligne (début du rectangle orange)
   doc.setFillColor(0, 51, 102);
-  doc.circle(pageWidth - 15, yPos, 2, 'F');
+  doc.circle(boxLeft, yPos, 2, 'F');
 
   yPos += 8;
 
@@ -689,10 +742,11 @@ export const generateBordereauPDF = async (bordereau, parametres) => {
 
   // BORDEREAU DE LIVRAISON au centre - DESCENDU
   yPos -= 12; // Position ajustée pour descendre le titre
-  doc.setFontSize(20);
+  doc.setFontSize(16);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(0, 51, 102); // Bleu marine comme les autres documents
-  doc.text('BORDEREAU DE LIVRAISON', pageWidth / 2, yPos, { align: 'center' });
+  const titreCenterX = (72 + rightX) / 2; // centré dans l'espace à droite du bloc d'infos
+  doc.text('BORDEREAU DE LIVRAISON', titreCenterX, yPos, { align: 'center' });
   
   yPos += 8;
   
@@ -700,7 +754,7 @@ export const generateBordereauPDF = async (bordereau, parametres) => {
   doc.setFontSize(12);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(255, 0, 0);
-  doc.text(`N° ${bordereau.numero}`, pageWidth / 2, yPos, { align: 'center' });
+  doc.text(`N° ${bordereau.numero}`, titreCenterX, yPos, { align: 'center' });
 
   // Date à droite - DESCENDUE au niveau du numéro
   doc.setFontSize(9);
@@ -750,10 +804,18 @@ export const generateBordereauPDF = async (bordereau, parametres) => {
       1: { cellWidth: 135 },
       2: { cellWidth: 25, halign: 'center' }
     },
-    margin: { left: 15, right: 15 }
+    margin: { left: 15, right: 15, bottom: 20 }
   });
 
   yPos = doc.lastAutoTable.finalY + 20;
+
+  // Si le bloc des signatures + cadre de propriété ne tient pas sur la
+  // page courante, on passe à une nouvelle page.
+  const blocSignaturesHauteur = 55;
+  if (yPos + blocSignaturesHauteur > pageHeight - 15) {
+    doc.addPage();
+    yPos = 20;
+  }
 
   // Signatures avec cadres
   const sigYPos = yPos;
@@ -775,17 +837,22 @@ export const generateBordereauPDF = async (bordereau, parametres) => {
   doc.setFont('helvetica', 'normal');
   doc.text(bordereau.client_nom, pageWidth - 93, sigYPos + 25);
 
-  // Cadre pour le texte de propriété
-  yPos = sigYPos + 40;
-  doc.setFontSize(8);
+  // Cadre pour le texte de propriété - EN PIED DE PAGE, sur une seule ligne, centré
+  const textePropriete = `ITS reste propriétaire de la marchandise livrée à compter du jour de la livraison jusqu'à complet paiement de l'intégralité de la facture.`;
   doc.setFont('helvetica', 'bold');
+  // Réduit la taille de la police jusqu'à ce que le texte tienne sur une seule ligne
+  let proprieteFontSize = 8;
+  const maxTexteWidth = pageWidth - 40;
+  doc.setFontSize(proprieteFontSize);
+  while (doc.getTextWidth(textePropriete) > maxTexteWidth && proprieteFontSize > 5) {
+    proprieteFontSize -= 0.25;
+    doc.setFontSize(proprieteFontSize);
+  }
+  const boxTexteY = pageHeight - 18;
   doc.setDrawColor(0, 0, 0);
   doc.setLineWidth(0.5);
-  doc.rect(15, yPos, pageWidth - 30, 15);
-  
-  const textePropriete = `ITS reste propriétaire de la marchandise livrée à compter du jour de la livraison jusqu'à complet paiement de l'intégralité de la facture.`;
-  const splitText = doc.splitTextToSize(textePropriete, pageWidth - 36);
-  doc.text(splitText, 17, yPos + 5);
+  doc.rect(15, boxTexteY, pageWidth - 30, 10);
+  doc.text(textePropriete, pageWidth / 2, boxTexteY + 6, { align: 'center' });
 
   return doc;
 };

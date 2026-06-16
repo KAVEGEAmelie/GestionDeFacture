@@ -1,5 +1,6 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const Database = require('better-sqlite3');
 
 let mainWindow;
@@ -126,6 +127,22 @@ function initDatabase() {
       valeur TEXT NOT NULL
     );
   `);
+
+  // Migration : ajout des colonnes de suivi du paiement et de la TVA
+  // sur les factures existantes (sans perdre les données).
+  const factureCols = db.prepare("PRAGMA table_info(factures)").all().map((c) => c.name);
+  if (!factureCols.includes('statut_paiement')) {
+    db.exec("ALTER TABLE factures ADD COLUMN statut_paiement TEXT DEFAULT 'non_payee'");
+  }
+  if (!factureCols.includes('date_paiement')) {
+    db.exec("ALTER TABLE factures ADD COLUMN date_paiement DATE");
+  }
+  if (!factureCols.includes('tva_versee')) {
+    db.exec("ALTER TABLE factures ADD COLUMN tva_versee INTEGER DEFAULT 0");
+  }
+  if (!factureCols.includes('date_versement_tva')) {
+    db.exec("ALTER TABLE factures ADD COLUMN date_versement_tva DATE");
+  }
 
   // Insertion des paramètres par défaut (informations de l'entreprise)
   const checkParams = db.prepare('SELECT COUNT(*) as count FROM parametres').get();
@@ -259,6 +276,11 @@ ipcMain.handle('clients:update', (event, id, client) => {
 });
 
 ipcMain.handle('clients:delete', (event, id) => {
+  const proformaCount = db.prepare('SELECT COUNT(*) as count FROM proformas WHERE client_id = ?').get(id).count;
+  const factureCount = db.prepare('SELECT COUNT(*) as count FROM factures WHERE client_id = ?').get(id).count;
+  if (proformaCount > 0 || factureCount > 0) {
+    throw new Error('Impossible de supprimer ce client : il est rattaché à des proformas ou des factures.');
+  }
   const stmt = db.prepare('DELETE FROM clients WHERE id = ?');
   stmt.run(id);
   return { success: true };
@@ -293,6 +315,11 @@ ipcMain.handle('produits:update', (event, id, produit) => {
 });
 
 ipcMain.handle('produits:delete', (event, id) => {
+  const inProformas = db.prepare('SELECT COUNT(*) as count FROM proforma_lignes WHERE produit_id = ?').get(id).count;
+  const inFactures = db.prepare('SELECT COUNT(*) as count FROM facture_lignes WHERE produit_id = ?').get(id).count;
+  if (inProformas > 0 || inFactures > 0) {
+    throw new Error('Impossible de supprimer ce produit : il est utilisé dans des proformas ou des factures.');
+  }
   const stmt = db.prepare('DELETE FROM produits WHERE id = ?');
   stmt.run(id);
   return { success: true };
@@ -344,10 +371,11 @@ ipcMain.handle('proformas:getById', (event, id) => {
 
 ipcMain.handle('proformas:create', (event, proforma) => {
   const transaction = db.transaction((data) => {
-    // Générer le numéro
+    // Générer le numéro (année basée sur la date du document)
     const params = db.prepare('SELECT valeur FROM parametres WHERE cle = ?').get('proforma_compteur');
     const compteur = parseInt(params.valeur) + 1;
-    const numero = `2025/${compteur.toString().padStart(5, '0')}-ITS`;
+    const annee = new Date(data.date).getFullYear() || new Date().getFullYear();
+    const numero = `${annee}/${compteur.toString().padStart(5, '0')}-ITS`;
     
     // Créer la proforma
     const stmt = db.prepare(`
@@ -398,7 +426,63 @@ ipcMain.handle('proformas:create', (event, proforma) => {
   return transaction(proforma);
 });
 
+ipcMain.handle('proformas:update', (event, id, data) => {
+  const existing = db.prepare('SELECT statut, facture_id FROM proformas WHERE id = ?').get(id);
+  if (!existing) {
+    throw new Error('Proforma introuvable.');
+  }
+  if (existing.statut === 'facturee' || existing.facture_id) {
+    throw new Error('Impossible de modifier cette proforma : elle a déjà été convertie en facture.');
+  }
+
+  const transaction = db.transaction((payload) => {
+    db.prepare(`
+      UPDATE proformas
+      SET date = ?, client_id = ?, objet = ?, total_materiel_ht = ?, prestations = ?, remise = ?, total_ht = ?, tva = ?, total_ttc = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      payload.date,
+      payload.client_id,
+      payload.objet,
+      payload.total_materiel_ht || 0,
+      payload.prestations || 0,
+      payload.remise || 0,
+      payload.total_ht,
+      payload.tva,
+      payload.total_ttc,
+      id
+    );
+
+    // Remplacer les lignes
+    db.prepare('DELETE FROM proforma_lignes WHERE proforma_id = ?').run(id);
+    const stmtLigne = db.prepare(`
+      INSERT INTO proforma_lignes (proforma_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    payload.lignes.forEach((ligne, index) => {
+      stmtLigne.run(
+        id,
+        ligne.produit_id,
+        ligne.designation,
+        ligne.unite,
+        ligne.quantite,
+        ligne.prix_unitaire,
+        ligne.montant,
+        index
+      );
+    });
+
+    return { id, success: true };
+  });
+
+  return transaction(data);
+});
+
 ipcMain.handle('proformas:delete', (event, id) => {
+  const proforma = db.prepare('SELECT facture_id FROM proformas WHERE id = ?').get(id);
+  if (proforma && proforma.facture_id) {
+    throw new Error('Impossible de supprimer cette proforma : elle a déjà été convertie en facture.');
+  }
   const stmt = db.prepare('DELETE FROM proformas WHERE id = ?');
   stmt.run(id);
   return { success: true };
@@ -439,10 +523,10 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId) => {
     const proforma = db.prepare('SELECT * FROM proformas WHERE id = ?').get(pId);
     const lignes = db.prepare('SELECT * FROM proforma_lignes WHERE proforma_id = ?').all(pId);
     
-    // Générer le numéro de facture
+    // Générer le numéro de facture (année courante)
     const params = db.prepare('SELECT valeur FROM parametres WHERE cle = ?').get('facture_compteur');
     const compteur = parseInt(params.valeur) + 1;
-    const numero = `2025/${compteur.toString().padStart(5, '0')}-ITS`;
+    const numero = `${new Date().getFullYear()}/${compteur.toString().padStart(5, '0')}-ITS`;
     
     // Créer la facture
     const stmt = db.prepare(`
@@ -497,9 +581,102 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId) => {
 });
 
 ipcMain.handle('factures:delete', (event, id) => {
-  const stmt = db.prepare('DELETE FROM factures WHERE id = ?');
-  stmt.run(id);
+  const facture = db.prepare('SELECT bordereau_id, proforma_id FROM factures WHERE id = ?').get(id);
+  if (facture && facture.bordereau_id) {
+    throw new Error('Impossible de supprimer cette facture : un bordereau de livraison y est rattaché. Supprimez d\'abord le bordereau.');
+  }
+  const transaction = db.transaction((factureId) => {
+    // Réinitialiser la proforma liée pour qu'elle puisse être reconvertie
+    if (facture && facture.proforma_id) {
+      db.prepare('UPDATE proformas SET statut = ?, facture_id = NULL WHERE id = ?').run('en_attente', facture.proforma_id);
+    }
+    db.prepare('DELETE FROM factures WHERE id = ?').run(factureId);
+  });
+  transaction(id);
   return { success: true };
+});
+
+// PAIEMENT DES FACTURES
+ipcMain.handle('factures:markPaid', (event, id) => {
+  const facture = db.prepare('SELECT statut_paiement FROM factures WHERE id = ?').get(id);
+  if (!facture) {
+    throw new Error('Facture introuvable.');
+  }
+  db.prepare(
+    "UPDATE factures SET statut_paiement = 'payee', date_paiement = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+  ).run(new Date().toISOString().split('T')[0], id);
+  return { success: true };
+});
+
+ipcMain.handle('factures:markUnpaid', (event, id) => {
+  const facture = db.prepare('SELECT tva_versee FROM factures WHERE id = ?').get(id);
+  if (!facture) {
+    throw new Error('Facture introuvable.');
+  }
+  if (facture.tva_versee) {
+    throw new Error('Impossible d\'annuler le paiement : la TVA de cette facture a déjà été versée à l\'OTR.');
+  }
+  db.prepare(
+    "UPDATE factures SET statut_paiement = 'non_payee', date_paiement = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+  ).run(id);
+  return { success: true };
+});
+
+// SUIVI DE LA TVA (OTR)
+ipcMain.handle('tva:getStats', () => {
+  const nonVersee = db.prepare(
+    "SELECT COALESCE(SUM(tva), 0) as total, COUNT(*) as count FROM factures WHERE statut_paiement = 'payee' AND tva_versee = 0"
+  ).get();
+  const versee = db.prepare(
+    "SELECT COALESCE(SUM(tva), 0) as total, COUNT(*) as count FROM factures WHERE tva_versee = 1"
+  ).get();
+
+  // Factures payées dont la TVA n'est pas encore versée
+  const aVerser = db.prepare(`
+    SELECT f.id, f.numero, f.date, f.date_paiement, f.tva, f.total_ttc, c.nom as client_nom
+    FROM factures f
+    LEFT JOIN clients c ON f.client_id = c.id
+    WHERE f.statut_paiement = 'payee' AND f.tva_versee = 0
+    ORDER BY f.date_paiement
+  `).all();
+
+  // Factures dont la TVA a été versée
+  const verseesListe = db.prepare(`
+    SELECT f.id, f.numero, f.date, f.date_versement_tva, f.tva, f.total_ttc, c.nom as client_nom
+    FROM factures f
+    LEFT JOIN clients c ON f.client_id = c.id
+    WHERE f.tva_versee = 1
+    ORDER BY f.date_versement_tva DESC
+  `).all();
+
+  return {
+    tvaNonVersee: nonVersee.total,
+    nbNonVersee: nonVersee.count,
+    tvaVersee: versee.total,
+    nbVersee: versee.count,
+    aVerser,
+    versees: verseesListe
+  };
+});
+
+ipcMain.handle('tva:verser', (event, ids) => {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw new Error('Aucune facture sélectionnée.');
+  }
+  const dateVersement = new Date().toISOString().split('T')[0];
+  const transaction = db.transaction((factureIds) => {
+    const stmt = db.prepare(
+      "UPDATE factures SET tva_versee = 1, date_versement_tva = ? WHERE id = ? AND statut_paiement = 'payee' AND tva_versee = 0"
+    );
+    let count = 0;
+    factureIds.forEach((id) => {
+      const res = stmt.run(dateVersement, id);
+      count += res.changes;
+    });
+    return count;
+  });
+  const count = transaction(ids);
+  return { success: true, count };
 });
 
 // BORDEREAUX
@@ -537,10 +714,10 @@ ipcMain.handle('bordereaux:createFromFacture', (event, factureId) => {
     const facture = db.prepare('SELECT * FROM factures WHERE id = ?').get(fId);
     const lignes = db.prepare('SELECT * FROM facture_lignes WHERE facture_id = ?').all(fId);
     
-    // Générer le numéro de bordereau
+    // Générer le numéro de bordereau (année courante)
     const params = db.prepare('SELECT valeur FROM parametres WHERE cle = ?').get('bordereau_compteur');
     const compteur = parseInt(params.valeur) + 1;
-    const numero = `2025/${compteur.toString().padStart(5, '0')}-ITS`;
+    const numero = `${new Date().getFullYear()}/${compteur.toString().padStart(5, '0')}-ITS`;
     
     // Créer le bordereau
     const stmt = db.prepare(`
@@ -584,8 +761,15 @@ ipcMain.handle('bordereaux:createFromFacture', (event, factureId) => {
 });
 
 ipcMain.handle('bordereaux:delete', (event, id) => {
-  const stmt = db.prepare('DELETE FROM bordereaux WHERE id = ?');
-  stmt.run(id);
+  const bordereau = db.prepare('SELECT facture_id FROM bordereaux WHERE id = ?').get(id);
+  const transaction = db.transaction((bordereauId) => {
+    // Détacher le bordereau de sa facture
+    if (bordereau && bordereau.facture_id) {
+      db.prepare('UPDATE factures SET bordereau_id = NULL WHERE id = ?').run(bordereau.facture_id);
+    }
+    db.prepare('DELETE FROM bordereaux WHERE id = ?').run(bordereauId);
+  });
+  transaction(id);
   return { success: true };
 });
 
@@ -603,3 +787,89 @@ ipcMain.handle('stats:getCounts', () => {
     factures: factures.count
   };
 });
+
+ipcMain.handle('stats:getDashboard', () => {
+  const annee = new Date().getFullYear();
+
+  const caTotal = db.prepare('SELECT COALESCE(SUM(total_ttc), 0) as total FROM factures').get().total;
+  const caAnnee = db.prepare(
+    "SELECT COALESCE(SUM(total_ttc), 0) as total FROM factures WHERE strftime('%Y', date) = ?"
+  ).get(String(annee)).total;
+  const proformasEnAttente = db.prepare(
+    "SELECT COUNT(*) as count FROM proformas WHERE statut = 'en_attente'"
+  ).get().count;
+
+  // Chiffre d'affaires par mois pour l'année courante
+  const rows = db.prepare(
+    "SELECT strftime('%m', date) as mois, COALESCE(SUM(total_ttc), 0) as total FROM factures WHERE strftime('%Y', date) = ? GROUP BY mois"
+  ).all(String(annee));
+  const caParMois = Array(12).fill(0);
+  rows.forEach((r) => {
+    const idx = parseInt(r.mois, 10) - 1;
+    if (idx >= 0 && idx < 12) caParMois[idx] = r.total;
+  });
+
+  // Top 5 clients par chiffre d'affaires
+  const topClients = db.prepare(`
+    SELECT c.nom as nom, COALESCE(SUM(f.total_ttc), 0) as total
+    FROM factures f
+    LEFT JOIN clients c ON f.client_id = c.id
+    GROUP BY f.client_id
+    ORDER BY total DESC
+    LIMIT 5
+  `).all();
+
+  return { caTotal, caAnnee, proformasEnAttente, caParMois, topClients, annee };
+});
+
+
+// ===== SAUVEGARDE / RESTAURATION DE LA BASE =====
+
+ipcMain.handle('database:backup', async () => {
+  const defaultName = `sauvegarde-facturation-${new Date().toISOString().split('T')[0]}.db`;
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    title: 'Enregistrer la sauvegarde',
+    defaultPath: defaultName,
+    filters: [{ name: 'Base de données', extensions: ['db'] }]
+  });
+
+  if (canceled || !filePath) {
+    return { success: false, canceled: true };
+  }
+
+  await db.backup(filePath);
+  return { success: true, path: filePath };
+});
+
+ipcMain.handle('database:restore', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choisir une sauvegarde à restaurer',
+    properties: ['openFile'],
+    filters: [{ name: 'Base de données', extensions: ['db'] }]
+  });
+
+  if (canceled || !filePaths || filePaths.length === 0) {
+    return { success: false, canceled: true };
+  }
+
+  const source = filePaths[0];
+
+  // Vérifier que le fichier est une base SQLite valide avant de remplacer
+  try {
+    const test = new Database(source, { readonly: true });
+    test.prepare('SELECT COUNT(*) FROM parametres').get();
+    test.close();
+  } catch (e) {
+    throw new Error('Le fichier sélectionné n\'est pas une sauvegarde valide.');
+  }
+
+  const dbPath = path.join(app.getPath('userData'), 'facturation.db');
+
+  // Fermer la base courante, remplacer le fichier puis rouvrir
+  db.close();
+  fs.copyFileSync(source, dbPath);
+  db = new Database(dbPath);
+
+  return { success: true };
+});
+

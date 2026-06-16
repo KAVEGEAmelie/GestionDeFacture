@@ -1,12 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { Eye, Trash2, Printer, Download } from 'lucide-react';
+import { Eye, Trash2, Printer, Download, Search } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import { generateBordereauPDF } from '../utils/pdfGenerator';
+import { useToast } from '../components/Toast/ToastProvider';
+import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
+import { getErrorMessage } from '../utils/errors';
 import './Clients.css';
 import './Proformas.css';
 
 const Bordereaux = () => {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [bordereaux, setBordereaux] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
   const [parametres, setParametres] = useState({});
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [selectedBordereau, setSelectedBordereau] = useState(null);
@@ -31,9 +37,19 @@ const Bordereaux = () => {
   };
 
   const handleDelete = async (id) => {
-    if (window.confirm('Êtes-vous sûr de vouloir supprimer ce bordereau ?')) {
+    const ok = await confirm({
+      title: 'Supprimer le bordereau',
+      message: 'Êtes-vous sûr de vouloir supprimer ce bordereau ? Cette action est irréversible.',
+      confirmText: 'Supprimer',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
       await window.electronAPI.bordereaux.delete(id);
+      toast.success('Bordereau supprimé avec succès.');
       loadData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la suppression du bordereau.'));
     }
   };
 
@@ -54,6 +70,15 @@ const Bordereaux = () => {
     return new Date(dateString).toLocaleDateString('fr-FR');
   };
 
+  const filteredBordereaux = bordereaux.filter((b) => {
+    const term = searchTerm.toLowerCase();
+    return (
+      !term ||
+      (b.numero && b.numero.toLowerCase().includes(term)) ||
+      (b.client_nom && b.client_nom.toLowerCase().includes(term))
+    );
+  });
+
   return (
     <div className="page fade-in">
       <div className="page-header">
@@ -64,6 +89,15 @@ const Bordereaux = () => {
       </div>
 
       <div className="content-card">
+        <div className="search-bar">
+          <Search size={20} />
+          <input
+            type="text"
+            placeholder="Rechercher par numéro ou client..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+        </div>
         <div className="table-container">
           <table className="data-table">
             <thead>
@@ -75,14 +109,14 @@ const Bordereaux = () => {
               </tr>
             </thead>
             <tbody>
-              {bordereaux.length === 0 ? (
+              {filteredBordereaux.length === 0 ? (
                 <tr>
                   <td colSpan="4" className="empty-state">
-                    Aucun bordereau enregistré
+                    {searchTerm ? 'Aucun bordereau trouvé' : 'Aucun bordereau enregistré'}
                   </td>
                 </tr>
               ) : (
-                bordereaux.map((bordereau) => (
+                filteredBordereaux.map((bordereau) => (
                   <tr key={bordereau.id}>
                     <td className="font-semibold">{bordereau.numero}</td>
                     <td>{formatDate(bordereau.date)}</td>

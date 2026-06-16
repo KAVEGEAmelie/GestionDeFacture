@@ -1,18 +1,26 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Eye, Trash2, FileText, DollarSign, Printer, Download, PackagePlus } from 'lucide-react';
+import { Plus, Eye, Trash2, FileText, DollarSign, Printer, Download, PackagePlus, Search, Edit2 } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import { generateProformaPDF } from '../utils/pdfGenerator';
+import { useToast } from '../components/Toast/ToastProvider';
+import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
+import { getErrorMessage } from '../utils/errors';
 import './Clients.css';
 import './Proformas.css';
 
 const Proformas = () => {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [proformas, setProformas] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statutFilter, setStatutFilter] = useState('tous');
   const [clients, setClients] = useState([]);
   const [produits, setProduits] = useState([]);
   const [parametres, setParametres] = useState({});
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [selectedProforma, setSelectedProforma] = useState(null);
+  const [editingProforma, setEditingProforma] = useState(null);
   const [addProductModalOpen, setAddProductModalOpen] = useState(false);
   const [newProduct, setNewProduct] = useState({
     designation: '',
@@ -80,12 +88,10 @@ const Proformas = () => {
       }
     }
 
-    // Recalculer le montant
-    if (field === 'quantite' || field === 'prix_unitaire') {
-      const quantite = parseFloat(newLignes[index].quantite) || 0;
-      const prixUnitaire = parseFloat(newLignes[index].prix_unitaire) || 0;
-      newLignes[index].montant = quantite * prixUnitaire;
-    }
+    // Recalculer le montant systématiquement (produit, quantité ou prix)
+    const quantite = parseFloat(newLignes[index].quantite) || 0;
+    const prixUnitaire = parseFloat(newLignes[index].prix_unitaire) || 0;
+    newLignes[index].montant = quantite * prixUnitaire;
 
     setFormData({ ...formData, lignes: newLignes });
   };
@@ -104,7 +110,7 @@ const Proformas = () => {
     e.preventDefault();
     
     if (formData.lignes.length === 0) {
-      alert('Veuillez ajouter au moins une ligne');
+      toast.error('Veuillez ajouter au moins une ligne.');
       return;
     }
 
@@ -130,9 +136,19 @@ const Proformas = () => {
       }))
     };
 
-    await window.electronAPI.proformas.create(data);
-    loadData();
-    closeModal();
+    try {
+      if (editingProforma) {
+        await window.electronAPI.proformas.update(editingProforma.id, data);
+        toast.success('Proforma modifiée avec succès !');
+      } else {
+        await window.electronAPI.proformas.create(data);
+        toast.success('Proforma créée avec succès !');
+      }
+      loadData();
+      closeModal();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de l\'enregistrement de la proforma.'));
+    }
   };
 
   const handleView = async (proforma) => {
@@ -141,20 +157,61 @@ const Proformas = () => {
     setViewModalOpen(true);
   };
 
+  const handleEdit = async (proforma) => {
+    if (proforma.statut === 'facturee') {
+      toast.error('Cette proforma est déjà facturée et ne peut plus être modifiée.');
+      return;
+    }
+    const full = await window.electronAPI.proformas.getById(proforma.id);
+    setEditingProforma(full);
+    setFormData({
+      date: full.date,
+      client_id: String(full.client_id),
+      objet: full.objet || '',
+      prestations: full.prestations || 0,
+      remise: full.remise || 0,
+      lignes: (full.lignes || []).map(l => ({
+        produit_id: String(l.produit_id),
+        designation: l.designation,
+        unite: l.unite,
+        quantite: l.quantite,
+        prix_unitaire: l.prix_unitaire,
+        montant: l.montant
+      }))
+    });
+    setIsModalOpen(true);
+  };
+
   const handleDelete = async (id) => {
-    if (window.confirm('Êtes-vous sûr de vouloir supprimer cette proforma ?')) {
+    const ok = await confirm({
+      title: 'Supprimer la proforma',
+      message: 'Êtes-vous sûr de vouloir supprimer cette proforma ? Cette action est irréversible.',
+      confirmText: 'Supprimer',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
       await window.electronAPI.proformas.delete(id);
+      toast.success('Proforma supprimée avec succès.');
       loadData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la suppression de la proforma.'));
     }
   };
 
   const handleAddProduct = async (e) => {
     e.preventDefault();
-    await window.electronAPI.produits.create({
-      ...newProduct,
-      prix_unitaire: parseFloat(newProduct.prix_unitaire)
-    });
-    await loadData();
+    try {
+      await window.electronAPI.produits.create({
+        ...newProduct,
+        prix_unitaire: parseFloat(newProduct.prix_unitaire)
+      });
+      await loadData();
+      toast.success('Produit ajouté avec succès.');
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de l\'ajout du produit.'));
+      return;
+    }
     setNewProduct({
       designation: '',
       prix_unitaire: '',
@@ -178,6 +235,7 @@ const Proformas = () => {
   };
 
   const openModal = () => {
+    setEditingProforma(null);
     setFormData({
       date: new Date().toISOString().split('T')[0],
       client_id: '',
@@ -191,6 +249,7 @@ const Proformas = () => {
 
   const closeModal = () => {
     setIsModalOpen(false);
+    setEditingProforma(null);
   };
 
   const formatPrice = (price) => {
@@ -212,6 +271,17 @@ const Proformas = () => {
 
   const { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc } = calculateTotals();
 
+  const filteredProformas = proformas.filter((p) => {
+    const term = searchTerm.toLowerCase();
+    const matchSearch =
+      !term ||
+      (p.numero && p.numero.toLowerCase().includes(term)) ||
+      (p.client_nom && p.client_nom.toLowerCase().includes(term)) ||
+      (p.objet && p.objet.toLowerCase().includes(term));
+    const matchStatut = statutFilter === 'tous' || p.statut === statutFilter;
+    return matchSearch && matchStatut;
+  });
+
   return (
     <div className="page fade-in">
       <div className="page-header">
@@ -226,6 +296,25 @@ const Proformas = () => {
       </div>
 
       <div className="content-card">
+        <div className="search-bar">
+          <Search size={20} />
+          <input
+            type="text"
+            placeholder="Rechercher par numéro, client ou objet..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+          <select
+            className="filter-select"
+            value={statutFilter}
+            onChange={(e) => setStatutFilter(e.target.value)}
+          >
+            <option value="tous">Tous les statuts</option>
+            <option value="en_attente">En attente</option>
+            <option value="facturee">Facturée</option>
+          </select>
+        </div>
+
         <div className="table-container">
           <table className="data-table">
             <thead>
@@ -240,14 +329,14 @@ const Proformas = () => {
               </tr>
             </thead>
             <tbody>
-              {proformas.length === 0 ? (
+              {filteredProformas.length === 0 ? (
                 <tr>
                   <td colSpan="7" className="empty-state">
-                    Aucune proforma enregistrée
+                    {searchTerm || statutFilter !== 'tous' ? 'Aucune proforma trouvée' : 'Aucune proforma enregistrée'}
                   </td>
                 </tr>
               ) : (
-                proformas.map((proforma) => (
+                filteredProformas.map((proforma) => (
                   <tr key={proforma.id}>
                     <td className="font-semibold">{proforma.numero}</td>
                     <td>{formatDate(proforma.date)}</td>
@@ -263,6 +352,15 @@ const Proformas = () => {
                           title="Voir"
                         >
                           <Eye size={16} />
+                        </button>
+                        <button
+                          className="btn-icon"
+                          style={{ color: '#f59e0b' }}
+                          onClick={() => handleEdit(proforma)}
+                          title="Modifier"
+                          disabled={proforma.statut === 'facturee'}
+                        >
+                          <Edit2 size={16} />
                         </button>
                         <button
                           className="btn-icon btn-icon-success"
@@ -300,7 +398,7 @@ const Proformas = () => {
       <Modal
         isOpen={isModalOpen}
         onClose={closeModal}
-        title="Nouvelle facture proforma"
+        title={editingProforma ? `Modifier la proforma ${editingProforma.numero}` : 'Nouvelle facture proforma'}
         size="xlarge"
       >
         <form onSubmit={handleSubmit} className="form">
@@ -499,7 +597,7 @@ const Proformas = () => {
               Annuler
             </button>
             <button type="submit" className="btn btn-primary">
-              Créer la proforma
+              {editingProforma ? 'Enregistrer les modifications' : 'Créer la proforma'}
             </button>
           </div>
         </form>

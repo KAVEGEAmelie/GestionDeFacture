@@ -1,14 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { Eye, Trash2, FileCheck, Truck, Printer, Download } from 'lucide-react';
+import { Eye, Trash2, FileCheck, Truck, Printer, Download, Search, CheckCircle, RotateCcw } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import { generateFacturePDF } from '../utils/pdfGenerator';
+import { useToast } from '../components/Toast/ToastProvider';
+import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
+import { getErrorMessage } from '../utils/errors';
 import './Clients.css';
 import './Proformas.css';
 import { useNavigate } from 'react-router-dom';
 
 const Factures = () => {
   const navigate = useNavigate();
+  const toast = useToast();
+  const confirm = useConfirm();
   const [factures, setFactures] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
   const [proformas, setProformas] = useState([]);
   const [parametres, setParametres] = useState({});
   const [viewModalOpen, setViewModalOpen] = useState(false);
@@ -33,11 +39,11 @@ const Factures = () => {
   const handleConvertProforma = async (proformaId) => {
     try {
       await window.electronAPI.factures.createFromProforma(proformaId);
-      alert('Facture créée avec succès !');
+      toast.success('Facture créée avec succès !');
       loadData();
       setConvertModalOpen(false);
     } catch (error) {
-      alert('Erreur lors de la création de la facture');
+      toast.error(getErrorMessage(error, 'Erreur lors de la création de la facture.'));
     }
   };
 
@@ -48,9 +54,19 @@ const Factures = () => {
   };
 
   const handleDelete = async (id) => {
-    if (window.confirm('Êtes-vous sûr de vouloir supprimer cette facture ?')) {
+    const ok = await confirm({
+      title: 'Supprimer la facture',
+      message: 'Êtes-vous sûr de vouloir supprimer cette facture ? Cette action est irréversible.',
+      confirmText: 'Supprimer',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
       await window.electronAPI.factures.delete(id);
+      toast.success('Facture supprimée avec succès.');
       loadData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la suppression de la facture.'));
     }
   };
 
@@ -68,14 +84,51 @@ const Factures = () => {
   };
 
   const handleCreateBordereau = async (factureId) => {
-    if (window.confirm('Créer un bordereau de livraison pour cette facture ?')) {
-      try {
-        await window.electronAPI.bordereaux.createFromFacture(factureId);
-        alert('Bordereau créé avec succès !');
-        navigate('/bordereaux');
-      } catch (error) {
-        alert('Erreur lors de la création du bordereau');
-      }
+    const ok = await confirm({
+      title: 'Créer un bordereau',
+      message: 'Créer un bordereau de livraison pour cette facture ?',
+      confirmText: 'Créer',
+    });
+    if (!ok) return;
+    try {
+      await window.electronAPI.bordereaux.createFromFacture(factureId);
+      toast.success('Bordereau créé avec succès !');
+      navigate('/bordereaux');
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la création du bordereau.'));
+    }
+  };
+
+  const handleMarkPaid = async (facture) => {
+    const ok = await confirm({
+      title: 'Valider le paiement',
+      message: `Confirmer que la facture ${facture.numero} a été payée par le client ? Sa TVA passera en « TVA à reverser à l'OTR ».`,
+      confirmText: 'Valider le paiement',
+    });
+    if (!ok) return;
+    try {
+      await window.electronAPI.factures.markPaid(facture.id);
+      toast.success('Paiement enregistré. La TVA est désormais à reverser à l\'OTR.');
+      loadData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la validation du paiement.'));
+    }
+  };
+
+  const handleMarkUnpaid = async (facture) => {
+    const ok = await confirm({
+      title: 'Annuler le paiement',
+      message: `Marquer la facture ${facture.numero} comme non payée ?`,
+      confirmText: 'Annuler le paiement',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await window.electronAPI.factures.markUnpaid(facture.id);
+      toast.success('Facture marquée comme non payée.');
+      loadData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de l\'annulation du paiement.'));
     }
   };
 
@@ -86,6 +139,23 @@ const Factures = () => {
   const formatDate = (dateString) => {
     return new Date(dateString).toLocaleDateString('fr-FR');
   };
+
+  const getPaiementBadge = (facture) => {
+    if (facture.statut_paiement === 'payee') {
+      return <span className="badge badge-success">Payée</span>;
+    }
+    return <span className="badge badge-warning">Non payée</span>;
+  };
+
+  const filteredFactures = factures.filter((f) => {
+    const term = searchTerm.toLowerCase();
+    return (
+      !term ||
+      (f.numero && f.numero.toLowerCase().includes(term)) ||
+      (f.client_nom && f.client_nom.toLowerCase().includes(term)) ||
+      (f.objet && f.objet.toLowerCase().includes(term))
+    );
+  });
 
   return (
     <div className="page fade-in">
@@ -101,6 +171,15 @@ const Factures = () => {
       </div>
 
       <div className="content-card">
+        <div className="search-bar">
+          <Search size={20} />
+          <input
+            type="text"
+            placeholder="Rechercher par numéro, client ou objet..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+        </div>
         <div className="table-container">
           <table className="data-table">
             <thead>
@@ -110,26 +189,47 @@ const Factures = () => {
                 <th>Client</th>
                 <th>Objet</th>
                 <th>Montant TTC</th>
+                <th>Paiement</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {factures.length === 0 ? (
+              {filteredFactures.length === 0 ? (
                 <tr>
-                  <td colSpan="6" className="empty-state">
-                    Aucune facture enregistrée
+                  <td colSpan="7" className="empty-state">
+                    {searchTerm ? 'Aucune facture trouvée' : 'Aucune facture enregistrée'}
                   </td>
                 </tr>
               ) : (
-                factures.map((facture) => (
+                filteredFactures.map((facture) => (
                   <tr key={facture.id}>
                     <td className="font-semibold">{facture.numero}</td>
                     <td>{formatDate(facture.date)}</td>
                     <td>{facture.client_nom}</td>
                     <td>{facture.objet}</td>
                     <td>{formatPrice(facture.total_ttc)} FCFA</td>
+                    <td>{getPaiementBadge(facture)}</td>
                     <td>
                       <div className="action-buttons">
+                        {facture.statut_paiement === 'payee' ? (
+                          <button
+                            className="btn-icon"
+                            style={{ color: '#f59e0b' }}
+                            onClick={() => handleMarkUnpaid(facture)}
+                            title="Annuler le paiement"
+                          >
+                            <RotateCcw size={16} />
+                          </button>
+                        ) : (
+                          <button
+                            className="btn-icon"
+                            style={{ color: '#10b981' }}
+                            onClick={() => handleMarkPaid(facture)}
+                            title="Valider le paiement"
+                          >
+                            <CheckCircle size={16} />
+                          </button>
+                        )}
                         <button
                           className="btn-icon btn-icon-primary"
                           onClick={() => handleView(facture)}

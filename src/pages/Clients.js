@@ -1,9 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Edit2, Trash2, Search } from 'lucide-react';
 import Modal from '../components/modals/Modal';
+import { useToast } from '../components/Toast/ToastProvider';
+import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
+import { getErrorMessage } from '../utils/errors';
 import './Clients.css';
 
 const Clients = () => {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [clients, setClients] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -35,15 +40,20 @@ const Clients = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    if (editingClient) {
-      await window.electronAPI.clients.update(editingClient.id, formData);
-    } else {
-      await window.electronAPI.clients.create(formData);
+
+    try {
+      if (editingClient) {
+        await window.electronAPI.clients.update(editingClient.id, formData);
+        toast.success('Client modifié avec succès.');
+      } else {
+        await window.electronAPI.clients.create(formData);
+        toast.success('Client ajouté avec succès.');
+      }
+      loadClients();
+      closeModal();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de l\'enregistrement du client.'));
     }
-    
-    loadClients();
-    closeModal();
   };
 
   const handleEdit = (client) => {
@@ -59,9 +69,19 @@ const Clients = () => {
   };
 
   const handleDelete = async (id) => {
-    if (window.confirm('Êtes-vous sûr de vouloir supprimer ce client ?')) {
+    const ok = await confirm({
+      title: 'Supprimer le client',
+      message: 'Êtes-vous sûr de vouloir supprimer ce client ? Cette action est irréversible.',
+      confirmText: 'Supprimer',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
       await window.electronAPI.clients.delete(id);
+      toast.success('Client supprimé avec succès.');
       loadClients();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la suppression du client.'));
     }
   };
 

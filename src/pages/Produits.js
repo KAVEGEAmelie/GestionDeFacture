@@ -1,9 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Edit2, Trash2, Search } from 'lucide-react';
 import Modal from '../components/modals/Modal';
+import { useToast } from '../components/Toast/ToastProvider';
+import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
+import { getErrorMessage } from '../utils/errors';
 import './Clients.css';
 
 const Produits = () => {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [produits, setProduits] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -40,9 +45,21 @@ const Produits = () => {
     };
 
     if (editingProduit) {
-      await window.electronAPI.produits.update(editingProduit.id, data);
+      try {
+        await window.electronAPI.produits.update(editingProduit.id, data);
+        toast.success('Produit modifié avec succès.');
+      } catch (error) {
+        toast.error(getErrorMessage(error, 'Erreur lors de l\'enregistrement du produit.'));
+        return;
+      }
     } else {
-      await window.electronAPI.produits.create(data);
+      try {
+        await window.electronAPI.produits.create(data);
+        toast.success('Produit ajouté avec succès.');
+      } catch (error) {
+        toast.error(getErrorMessage(error, 'Erreur lors de l\'enregistrement du produit.'));
+        return;
+      }
     }
     
     loadProduits();
@@ -61,9 +78,19 @@ const Produits = () => {
   };
 
   const handleDelete = async (id) => {
-    if (window.confirm('Êtes-vous sûr de vouloir supprimer ce produit ?')) {
+    const ok = await confirm({
+      title: 'Supprimer le produit',
+      message: 'Êtes-vous sûr de vouloir supprimer ce produit ? Cette action est irréversible.',
+      confirmText: 'Supprimer',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
       await window.electronAPI.produits.delete(id);
+      toast.success('Produit supprimé avec succès.');
       loadProduits();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la suppression du produit.'));
     }
   };
 

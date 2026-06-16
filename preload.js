@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getAll: () => ipcRenderer.invoke('proformas:getAll'),
     getById: (id) => ipcRenderer.invoke('proformas:getById', id),
     create: (proforma) => ipcRenderer.invoke('proformas:create', proforma),
+    update: (id, proforma) => ipcRenderer.invoke('proformas:update', id, proforma),
     delete: (id) => ipcRenderer.invoke('proformas:delete', id)
   },
   
@@ -33,6 +34,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getAll: () => ipcRenderer.invoke('factures:getAll'),
     getById: (id) => ipcRenderer.invoke('factures:getById', id),
     createFromProforma: (proformaId) => ipcRenderer.invoke('factures:createFromProforma', proformaId),
+    markPaid: (id) => ipcRenderer.invoke('factures:markPaid', id),
+    markUnpaid: (id) => ipcRenderer.invoke('factures:markUnpaid', id),
     delete: (id) => ipcRenderer.invoke('factures:delete', id)
   },
   
@@ -43,6 +46,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     createFromFacture: (factureId) => ipcRenderer.invoke('bordereaux:createFromFacture', factureId),
     delete: (id) => ipcRenderer.invoke('bordereaux:delete', id)
   },
+
+  // TVA / OTR
+  tva: {
+    getStats: () => ipcRenderer.invoke('tva:getStats'),
+    verser: (ids) => ipcRenderer.invoke('tva:verser', ids)
+  },
   
   // PARAMETRES
   parametres: {
@@ -52,6 +61,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // STATISTIQUES
   stats: {
-    getCounts: () => ipcRenderer.invoke('stats:getCounts')
+    getCounts: () => ipcRenderer.invoke('stats:getCounts'),
+    getDashboard: () => ipcRenderer.invoke('stats:getDashboard')
+  },
+
+  // SAUVEGARDE / RESTAURATION
+  database: {
+    backup: () => ipcRenderer.invoke('database:backup'),
+    restore: () => ipcRenderer.invoke('database:restore')
   }
 });

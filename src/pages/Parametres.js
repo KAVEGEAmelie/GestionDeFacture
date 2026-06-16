@@ -1,11 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { Save } from 'lucide-react';
+import { Save, Download, Upload } from 'lucide-react';
+import { useToast } from '../components/Toast/ToastProvider';
+import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
+import { getErrorMessage } from '../utils/errors';
 import './Clients.css';
 
+const anneeCourante = new Date().getFullYear();
+
 const Parametres = () => {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [parametres, setParametres] = useState({});
   const [isSaving, setIsSaving] = useState(false);
-  const [message, setMessage] = useState('');
 
   useEffect(() => {
     loadParametres();
@@ -26,7 +32,6 @@ const Parametres = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSaving(true);
-    setMessage('');
 
     try {
       // Sauvegarder tous les paramètres
@@ -34,12 +39,43 @@ const Parametres = () => {
         await window.electronAPI.parametres.update(key, value);
       }
       
-      setMessage('Paramètres enregistrés avec succès');
-      setTimeout(() => setMessage(''), 3000);
+      toast.success('Paramètres enregistrés avec succès.');
     } catch (error) {
-      setMessage('Erreur lors de l\'enregistrement');
+      toast.error(getErrorMessage(error, 'Erreur lors de l\'enregistrement des paramètres.'));
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleBackup = async () => {
+    try {
+      const result = await window.electronAPI.database.backup();
+      if (result.canceled) return;
+      if (result.success) {
+        toast.success('Sauvegarde enregistrée avec succès.');
+      }
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la sauvegarde.'));
+    }
+  };
+
+  const handleRestore = async () => {
+    const ok = await confirm({
+      title: 'Restaurer une sauvegarde',
+      message: 'Attention : la restauration remplacera toutes les données actuelles par celles de la sauvegarde. Cette action est irréversible. Continuer ?',
+      confirmText: 'Restaurer',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const result = await window.electronAPI.database.restore();
+      if (result.canceled) return;
+      if (result.success) {
+        toast.success('Base restaurée avec succès.');
+        loadParametres();
+      }
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la restauration.'));
     }
   };
 
@@ -171,7 +207,7 @@ const Parametres = () => {
                   required
                 />
                 <small style={{ color: '#6b7280', fontSize: '0.875rem', marginTop: '0.25rem' }}>
-                  Prochain numéro: 2025/{String(parseInt(parametres.proforma_compteur || 5) + 1).padStart(5, '0')}-ITS
+                  Prochain numéro: {anneeCourante}/{String(parseInt(parametres.proforma_compteur || 5) + 1).padStart(5, '0')}-ITS
                 </small>
               </div>
 
@@ -185,7 +221,7 @@ const Parametres = () => {
                   required
                 />
                 <small style={{ color: '#6b7280', fontSize: '0.875rem', marginTop: '0.25rem' }}>
-                  Prochain numéro: 2025/{String(parseInt(parametres.facture_compteur || 17) + 1).padStart(5, '0')}-ITS
+                  Prochain numéro: {anneeCourante}/{String(parseInt(parametres.facture_compteur || 17) + 1).padStart(5, '0')}-ITS
                 </small>
               </div>
             </div>
@@ -200,16 +236,27 @@ const Parametres = () => {
                 required
               />
               <small style={{ color: '#6b7280', fontSize: '0.875rem', marginTop: '0.25rem' }}>
-                Prochain numéro: 2025/{String(parseInt(parametres.bordereau_compteur || 4) + 1).padStart(5, '0')}-ITS
+                Prochain numéro: {anneeCourante}/{String(parseInt(parametres.bordereau_compteur || 4) + 1).padStart(5, '0')}-ITS
               </small>
             </div>
           </div>
 
-          {message && (
-            <div className={`alert ${message.includes('succès') ? 'alert-success' : 'alert-error'}`}>
-              {message}
+          <div className="form-section">
+            <h3 className="form-section-title">Sauvegarde des données</h3>
+            <p style={{ color: '#6b7280', fontSize: '0.875rem', marginBottom: '1rem' }}>
+              Enregistrez régulièrement une copie de votre base pour ne rien perdre. La restauration remplacera toutes les données actuelles.
+            </p>
+            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-secondary" onClick={handleBackup}>
+                <Download size={20} />
+                Sauvegarder la base
+              </button>
+              <button type="button" className="btn btn-secondary" onClick={handleRestore}>
+                <Upload size={20} />
+                Restaurer une sauvegarde
+              </button>
             </div>
-          )}
+          </div>
 
           <div className="form-actions">
             <button 

@@ -158,3 +158,122 @@
     justify-content: center;
   }
 }
+
+/* GRAPHIQUES DU TABLEAU DE BORD */
+.dashboard-charts {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 1.5rem;
+  margin: 1.5rem 0;
+}
+
+@media (max-width: 1000px) {
+  .dashboard-charts {
+    grid-template-columns: 1fr;
+  }
+}
+
+.chart-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.chart-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #1f2937;
+  margin: 0 0 1.25rem;
+}
+
+.chart-empty {
+  color: #9ca3af;
+  font-size: 0.9rem;
+}
+
+/* Histogramme CA mensuel */
+.bar-chart {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 4px;
+  height: 200px;
+}
+
+.bar-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+}
+
+.bar-wrapper {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.bar {
+  width: 70%;
+  min-height: 2px;
+  background: linear-gradient(to top, #2563eb, #60a5fa);
+  border-radius: 4px 4px 0 0;
+  transition: height 0.3s ease;
+}
+
+.bar:hover {
+  background: linear-gradient(to top, #1d4ed8, #3b82f6);
+}
+
+.bar-label {
+  margin-top: 0.5rem;
+  font-size: 0.7rem;
+  color: #6b7280;
+}
+
+/* Top clients */
+.top-clients {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.top-client-row {
+  display: grid;
+  grid-template-columns: 1fr 2fr auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.top-client-name {
+  font-size: 0.85rem;
+  color: #1f2937;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.top-client-bar-wrapper {
+  background: #f3f4f6;
+  border-radius: 9999px;
+  height: 10px;
+  overflow: hidden;
+}
+
+.top-client-bar {
+  height: 100%;
+  background: linear-gradient(to right, #10b981, #34d399);
+  border-radius: 9999px;
+  transition: width 0.3s ease;
+}
+
+.top-client-value {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #374151;
+  white-space: nowrap;
+}
