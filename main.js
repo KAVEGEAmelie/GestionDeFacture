@@ -3,6 +3,10 @@ const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
 
+// Désactive l'accélération matérielle (évite que la fenêtre reste invisible
+// sur certaines configurations GPU sous Linux)
+app.disableHardwareAcceleration();
+
 let mainWindow;
 let db;
 

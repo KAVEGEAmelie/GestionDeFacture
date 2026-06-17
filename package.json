@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Application de gestion de facturation pour In-Tel Services",
   "main": "main.js",
+  "homepage": "./",
   "author": {
     "name": "In-Tel Services",
     "email": "infos_its@yahoo.fr"
@@ -24,6 +25,7 @@
       "main.js",
       "preload.js",
       "database.db",
+      "src/assets/**/*",
       "node_modules/**/*"
     ],
     "directories": {
