@@ -101,7 +101,8 @@ const Proformas = () => {
     const prestations = parseFloat(formData.prestations) || 0;
     const remise = parseFloat(formData.remise) || 0;
     const total_ht = total_materiel_ht + prestations - remise;
-    const tva = total_ht * 0.18;
+    const tauxTVA = parseFloat(parametres.tva_taux) || 18;
+    const tva = total_ht * (tauxTVA / 100);
     const total_ttc = total_ht + tva;
     return { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc };
   };
@@ -582,7 +583,7 @@ const Proformas = () => {
                 <strong>{formatPrice(total_ht)} FCFA</strong>
               </div>
               <div className="totaux-item">
-                <span>TVA (18%) :</span>
+                <span>TVA ({parseFloat(parametres.tva_taux) || 18}%) :</span>
                 <strong>{formatPrice(tva)} FCFA</strong>
               </div>
               <div className="totaux-item total-ttc">
@@ -652,7 +653,7 @@ const Proformas = () => {
                 <strong>{formatPrice(selectedProforma.total_ht)} FCFA</strong>
               </div>
               <div className="totaux-row">
-                <span>TVA (18%) :</span>
+                <span>TVA ({selectedProforma.total_ht ? Math.round((selectedProforma.tva / selectedProforma.total_ht) * 100) : 18}%) :</span>
                 <strong>{formatPrice(selectedProforma.tva)} FCFA</strong>
               </div>
               <div className="totaux-row total">

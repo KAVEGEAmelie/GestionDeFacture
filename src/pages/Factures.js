@@ -366,7 +366,7 @@ const Factures = () => {
                 <strong>{formatPrice(selectedFacture.total_ht)} FCFA</strong>
               </div>
               <div className="totaux-row">
-                <span>TVA (18%) :</span>
+                <span>TVA ({selectedFacture.total_ht ? Math.round((selectedFacture.tva / selectedFacture.total_ht) * 100) : 18}%) :</span>
                 <strong>{formatPrice(selectedFacture.tva)} FCFA</strong>
               </div>
               <div className="totaux-row total">
