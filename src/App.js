@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
@@ -9,11 +9,41 @@ import Factures from './pages/Factures';
 import Bordereaux from './pages/Bordereaux';
 import Tva from './pages/Tva';
 import Parametres from './pages/Parametres';
+import LockScreen from './components/LockScreen/LockScreen';
 import { ToastProvider } from './components/Toast/ToastProvider';
 import { ConfirmProvider } from './components/ConfirmDialog/ConfirmProvider';
 import './App.css';
 
 function App() {
+  // null = en cours de vérification, true = déverrouillé, false = verrouillé
+  const [unlocked, setUnlocked] = useState(null);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const status = await window.electronAPI.security.getStatus();
+        if (mounted) setUnlocked(!(status.enabled && status.hasPassword));
+      } catch {
+        // En cas d'erreur, ne pas bloquer l'accès à l'application
+        if (mounted) setUnlocked(true);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Pendant la vérification du statut, ne rien afficher
+  if (unlocked === null) {
+    return null;
+  }
+
+  // Application verrouillée : afficher l'écran de mot de passe
+  if (!unlocked) {
+    return <LockScreen onUnlock={() => setUnlocked(true)} />;
+  }
+
   return (
     <ToastProvider>
       <ConfirmProvider>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Save, Download, Upload } from 'lucide-react';
+import { Save, Download, Upload, Lock, ShieldCheck, ShieldOff } from 'lucide-react';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
@@ -13,13 +13,92 @@ const Parametres = () => {
   const [parametres, setParametres] = useState({});
   const [isSaving, setIsSaving] = useState(false);
 
+  // Sécurité (mot de passe de l'application)
+  const [security, setSecurity] = useState({ enabled: false, hasPassword: false });
+  const [pwdCurrent, setPwdCurrent] = useState('');
+  const [pwdNew, setPwdNew] = useState('');
+  const [pwdConfirm, setPwdConfirm] = useState('');
+  const [isSavingPwd, setIsSavingPwd] = useState(false);
+
   useEffect(() => {
     loadParametres();
+    loadSecurity();
   }, []);
 
   const loadParametres = async () => {
     const params = await window.electronAPI.parametres.getAll();
     setParametres(params);
+  };
+
+  const loadSecurity = async () => {
+    try {
+      const status = await window.electronAPI.security.getStatus();
+      setSecurity(status);
+    } catch (error) {
+      // silencieux : la section sécurité reste à l'état par défaut
+    }
+  };
+
+  const resetPwdFields = () => {
+    setPwdCurrent('');
+    setPwdNew('');
+    setPwdConfirm('');
+  };
+
+  const handleSavePassword = async (e) => {
+    e.preventDefault();
+    if (pwdNew.length < 4) {
+      toast.error('Le mot de passe doit contenir au moins 4 caractères.');
+      return;
+    }
+    if (pwdNew !== pwdConfirm) {
+      toast.error('Les deux mots de passe ne correspondent pas.');
+      return;
+    }
+    setIsSavingPwd(true);
+    try {
+      await window.electronAPI.security.setPassword({
+        currentPassword: pwdCurrent,
+        newPassword: pwdNew,
+      });
+      toast.success(
+        security.hasPassword
+          ? 'Mot de passe mis à jour avec succès.'
+          : 'Mot de passe activé avec succès.'
+      );
+      resetPwdFields();
+      loadSecurity();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de l\'enregistrement du mot de passe.'));
+    } finally {
+      setIsSavingPwd(false);
+    }
+  };
+
+  const handleDisablePassword = async () => {
+    const ok = await confirm({
+      title: 'Désactiver le mot de passe',
+      message: 'L\'application ne sera plus protégée par mot de passe au démarrage. Continuer ?',
+      confirmText: 'Désactiver',
+      danger: true,
+    });
+    if (!ok) return;
+
+    if (!pwdCurrent) {
+      toast.error('Veuillez saisir le mot de passe actuel pour confirmer la désactivation.');
+      return;
+    }
+    setIsSavingPwd(true);
+    try {
+      await window.electronAPI.security.disable(pwdCurrent);
+      toast.success('Mot de passe désactivé.');
+      resetPwdFields();
+      loadSecurity();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la désactivation du mot de passe.'));
+    } finally {
+      setIsSavingPwd(false);
+    }
   };
 
   const handleChange = (key, value) => {
@@ -105,6 +184,26 @@ const Parametres = () => {
 
             <div className="form-row">
               <div className="form-group">
+                <label>Slogan — ligne 1</label>
+                <input
+                  type="text"
+                  value={parametres.entreprise_slogan1 || ''}
+                  onChange={(e) => handleChange('entreprise_slogan1', e.target.value)}
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Slogan — ligne 2</label>
+                <input
+                  type="text"
+                  value={parametres.entreprise_slogan2 || ''}
+                  onChange={(e) => handleChange('entreprise_slogan2', e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
                 <label>RCCM</label>
                 <input
                   type="text"
@@ -168,6 +267,26 @@ const Parametres = () => {
                   type="text"
                   value={parametres.entreprise_utb || ''}
                   onChange={(e) => handleChange('entreprise_utb', e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>Slogan pied de page — ligne 1</label>
+                <input
+                  type="text"
+                  value={parametres.entreprise_slogan_pied1 || ''}
+                  onChange={(e) => handleChange('entreprise_slogan_pied1', e.target.value)}
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Slogan pied de page — ligne 2</label>
+                <input
+                  type="text"
+                  value={parametres.entreprise_slogan_pied2 || ''}
+                  onChange={(e) => handleChange('entreprise_slogan_pied2', e.target.value)}
                 />
               </div>
             </div>
@@ -269,6 +388,102 @@ const Parametres = () => {
             </button>
           </div>
         </form>
+      </div>
+
+      <div className="content-card" style={{ marginTop: '1.5rem' }}>
+        <div className="form" style={{ padding: '2rem' }}>
+          <div className="form-section" style={{ marginBottom: 0 }}>
+            <h3 className="form-section-title">
+              <Lock size={18} style={{ verticalAlign: '-3px', marginRight: '0.4rem' }} />
+              Sécurité — Mot de passe de l'application
+            </h3>
+
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                marginBottom: '1rem',
+                fontSize: '0.9rem',
+                fontWeight: 600,
+                color: security.enabled ? '#16a34a' : '#6b7280',
+              }}
+            >
+              {security.enabled ? <ShieldCheck size={18} /> : <ShieldOff size={18} />}
+              {security.enabled
+                ? 'Protection activée : un mot de passe est demandé au démarrage.'
+                : 'Protection désactivée : aucun mot de passe n\'est demandé.'}
+            </div>
+
+            <p style={{ color: '#6b7280', fontSize: '0.875rem', marginBottom: '1rem' }}>
+              {security.hasPassword
+                ? 'Pour modifier ou désactiver le mot de passe, saisissez d\'abord le mot de passe actuel.'
+                : 'Définissez un mot de passe pour protéger l\'accès à l\'application au démarrage (minimum 4 caractères).'}
+            </p>
+
+            <form onSubmit={handleSavePassword}>
+              {security.hasPassword && (
+                <div className="form-group">
+                  <label>Mot de passe actuel</label>
+                  <input
+                    type="password"
+                    value={pwdCurrent}
+                    onChange={(e) => setPwdCurrent(e.target.value)}
+                    autoComplete="current-password"
+                    placeholder="••••••••"
+                  />
+                </div>
+              )}
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>{security.hasPassword ? 'Nouveau mot de passe' : 'Mot de passe'}</label>
+                  <input
+                    type="password"
+                    value={pwdNew}
+                    onChange={(e) => setPwdNew(e.target.value)}
+                    autoComplete="new-password"
+                    placeholder="••••••••"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Confirmer le mot de passe</label>
+                  <input
+                    type="password"
+                    value={pwdConfirm}
+                    onChange={(e) => setPwdConfirm(e.target.value)}
+                    autoComplete="new-password"
+                    placeholder="••••••••"
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
+                <button type="submit" className="btn btn-primary" disabled={isSavingPwd}>
+                  <ShieldCheck size={20} />
+                  {isSavingPwd
+                    ? 'Enregistrement...'
+                    : security.hasPassword
+                    ? 'Mettre à jour le mot de passe'
+                    : 'Activer le mot de passe'}
+                </button>
+
+                {security.enabled && (
+                  <button
+                    type="button"
+                    className="btn btn-danger"
+                    onClick={handleDisablePassword}
+                    disabled={isSavingPwd}
+                  >
+                    <ShieldOff size={20} />
+                    Désactiver
+                  </button>
+                )}
+              </div>
+            </form>
+          </div>
+        </div>
       </div>
     </div>
   );

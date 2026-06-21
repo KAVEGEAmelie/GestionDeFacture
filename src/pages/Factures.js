@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Eye, Trash2, FileCheck, Truck, Printer, Download, Search, CheckCircle, RotateCcw } from 'lucide-react';
+import { Eye, Trash2, FileCheck, Truck, Printer, Download, CheckCircle, RotateCcw } from 'lucide-react';
 import Modal from '../components/modals/Modal';
+import FilterBar from '../components/Filters/FilterBar';
+import PeriodFilter from '../components/Filters/PeriodFilter';
+import { inDateRange, inNumberRange } from '../utils/dateFilters';
 import { generateFacturePDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
@@ -15,6 +18,11 @@ const Factures = () => {
   const confirm = useConfirm();
   const [factures, setFactures] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [paiementFilter, setPaiementFilter] = useState('tous');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [montantMin, setMontantMin] = useState('');
+  const [montantMax, setMontantMax] = useState('');
   const [proformas, setProformas] = useState([]);
   const [parametres, setParametres] = useState({});
   const [viewModalOpen, setViewModalOpen] = useState(false);
@@ -149,13 +157,32 @@ const Factures = () => {
 
   const filteredFactures = factures.filter((f) => {
     const term = searchTerm.toLowerCase();
-    return (
+    const matchSearch =
       !term ||
       (f.numero && f.numero.toLowerCase().includes(term)) ||
       (f.client_nom && f.client_nom.toLowerCase().includes(term)) ||
-      (f.objet && f.objet.toLowerCase().includes(term))
-    );
+      (f.objet && f.objet.toLowerCase().includes(term));
+    const matchPaiement =
+      paiementFilter === 'tous' ||
+      (paiementFilter === 'payee' && f.statut_paiement === 'payee') ||
+      (paiementFilter === 'non_payee' && f.statut_paiement !== 'payee');
+    const matchDate = inDateRange(f.date, dateFrom, dateTo);
+    const matchMontant = inNumberRange(f.total_ttc, montantMin, montantMax);
+    return matchSearch && matchPaiement && matchDate && matchMontant;
   });
+
+  const activeCount =
+    (paiementFilter !== 'tous' ? 1 : 0) +
+    (dateFrom || dateTo ? 1 : 0) +
+    (montantMin !== '' || montantMax !== '' ? 1 : 0);
+
+  const resetFilters = () => {
+    setPaiementFilter('tous');
+    setDateFrom('');
+    setDateTo('');
+    setMontantMin('');
+    setMontantMax('');
+  };
 
   return (
     <div className="page fade-in">
@@ -171,15 +198,57 @@ const Factures = () => {
       </div>
 
       <div className="content-card">
-        <div className="search-bar">
-          <Search size={20} />
-          <input
-            type="text"
-            placeholder="Rechercher par numéro, client ou objet..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+        <FilterBar
+          searchValue={searchTerm}
+          onSearchChange={setSearchTerm}
+          searchPlaceholder="Rechercher par numéro, client ou objet..."
+          activeCount={activeCount}
+          onReset={resetFilters}
+        >
+          <div className="filter-group">
+            <label>Paiement</label>
+            <select
+              className="filter-select"
+              value={paiementFilter}
+              onChange={(e) => setPaiementFilter(e.target.value)}
+            >
+              <option value="tous">Tous les paiements</option>
+              <option value="payee">Payées</option>
+              <option value="non_payee">Non payées</option>
+            </select>
+          </div>
+
+          <div className="filter-group">
+            <label>Montant TTC (FCFA)</label>
+            <div className="filter-range">
+              <input
+                type="number"
+                min="0"
+                placeholder="Min"
+                value={montantMin}
+                onChange={(e) => setMontantMin(e.target.value)}
+              />
+              <span>—</span>
+              <input
+                type="number"
+                min="0"
+                placeholder="Max"
+                value={montantMax}
+                onChange={(e) => setMontantMax(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <PeriodFilter
+            label="Date de la facture"
+            from={dateFrom}
+            to={dateTo}
+            onChange={(f, t) => {
+              setDateFrom(f);
+              setDateTo(t);
+            }}
           />
-        </div>
+        </FilterBar>
         <div className="table-container">
           <table className="data-table">
             <thead>
@@ -197,7 +266,7 @@ const Factures = () => {
               {filteredFactures.length === 0 ? (
                 <tr>
                   <td colSpan="7" className="empty-state">
-                    {searchTerm ? 'Aucune facture trouvée' : 'Aucune facture enregistrée'}
+                    {searchTerm || activeCount > 0 ? 'Aucune facture trouvée' : 'Aucune facture enregistrée'}
                   </td>
                 </tr>
               ) : (

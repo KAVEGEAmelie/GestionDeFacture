@@ -1,0 +1,134 @@
+.lock-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #0d2a5c 0%, #1c569e 100%);
+  padding: 1.5rem;
+}
+
+.lock-card {
+  width: 100%;
+  max-width: 380px;
+  background: #ffffff;
+  border-radius: 16px;
+  padding: 2.5rem 2rem;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  animation: lock-pop 0.25s ease;
+}
+
+@keyframes lock-pop {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.lock-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: #0d2a5c;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1.25rem;
+}
+
+.lock-title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #0d2a5c;
+  margin: 0 0 0.35rem;
+}
+
+.lock-subtitle {
+  font-size: 0.9rem;
+  color: #6b7280;
+  margin: 0 0 1.75rem;
+}
+
+.lock-field {
+  position: relative;
+  width: 100%;
+  margin-bottom: 1rem;
+}
+
+.lock-field input {
+  width: 100%;
+  padding: 0.8rem 2.6rem 0.8rem 1rem;
+  border: 2px solid #cdd4e0;
+  border-radius: 10px;
+  font-size: 1rem;
+  outline: none;
+  transition: border-color 0.15s;
+  box-sizing: border-box;
+}
+
+.lock-field input:focus {
+  border-color: #1c569e;
+}
+
+.lock-toggle {
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 0.35rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lock-toggle:hover {
+  color: #0d2a5c;
+}
+
+.lock-error {
+  width: 100%;
+  margin: -0.25rem 0 1rem;
+  color: #d62018;
+  font-size: 0.85rem;
+  text-align: left;
+}
+
+.lock-submit {
+  width: 100%;
+  padding: 0.85rem 1rem;
+  border: none;
+  border-radius: 10px;
+  background: #0d2a5c;
+  color: #ffffff;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  transition: background 0.15s;
+}
+
+.lock-submit:hover:not(:disabled) {
+  background: #1c569e;
+}
+
+.lock-submit:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}

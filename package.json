@@ -24,7 +24,6 @@
       "build/**/*",
       "main.js",
       "preload.js",
-      "database.db",
       "src/assets/**/*",
       "node_modules/**/*"
     ],
@@ -49,7 +48,7 @@
         "AppImage",
         "deb"
       ],
-      "icon": "src/assets/logo.png",
+      "icon": "src/assets/icon-linux.png",
       "category": "Office"
     },
     "extraMetadata": {
@@ -64,7 +63,8 @@
     "lucide-react": "^0.263.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.21.0"
+    "react-router-dom": "^6.21.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",

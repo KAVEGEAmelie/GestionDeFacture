@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Search } from 'lucide-react';
+import { Plus, Edit2, Trash2 } from 'lucide-react';
 import Modal from '../components/modals/Modal';
+import FilterBar from '../components/Filters/FilterBar';
+import PeriodFilter from '../components/Filters/PeriodFilter';
+import { inDateRange, inNumberRange } from '../utils/dateFilters';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
@@ -11,6 +14,11 @@ const Produits = () => {
   const confirm = useConfirm();
   const [produits, setProduits] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [uniteFilter, setUniteFilter] = useState('toutes');
+  const [prixMin, setPrixMin] = useState('');
+  const [prixMax, setPrixMax] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduit, setEditingProduit] = useState(null);
   const [formData, setFormData] = useState({
@@ -41,7 +49,7 @@ const Produits = () => {
     
     const data = {
       ...formData,
-      prix_unitaire: parseFloat(formData.prix_unitaire)
+      prix_unitaire: parseFloat(formData.prix_unitaire) || 0
     };
 
     if (editingProduit) {
@@ -110,9 +118,34 @@ const Produits = () => {
     setEditingProduit(null);
   };
 
-  const filteredProduits = produits.filter(produit =>
-    produit.designation.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const unitesDisponibles = Array.from(
+    new Set(produits.map((p) => p.unite).filter(Boolean))
+  ).sort();
+
+  const filteredProduits = produits.filter((produit) => {
+    const term = searchTerm.toLowerCase().trim();
+    const matchSearch =
+      !term ||
+      (produit.designation || '').toLowerCase().includes(term) ||
+      (produit.description || '').toLowerCase().includes(term);
+    const matchUnite = uniteFilter === 'toutes' || produit.unite === uniteFilter;
+    const matchPrix = inNumberRange(produit.prix_unitaire, prixMin, prixMax);
+    const matchDate = inDateRange(produit.created_at, dateFrom, dateTo);
+    return matchSearch && matchUnite && matchPrix && matchDate;
+  });
+
+  const activeCount =
+    (uniteFilter !== 'toutes' ? 1 : 0) +
+    (prixMin !== '' || prixMax !== '' ? 1 : 0) +
+    (dateFrom || dateTo ? 1 : 0);
+
+  const resetFilters = () => {
+    setUniteFilter('toutes');
+    setPrixMin('');
+    setPrixMax('');
+    setDateFrom('');
+    setDateTo('');
+  };
 
   const formatPrice = (price) => {
     return new Intl.NumberFormat('fr-FR').format(price);
@@ -132,15 +165,60 @@ const Produits = () => {
       </div>
 
       <div className="content-card">
-        <div className="search-bar">
-          <Search size={20} />
-          <input
-            type="text"
-            placeholder="Rechercher un produit..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+        <FilterBar
+          searchValue={searchTerm}
+          onSearchChange={setSearchTerm}
+          searchPlaceholder="Rechercher un produit (désignation, description)..."
+          activeCount={activeCount}
+          onReset={resetFilters}
+        >
+          <div className="filter-group">
+            <label>Unité</label>
+            <select
+              className="filter-select"
+              value={uniteFilter}
+              onChange={(e) => setUniteFilter(e.target.value)}
+            >
+              <option value="toutes">Toutes les unités</option>
+              {unitesDisponibles.map((u) => (
+                <option key={u} value={u}>
+                  {u}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="filter-group">
+            <label>Prix unitaire (FCFA)</label>
+            <div className="filter-range">
+              <input
+                type="number"
+                min="0"
+                placeholder="Min"
+                value={prixMin}
+                onChange={(e) => setPrixMin(e.target.value)}
+              />
+              <span>—</span>
+              <input
+                type="number"
+                min="0"
+                placeholder="Max"
+                value={prixMax}
+                onChange={(e) => setPrixMax(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <PeriodFilter
+            label="Date de création"
+            from={dateFrom}
+            to={dateTo}
+            onChange={(f, t) => {
+              setDateFrom(f);
+              setDateTo(t);
+            }}
           />
-        </div>
+        </FilterBar>
 
         <div className="table-container">
           <table className="data-table">
@@ -157,14 +235,20 @@ const Produits = () => {
               {filteredProduits.length === 0 ? (
                 <tr>
                   <td colSpan="5" className="empty-state">
-                    {searchTerm ? 'Aucun produit trouvé' : 'Aucun produit enregistré'}
+                    {searchTerm || activeCount > 0 ? 'Aucun produit trouvé' : 'Aucun produit enregistré'}
                   </td>
                 </tr>
               ) : (
                 filteredProduits.map((produit) => (
                   <tr key={produit.id}>
                     <td className="font-semibold">{produit.designation}</td>
-                    <td>{formatPrice(produit.prix_unitaire)} FCFA</td>
+                    <td>
+                      {produit.prix_unitaire > 0 ? (
+                        `${formatPrice(produit.prix_unitaire)} FCFA`
+                      ) : (
+                        <span className="badge badge-warning">À fixer</span>
+                      )}
+                    </td>
                     <td>{produit.unite}</td>
                     <td>{produit.description || '-'}</td>
                     <td>
@@ -214,26 +298,24 @@ const Produits = () => {
 
           <div className="form-row">
             <div className="form-group">
-              <label>Prix unitaire * (FCFA)</label>
+              <label>Prix unitaire (FCFA)</label>
               <input
                 type="number"
                 name="prix_unitaire"
                 value={formData.prix_unitaire}
                 onChange={handleInputChange}
-                required
                 min="0"
                 step="0.01"
-                placeholder="Ex: 1500"
+                placeholder="Optionnel — à fixer selon le client"
               />
             </div>
 
             <div className="form-group">
-              <label>Unité *</label>
+              <label>Unité</label>
               <select
                 name="unite"
                 value={formData.unite}
                 onChange={handleInputChange}
-                required
               >
                 <option value="Unité">Unité</option>
                 <option value="Pièce">Pièce</option>

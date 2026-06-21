@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getAll: () => ipcRenderer.invoke('bordereaux:getAll'),
     getById: (id) => ipcRenderer.invoke('bordereaux:getById', id),
     createFromFacture: (factureId) => ipcRenderer.invoke('bordereaux:createFromFacture', factureId),
+    createFromProforma: (proformaId, createFacture) => ipcRenderer.invoke('bordereaux:createFromProforma', proformaId, createFacture),
     delete: (id) => ipcRenderer.invoke('bordereaux:delete', id)
   },
 
@@ -57,6 +58,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   parametres: {
     getAll: () => ipcRenderer.invoke('parametres:getAll'),
     update: (cle, valeur) => ipcRenderer.invoke('parametres:update', cle, valeur)
+  },
+
+  // SECURITE (mot de passe de l'application)
+  security: {
+    getStatus: () => ipcRenderer.invoke('security:getStatus'),
+    setPassword: (data) => ipcRenderer.invoke('security:setPassword', data),
+    verify: (password) => ipcRenderer.invoke('security:verify', password),
+    disable: (currentPassword) => ipcRenderer.invoke('security:disable', currentPassword)
   },
   
   // STATISTIQUES

@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const Database = require('better-sqlite3');
 
 // Désactive l'accélération matérielle (évite que la fenêtre reste invisible
@@ -24,6 +25,7 @@ function initDatabase() {
       telephone TEXT,
       email TEXT,
       nif TEXT,
+      tva_applicable INTEGER DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -130,6 +132,11 @@ function initDatabase() {
       cle TEXT PRIMARY KEY,
       valeur TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS securite (
+      cle TEXT PRIMARY KEY,
+      valeur TEXT
+    );
   `);
 
   // Migration : ajout des colonnes de suivi du paiement et de la TVA
@@ -149,10 +156,16 @@ function initDatabase() {
   }
 
   // Insertion des paramètres par défaut (informations de l'entreprise)
+  const clientCols = db.prepare("PRAGMA table_info(clients)").all().map((c) => c.name);
+  if (!clientCols.includes('tva_applicable')) {
+    db.exec("ALTER TABLE clients ADD COLUMN tva_applicable INTEGER DEFAULT 1");
+  }
   const checkParams = db.prepare('SELECT COUNT(*) as count FROM parametres').get();
   if (checkParams.count === 0) {
     const insertParam = db.prepare('INSERT INTO parametres (cle, valeur) VALUES (?, ?)');
-    insertParam.run('entreprise_nom', 'In-Tel Services');
+    insertParam.run('entreprise_nom', 'IN-TEL SERVICES');
+    insertParam.run('entreprise_slogan1', 'Solutions Réseaux • Télécommunications');
+    insertParam.run('entreprise_slogan2', 'Sécurité Électronique • Énergie');
     insertParam.run('entreprise_rccm', 'TG-LOM 2013 A 6170');
     insertParam.run('entreprise_nif', '1000278436');
     insertParam.run('entreprise_tel', '+228 22 51 66 86');
@@ -160,10 +173,29 @@ function initDatabase() {
     insertParam.run('entreprise_adresse', '04BP144 LOME ADIDOGOME-TOGO');
     insertParam.run('entreprise_email', 'infos_its@gmail.com');
     insertParam.run('entreprise_utb', '010350245170210119');
+    insertParam.run('entreprise_slogan_pied1', 'Votre partenaire en réseaux informatiques,');
+    insertParam.run('entreprise_slogan_pied2', 'télécommunications et sécurité électronique.');
     insertParam.run('tva_taux', '18');
     insertParam.run('proforma_compteur', '5');
     insertParam.run('facture_compteur', '17');
     insertParam.run('bordereau_compteur', '4');
+  }
+
+  // Ajoute les paramètres manquants pour les bases déjà existantes
+  // (ex. slogans ajoutés après coup), sans écraser les valeurs saisies.
+  const ensureParam = db.prepare('INSERT OR IGNORE INTO parametres (cle, valeur) VALUES (?, ?)');
+  ensureParam.run('entreprise_slogan1', 'Solutions Réseaux • Télécommunications');
+  ensureParam.run('entreprise_slogan2', 'Sécurité Électronique • Énergie');
+  ensureParam.run('entreprise_slogan_pied1', 'Votre partenaire en réseaux informatiques,');
+  ensureParam.run('entreprise_slogan_pied2', 'télécommunications et sécurité électronique.');
+
+  // Valeurs de sécurité par défaut (mot de passe désactivé au départ)
+  const checkSecu = db.prepare('SELECT COUNT(*) as count FROM securite').get();
+  if (checkSecu.count === 0) {
+    const insertSecu = db.prepare('INSERT INTO securite (cle, valeur) VALUES (?, ?)');
+    insertSecu.run('enabled', '0');
+    insertSecu.run('hash', '');
+    insertSecu.run('salt', '');
   }
 
   console.log('Base de données initialisée:', dbPath);
@@ -249,6 +281,51 @@ app.on('window-all-closed', () => {
   }
 });
 
+// ===== Sécurité : hachage du mot de passe (scrypt + sel) =====
+
+function hashPassword(password, salt) {
+  // scrypt : dérivation lente et salée, adaptée au stockage de mots de passe
+  return crypto.scryptSync(String(password), salt, 64).toString('hex');
+}
+
+function getSecurite() {
+  const rows = db.prepare('SELECT cle, valeur FROM securite').all();
+  return rows.reduce((acc, r) => {
+    acc[r.cle] = r.valeur;
+    return acc;
+  }, {});
+}
+
+function setSecurite(cle, valeur) {
+  const exists = db.prepare('SELECT 1 FROM securite WHERE cle = ?').get(cle);
+  if (exists) {
+    db.prepare('UPDATE securite SET valeur = ? WHERE cle = ?').run(valeur, cle);
+  } else {
+    db.prepare('INSERT INTO securite (cle, valeur) VALUES (?, ?)').run(cle, valeur);
+  }
+}
+
+// ===== Numérotation des documents =====
+// Génère un numéro libre à partir du compteur stocké : part de (compteur + 1)
+// et saute automatiquement tout numéro déjà utilisé dans la table donnée,
+// afin d'éviter les conflits (ex. compteur remis à 0 alors que des numéros
+// existent déjà). Renvoie le numéro formaté ET le compteur retenu.
+function genererNumero(table, compteurCle, annee) {
+  const row = db.prepare('SELECT valeur FROM parametres WHERE cle = ?').get(compteurCle);
+  let compteur = parseInt(row && row.valeur, 10);
+  if (Number.isNaN(compteur)) compteur = 0;
+
+  const existeStmt = db.prepare(`SELECT 1 FROM ${table} WHERE numero = ?`);
+
+  let numero;
+  do {
+    compteur += 1;
+    numero = `${annee}/${compteur.toString().padStart(5, '0')}-ITS`;
+  } while (existeStmt.get(numero));
+
+  return { numero, compteur };
+}
+
 // ===== IPC Handlers pour les opérations de base de données =====
 
 // CLIENTS
@@ -262,20 +339,35 @@ ipcMain.handle('clients:getById', (event, id) => {
 
 ipcMain.handle('clients:create', (event, client) => {
   const stmt = db.prepare(`
-    INSERT INTO clients (nom, adresse, telephone, email, nif)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO clients (nom, adresse, telephone, email, nif, tva_applicable)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
-  const result = stmt.run(client.nom, client.adresse, client.telephone, client.email, client.nif);
+  const result = stmt.run(
+    client.nom,
+    client.adresse,
+    client.telephone,
+    client.email,
+    client.nif,
+    client.tva_applicable ? 1 : 0
+  );
   return { id: result.lastInsertRowid };
 });
 
 ipcMain.handle('clients:update', (event, id, client) => {
   const stmt = db.prepare(`
     UPDATE clients 
-    SET nom = ?, adresse = ?, telephone = ?, email = ?, nif = ?, updated_at = CURRENT_TIMESTAMP
+    SET nom = ?, adresse = ?, telephone = ?, email = ?, nif = ?, tva_applicable = ?, updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `);
-  stmt.run(client.nom, client.adresse, client.telephone, client.email, client.nif, id);
+  stmt.run(
+    client.nom,
+    client.adresse,
+    client.telephone,
+    client.email,
+    client.nif,
+    client.tva_applicable ? 1 : 0,
+    id
+  );
   return { success: true };
 });
 
@@ -339,8 +431,15 @@ ipcMain.handle('parametres:getAll', () => {
 });
 
 ipcMain.handle('parametres:update', (event, cle, valeur) => {
-  const stmt = db.prepare('UPDATE parametres SET valeur = ? WHERE cle = ?');
-  stmt.run(valeur, cle);
+  // Upsert : met à jour la clé, ou la crée si elle n'existe pas encore.
+  // On force une chaîne (la colonne est NOT NULL) pour éviter toute erreur
+  // si une valeur arrive à null/undefined.
+  const val = valeur === null || valeur === undefined ? '' : String(valeur);
+  const stmt = db.prepare(`
+    INSERT INTO parametres (cle, valeur) VALUES (?, ?)
+    ON CONFLICT(cle) DO UPDATE SET valeur = excluded.valeur
+  `);
+  stmt.run(cle, val);
   return { success: true };
 });
 
@@ -357,7 +456,8 @@ ipcMain.handle('proformas:getAll', () => {
 
 ipcMain.handle('proformas:getById', (event, id) => {
   const proforma = db.prepare(`
-    SELECT p.*, c.nom as client_nom, c.adresse as client_adresse
+    SELECT p.*, c.nom as client_nom, c.adresse as client_adresse,
+           c.telephone as client_telephone, c.email as client_email, c.nif as client_nif
     FROM proformas p
     LEFT JOIN clients c ON p.client_id = c.id
     WHERE p.id = ?
@@ -375,11 +475,10 @@ ipcMain.handle('proformas:getById', (event, id) => {
 
 ipcMain.handle('proformas:create', (event, proforma) => {
   const transaction = db.transaction((data) => {
-    // Générer le numéro (année basée sur la date du document)
-    const params = db.prepare('SELECT valeur FROM parametres WHERE cle = ?').get('proforma_compteur');
-    const compteur = parseInt(params.valeur) + 1;
+    // Générer le numéro (année basée sur la date du document),
+    // en sautant les numéros déjà utilisés.
     const annee = new Date(data.date).getFullYear() || new Date().getFullYear();
-    const numero = `${annee}/${compteur.toString().padStart(5, '0')}-ITS`;
+    const { numero, compteur } = genererNumero('proformas', 'proforma_compteur', annee);
     
     // Créer la proforma
     const stmt = db.prepare(`
@@ -505,7 +604,8 @@ ipcMain.handle('factures:getAll', () => {
 
 ipcMain.handle('factures:getById', (event, id) => {
   const facture = db.prepare(`
-    SELECT f.*, c.nom as client_nom, c.adresse as client_adresse
+    SELECT f.*, c.nom as client_nom, c.adresse as client_adresse,
+           c.telephone as client_telephone, c.email as client_email, c.nif as client_nif
     FROM factures f
     LEFT JOIN clients c ON f.client_id = c.id
     WHERE f.id = ?
@@ -527,10 +627,8 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId) => {
     const proforma = db.prepare('SELECT * FROM proformas WHERE id = ?').get(pId);
     const lignes = db.prepare('SELECT * FROM proforma_lignes WHERE proforma_id = ?').all(pId);
     
-    // Générer le numéro de facture (année courante)
-    const params = db.prepare('SELECT valeur FROM parametres WHERE cle = ?').get('facture_compteur');
-    const compteur = parseInt(params.valeur) + 1;
-    const numero = `${new Date().getFullYear()}/${compteur.toString().padStart(5, '0')}-ITS`;
+    // Générer le numéro de facture (année courante), en sautant les numéros déjà utilisés.
+    const { numero, compteur } = genererNumero('factures', 'facture_compteur', new Date().getFullYear());
     
     // Créer la facture
     const stmt = db.prepare(`
@@ -629,10 +727,10 @@ ipcMain.handle('factures:markUnpaid', (event, id) => {
 // SUIVI DE LA TVA (OTR)
 ipcMain.handle('tva:getStats', () => {
   const nonVersee = db.prepare(
-    "SELECT COALESCE(SUM(tva), 0) as total, COUNT(*) as count FROM factures WHERE statut_paiement = 'payee' AND tva_versee = 0"
+    "SELECT COALESCE(SUM(tva), 0) as total, COUNT(*) as count FROM factures WHERE statut_paiement = 'payee' AND tva_versee = 0 AND tva > 0"
   ).get();
   const versee = db.prepare(
-    "SELECT COALESCE(SUM(tva), 0) as total, COUNT(*) as count FROM factures WHERE tva_versee = 1"
+    "SELECT COALESCE(SUM(tva), 0) as total, COUNT(*) as count FROM factures WHERE tva_versee = 1 AND tva > 0"
   ).get();
 
   // Factures payées dont la TVA n'est pas encore versée
@@ -640,7 +738,7 @@ ipcMain.handle('tva:getStats', () => {
     SELECT f.id, f.numero, f.date, f.date_paiement, f.tva, f.total_ttc, c.nom as client_nom
     FROM factures f
     LEFT JOIN clients c ON f.client_id = c.id
-    WHERE f.statut_paiement = 'payee' AND f.tva_versee = 0
+    WHERE f.statut_paiement = 'payee' AND f.tva_versee = 0 AND f.tva > 0
     ORDER BY f.date_paiement
   `).all();
 
@@ -649,7 +747,7 @@ ipcMain.handle('tva:getStats', () => {
     SELECT f.id, f.numero, f.date, f.date_versement_tva, f.tva, f.total_ttc, c.nom as client_nom
     FROM factures f
     LEFT JOIN clients c ON f.client_id = c.id
-    WHERE f.tva_versee = 1
+    WHERE f.tva_versee = 1 AND f.tva > 0
     ORDER BY f.date_versement_tva DESC
   `).all();
 
@@ -696,7 +794,8 @@ ipcMain.handle('bordereaux:getAll', () => {
 
 ipcMain.handle('bordereaux:getById', (event, id) => {
   const bordereau = db.prepare(`
-    SELECT b.*, c.nom as client_nom, c.adresse as client_adresse
+    SELECT b.*, c.nom as client_nom, c.adresse as client_adresse,
+           c.telephone as client_telephone, c.email as client_email, c.nif as client_nif
     FROM bordereaux b
     LEFT JOIN clients c ON b.client_id = c.id
     WHERE b.id = ?
@@ -718,10 +817,8 @@ ipcMain.handle('bordereaux:createFromFacture', (event, factureId) => {
     const facture = db.prepare('SELECT * FROM factures WHERE id = ?').get(fId);
     const lignes = db.prepare('SELECT * FROM facture_lignes WHERE facture_id = ?').all(fId);
     
-    // Générer le numéro de bordereau (année courante)
-    const params = db.prepare('SELECT valeur FROM parametres WHERE cle = ?').get('bordereau_compteur');
-    const compteur = parseInt(params.valeur) + 1;
-    const numero = `${new Date().getFullYear()}/${compteur.toString().padStart(5, '0')}-ITS`;
+    // Générer le numéro de bordereau (année courante), en sautant les numéros déjà utilisés.
+    const { numero, compteur } = genererNumero('bordereaux', 'bordereau_compteur', new Date().getFullYear());
     
     // Créer le bordereau
     const stmt = db.prepare(`
@@ -762,6 +859,102 @@ ipcMain.handle('bordereaux:createFromFacture', (event, factureId) => {
   });
   
   return transaction(factureId);
+});
+
+ipcMain.handle('bordereaux:createFromProforma', (event, proformaId, createFacture) => {
+  const transaction = db.transaction((pId, withFacture) => {
+    const proforma = db.prepare('SELECT * FROM proformas WHERE id = ?').get(pId);
+    if (!proforma) {
+      throw new Error('Proforma introuvable.');
+    }
+
+    let factureResult = null;
+    if (withFacture) {
+      const { numero: factureNumero, compteur: factureCompteur } = genererNumero('factures', 'facture_compteur', new Date().getFullYear());
+      const factureStmt = db.prepare(`
+        INSERT INTO factures (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, proforma_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const factureInsert = factureStmt.run(
+        factureNumero,
+        new Date().toISOString().split('T')[0],
+        proforma.client_id,
+        proforma.objet,
+        proforma.total_materiel_ht || 0,
+        proforma.prestations || 0,
+        proforma.remise || 0,
+        proforma.total_ht,
+        proforma.tva,
+        proforma.total_ttc,
+        pId
+      );
+      const factureId = factureInsert.lastInsertRowid;
+
+      const factureLignes = db.prepare('SELECT * FROM proforma_lignes WHERE proforma_id = ?').all(pId);
+      const factLigneStmt = db.prepare(`
+        INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      factureLignes.forEach((ligne, index) => {
+        factLigneStmt.run(
+          factureId,
+          ligne.produit_id,
+          ligne.designation,
+          ligne.unite,
+          ligne.quantite,
+          ligne.prix_unitaire,
+          ligne.montant,
+          index
+        );
+      });
+
+      db.prepare('UPDATE proformas SET statut = ?, facture_id = ? WHERE id = ?').run('facturee', factureId, pId);
+      db.prepare('UPDATE parametres SET valeur = ? WHERE cle = ?').run(factureCompteur.toString(), 'facture_compteur');
+      factureResult = { id: factureId, numero: factureNumero };
+    }
+
+    const { numero: bordereauNumero, compteur: bordereauCompteur } = genererNumero('bordereaux', 'bordereau_compteur', new Date().getFullYear());
+    const bordereauStmt = db.prepare(`
+      INSERT INTO bordereaux (numero, date, client_id, facture_id)
+      VALUES (?, ?, ?, ?)
+    `);
+    const bordereauInsert = bordereauStmt.run(
+      bordereauNumero,
+      new Date().toISOString().split('T')[0],
+      proforma.client_id,
+      factureResult ? factureResult.id : null
+    );
+    const bordereauId = bordereauInsert.lastInsertRowid;
+
+    const bordereauLigneStmt = db.prepare(`
+      INSERT INTO bordereau_lignes (bordereau_id, designation, quantite, ordre)
+      VALUES (?, ?, ?, ?)
+    `);
+    const proformaLignes = db.prepare('SELECT * FROM proforma_lignes WHERE proforma_id = ?').all(pId);
+    proformaLignes.forEach((ligne, index) => {
+      bordereauLigneStmt.run(
+        bordereauId,
+        ligne.designation,
+        ligne.quantite,
+        index
+      );
+    });
+
+    if (factureResult) {
+      db.prepare('UPDATE factures SET bordereau_id = ? WHERE id = ?').run(bordereauId, factureResult.id);
+    }
+
+    db.prepare('UPDATE parametres SET valeur = ? WHERE cle = ?').run(bordereauCompteur.toString(), 'bordereau_compteur');
+
+    return {
+      bordereauId,
+      bordereauNumero,
+      factureId: factureResult ? factureResult.id : null,
+      factureNumero: factureResult ? factureResult.numero : null
+    };
+  });
+
+  return transaction(proformaId, createFacture);
 });
 
 ipcMain.handle('bordereaux:delete', (event, id) => {
@@ -873,6 +1066,83 @@ ipcMain.handle('database:restore', async () => {
   db.close();
   fs.copyFileSync(source, dbPath);
   db = new Database(dbPath);
+
+  return { success: true };
+});
+
+// ===== SECURITE (mot de passe de l'application) =====
+
+// Renvoie l'état : le mot de passe est-il activé ?
+ipcMain.handle('security:getStatus', () => {
+  const s = getSecurite();
+  return {
+    enabled: s.enabled === '1',
+    hasPassword: !!(s.hash && s.salt)
+  };
+});
+
+// Définit (ou redéfinit) le mot de passe et active la protection.
+// Si un mot de passe existe déjà, l'ancien doit être fourni et correct.
+ipcMain.handle('security:setPassword', (event, { currentPassword, newPassword }) => {
+  if (!newPassword || String(newPassword).length < 4) {
+    throw new Error('Le mot de passe doit contenir au moins 4 caractères.');
+  }
+
+  const s = getSecurite();
+  const hasPassword = !!(s.hash && s.salt);
+
+  // Vérifier l'ancien mot de passe si un mot de passe est déjà défini
+  if (hasPassword) {
+    if (!currentPassword) {
+      throw new Error('Veuillez saisir le mot de passe actuel.');
+    }
+    const currentHash = hashPassword(currentPassword, s.salt);
+    if (currentHash !== s.hash) {
+      throw new Error('Le mot de passe actuel est incorrect.');
+    }
+  }
+
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = hashPassword(newPassword, salt);
+
+  setSecurite('salt', salt);
+  setSecurite('hash', hash);
+  setSecurite('enabled', '1');
+
+  return { success: true };
+});
+
+// Vérifie un mot de passe (écran de verrouillage).
+ipcMain.handle('security:verify', (event, password) => {
+  const s = getSecurite();
+  if (!(s.hash && s.salt)) {
+    return { success: true }; // pas de mot de passe défini
+  }
+  const hash = hashPassword(password, s.salt);
+  if (hash !== s.hash) {
+    throw new Error('Mot de passe incorrect.');
+  }
+  return { success: true };
+});
+
+// Désactive (et supprime) le mot de passe après vérification.
+ipcMain.handle('security:disable', (event, currentPassword) => {
+  const s = getSecurite();
+  const hasPassword = !!(s.hash && s.salt);
+
+  if (hasPassword) {
+    if (!currentPassword) {
+      throw new Error('Veuillez saisir le mot de passe actuel.');
+    }
+    const currentHash = hashPassword(currentPassword, s.salt);
+    if (currentHash !== s.hash) {
+      throw new Error('Le mot de passe actuel est incorrect.');
+    }
+  }
+
+  setSecurite('enabled', '0');
+  setSecurite('hash', '');
+  setSecurite('salt', '');
 
   return { success: true };
 });

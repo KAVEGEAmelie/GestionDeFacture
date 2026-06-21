@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Eye, Trash2, FileText, DollarSign, Printer, Download, PackagePlus, Search, Edit2 } from 'lucide-react';
+import { Plus, Eye, Trash2, FileText, DollarSign, Printer, Download, PackagePlus, Edit2, X, Truck } from 'lucide-react';
 import Modal from '../components/modals/Modal';
+import FilterBar from '../components/Filters/FilterBar';
+import PeriodFilter from '../components/Filters/PeriodFilter';
+import { inDateRange, inNumberRange } from '../utils/dateFilters';
 import { generateProformaPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
@@ -14,6 +17,10 @@ const Proformas = () => {
   const [proformas, setProformas] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [statutFilter, setStatutFilter] = useState('tous');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [montantMin, setMontantMin] = useState('');
+  const [montantMax, setMontantMax] = useState('');
   const [clients, setClients] = useState([]);
   const [produits, setProduits] = useState([]);
   const [parametres, setParametres] = useState({});
@@ -22,6 +29,15 @@ const Proformas = () => {
   const [selectedProforma, setSelectedProforma] = useState(null);
   const [editingProforma, setEditingProforma] = useState(null);
   const [addProductModalOpen, setAddProductModalOpen] = useState(false);
+  const [showLigneForm, setShowLigneForm] = useState(false);
+  const [ligneFormData, setLigneFormData] = useState({
+    produit_id: '',
+    designation: '',
+    unite: 'Unité',
+    quantite: 1,
+    prix_unitaire: '',
+    montant: 0
+  });
   const [newProduct, setNewProduct] = useState({
     designation: '',
     prix_unitaire: '',
@@ -32,7 +48,7 @@ const Proformas = () => {
   const [formData, setFormData] = useState({
     date: new Date().toISOString().split('T')[0],
     client_id: '',
-    objet: 'Consommables informatiques',
+    objet: '',
     prestations: 0,
     remise: 0,
     lignes: []
@@ -55,18 +71,63 @@ const Proformas = () => {
     setParametres(parametresData);
   };
 
+  const resetLigneForm = () => {
+    setLigneFormData({
+      produit_id: '',
+      designation: '',
+      unite: 'Unité',
+      quantite: 1,
+      prix_unitaire: '',
+      montant: 0
+    });
+  };
+
+  const handleOpenLigneForm = () => {
+    resetLigneForm();
+    setShowLigneForm(true);
+  };
+
+  const handleCloseLigneForm = () => {
+    setShowLigneForm(false);
+    resetLigneForm();
+  };
+
+  const handleLigneFormChange = (field, value) => {
+    const updated = { ...ligneFormData, [field]: value };
+
+    if (field === 'produit_id' && value) {
+      const produit = produits.find(p => p.id === parseInt(value));
+      if (produit) {
+        updated.designation = produit.designation;
+        updated.unite = produit.unite;
+        updated.prix_unitaire = produit.prix_unitaire || '';
+      }
+    }
+
+    const quantite = parseFloat(updated.quantite) || 0;
+    const prixUnitaire = parseFloat(updated.prix_unitaire) || 0;
+    updated.montant = quantite * prixUnitaire;
+
+    setLigneFormData(updated);
+  };
+
   const handleAddLigne = () => {
+    const quantite = parseFloat(ligneFormData.quantite) || 0;
+    const prixUnitaire = parseFloat(ligneFormData.prix_unitaire) || 0;
+    const montant = quantite * prixUnitaire;
+
     setFormData({
       ...formData,
       lignes: [...formData.lignes, {
-        produit_id: '',
-        designation: '',
-        unite: 'Unité',
-        quantite: 1,
-        prix_unitaire: 0,
-        montant: 0
+        produit_id: ligneFormData.produit_id ? parseInt(ligneFormData.produit_id) : '',
+        designation: ligneFormData.designation,
+        unite: ligneFormData.unite,
+        quantite,
+        prix_unitaire: prixUnitaire,
+        montant
       }]
     });
+    handleCloseLigneForm();
   };
 
   const handleRemoveLigne = (index) => {
@@ -101,10 +162,12 @@ const Proformas = () => {
     const prestations = parseFloat(formData.prestations) || 0;
     const remise = parseFloat(formData.remise) || 0;
     const total_ht = total_materiel_ht + prestations - remise;
+    const client = clients.find((c) => String(c.id) === String(formData.client_id));
+    const tvaApplicable = client ? client.tva_applicable === 1 : true;
     const tauxTVA = parseFloat(parametres.tva_taux) || 18;
-    const tva = total_ht * (tauxTVA / 100);
+    const tva = tvaApplicable ? total_ht * (tauxTVA / 100) : 0;
     const total_ttc = total_ht + tva;
-    return { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc };
+    return { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, tvaApplicable, tauxTVA };
   };
 
   const handleSubmit = async (e) => {
@@ -138,6 +201,7 @@ const Proformas = () => {
     };
 
     try {
+      let proformaResult;
       if (editingProforma) {
         await window.electronAPI.proformas.update(editingProforma.id, data);
         toast.success('Proforma modifiée avec succès !');
@@ -145,10 +209,42 @@ const Proformas = () => {
         await window.electronAPI.proformas.create(data);
         toast.success('Proforma créée avec succès !');
       }
+
       loadData();
       closeModal();
     } catch (error) {
       toast.error(getErrorMessage(error, 'Erreur lors de l\'enregistrement de la proforma.'));
+    }
+  };
+
+  const handleCreateBordereau = async (proforma) => {
+    const createFacture = await confirm({
+      title: 'Créer un bordereau',
+      message: 'Voulez-vous créer un bordereau à partir de cette proforma ? Vous pouvez également créer une facture en même temps.',
+      confirmText: 'Créer le bordereau',
+      danger: false,
+    });
+    if (!createFacture) return;
+
+    const createInvoice = await confirm({
+      title: 'Créer la facture maintenant ?',
+      message: 'Voulez-vous créer une facture en même temps que le bordereau ?',
+      confirmText: 'Créer la facture',
+      danger: false,
+    });
+
+    try {
+      const res = await window.electronAPI.bordereaux.createFromProforma(proforma.id, createInvoice);
+      if (res.bordereauNumero) {
+        toast.success(`Bordereau ${res.bordereauNumero} créé avec succès.`);
+      }
+      if (res.factureNumero) {
+        toast.success(`Facture ${res.factureNumero} créée avec succès.`);
+      }
+      loadData();
+    } catch (error) {
+      console.error('Erreur bordereau:', error);
+      toast.error(getErrorMessage(error, 'Erreur lors de la création du bordereau.'));
     }
   };
 
@@ -205,7 +301,7 @@ const Proformas = () => {
     try {
       await window.electronAPI.produits.create({
         ...newProduct,
-        prix_unitaire: parseFloat(newProduct.prix_unitaire)
+        prix_unitaire: parseFloat(newProduct.prix_unitaire) || 0
       });
       await loadData();
       toast.success('Produit ajouté avec succès.');
@@ -240,7 +336,7 @@ const Proformas = () => {
     setFormData({
       date: new Date().toISOString().split('T')[0],
       client_id: '',
-      objet: 'Consommables informatiques',
+      objet: '',
       prestations: 0,
       remise: 0,
       lignes: []
@@ -270,7 +366,7 @@ const Proformas = () => {
     return <span className={`badge ${badge.class}`}>{badge.label}</span>;
   };
 
-  const { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc } = calculateTotals();
+  const { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, tvaApplicable, tauxTVA } = calculateTotals();
 
   const filteredProformas = proformas.filter((p) => {
     const term = searchTerm.toLowerCase();
@@ -280,8 +376,23 @@ const Proformas = () => {
       (p.client_nom && p.client_nom.toLowerCase().includes(term)) ||
       (p.objet && p.objet.toLowerCase().includes(term));
     const matchStatut = statutFilter === 'tous' || p.statut === statutFilter;
-    return matchSearch && matchStatut;
+    const matchDate = inDateRange(p.date, dateFrom, dateTo);
+    const matchMontant = inNumberRange(p.total_ttc, montantMin, montantMax);
+    return matchSearch && matchStatut && matchDate && matchMontant;
   });
+
+  const activeCount =
+    (statutFilter !== 'tous' ? 1 : 0) +
+    (dateFrom || dateTo ? 1 : 0) +
+    (montantMin !== '' || montantMax !== '' ? 1 : 0);
+
+  const resetFilters = () => {
+    setStatutFilter('tous');
+    setDateFrom('');
+    setDateTo('');
+    setMontantMin('');
+    setMontantMax('');
+  };
 
   return (
     <div className="page fade-in">
@@ -297,24 +408,57 @@ const Proformas = () => {
       </div>
 
       <div className="content-card">
-        <div className="search-bar">
-          <Search size={20} />
-          <input
-            type="text"
-            placeholder="Rechercher par numéro, client ou objet..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+        <FilterBar
+          searchValue={searchTerm}
+          onSearchChange={setSearchTerm}
+          searchPlaceholder="Rechercher par numéro, client ou objet..."
+          activeCount={activeCount}
+          onReset={resetFilters}
+        >
+          <div className="filter-group">
+            <label>Statut</label>
+            <select
+              className="filter-select"
+              value={statutFilter}
+              onChange={(e) => setStatutFilter(e.target.value)}
+            >
+              <option value="tous">Tous les statuts</option>
+              <option value="en_attente">En attente</option>
+              <option value="facturee">Facturée</option>
+            </select>
+          </div>
+
+          <div className="filter-group">
+            <label>Montant TTC (FCFA)</label>
+            <div className="filter-range">
+              <input
+                type="number"
+                min="0"
+                placeholder="Min"
+                value={montantMin}
+                onChange={(e) => setMontantMin(e.target.value)}
+              />
+              <span>—</span>
+              <input
+                type="number"
+                min="0"
+                placeholder="Max"
+                value={montantMax}
+                onChange={(e) => setMontantMax(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <PeriodFilter
+            label="Date de la proforma"
+            from={dateFrom}
+            to={dateTo}
+            onChange={(f, t) => {
+              setDateFrom(f);
+              setDateTo(t);
+            }}
           />
-          <select
-            className="filter-select"
-            value={statutFilter}
-            onChange={(e) => setStatutFilter(e.target.value)}
-          >
-            <option value="tous">Tous les statuts</option>
-            <option value="en_attente">En attente</option>
-            <option value="facturee">Facturée</option>
-          </select>
-        </div>
+        </FilterBar>
 
         <div className="table-container">
           <table className="data-table">
@@ -369,6 +513,14 @@ const Proformas = () => {
                           title="Imprimer"
                         >
                           <Printer size={16} />
+                        </button>
+                        <button
+                          className="btn-icon btn-icon-info"
+                          onClick={() => handleCreateBordereau(proforma)}
+                          title="Créer un bordereau"
+                          disabled={proforma.statut === 'facturee'}
+                        >
+                          <Truck size={16} />
                         </button>
                         <button
                           className="btn-icon btn-icon-info"
@@ -435,13 +587,14 @@ const Proformas = () => {
               type="text"
               value={formData.objet}
               onChange={(e) => setFormData({ ...formData, objet: e.target.value })}
+              placeholder="Ex: Location de consommables informatiques"
               required
             />
           </div>
 
           <div className="form-row">
             <div className="form-group">
-              <label>Prestations (FCFA)</label>
+              <label>Main d'œuvre (FCFA)</label>
               <input
                 type="number"
                 value={formData.prestations}
@@ -469,7 +622,7 @@ const Proformas = () => {
             <div className="lignes-header">
               <h3>Lignes de la proforma</h3>
               <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={handleAddLigne}>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={handleOpenLigneForm}>
                   <Plus size={16} />
                   Ajouter une ligne
                 </button>
@@ -480,15 +633,24 @@ const Proformas = () => {
               </div>
             </div>
 
-            {formData.lignes.map((ligne, index) => (
-              <div key={index} className="ligne-item">
-                <div className="ligne-grid">
+            {showLigneForm && (
+              <div className="ligne-form-panel">
+                <div className="ligne-form-header">
+                  <div>
+                    <h4>Ajouter une ligne</h4>
+                    <p>Formulaire flottant pour entrer les détails sans descendre.</p>
+                  </div>
+                  <button type="button" className="btn-close-panel" onClick={handleCloseLigneForm}>
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <div className="ligne-form-grid">
                   <div className="form-group">
                     <label>Produit</label>
                     <select
-                      value={ligne.produit_id}
-                      onChange={(e) => handleLigneChange(index, 'produit_id', e.target.value)}
-                      required
+                      value={ligneFormData.produit_id}
+                      onChange={(e) => handleLigneFormChange('produit_id', e.target.value)}
                     >
                       <option value="">Sélectionner</option>
                       {produits.map(produit => (
@@ -501,31 +663,37 @@ const Proformas = () => {
                     <label>Désignation</label>
                     <input
                       type="text"
-                      value={ligne.designation}
-                      onChange={(e) => handleLigneChange(index, 'designation', e.target.value)}
-                      required
+                      value={ligneFormData.designation}
+                      onChange={(e) => handleLigneFormChange('designation', e.target.value)}
                     />
                   </div>
 
                   <div className="form-group">
                     <label>Unité</label>
-                    <input
-                      type="text"
-                      value={ligne.unite}
-                      onChange={(e) => handleLigneChange(index, 'unite', e.target.value)}
-                      required
-                    />
+                    <select
+                      value={ligneFormData.unite}
+                      onChange={(e) => handleLigneFormChange('unite', e.target.value)}
+                    >
+                      <option value="Unité">Unité</option>
+                      <option value="Gros">Gros</option>
+                      <option value="Lot">Lot</option>
+                      <option value="Pièce">Pièce</option>
+                      <option value="Kilogramme">Kilogramme</option>
+                      <option value="Mètre">Mètre</option>
+                      <option value="Litre">Litre</option>
+                      <option value="Heure">Heure</option>
+                      <option value="Jour">Jour</option>
+                    </select>
                   </div>
 
                   <div className="form-group">
                     <label>Quantité</label>
                     <input
                       type="number"
-                      value={ligne.quantite}
-                      onChange={(e) => handleLigneChange(index, 'quantite', e.target.value)}
+                      value={ligneFormData.quantite}
+                      onChange={(e) => handleLigneFormChange('quantite', e.target.value)}
                       min="0"
                       step="1"
-                      required
                     />
                   </div>
 
@@ -533,35 +701,133 @@ const Proformas = () => {
                     <label>Prix unitaire</label>
                     <input
                       type="number"
-                      value={ligne.prix_unitaire}
-                      onChange={(e) => handleLigneChange(index, 'prix_unitaire', e.target.value)}
+                      value={ligneFormData.prix_unitaire}
+                      onChange={(e) => handleLigneFormChange('prix_unitaire', e.target.value)}
                       min="0"
                       step="0.01"
-                      required
+                      placeholder="Optionnel"
                     />
                   </div>
 
                   <div className="form-group">
-                    <label>Montant</label>
+                    <label>Montant estimé</label>
                     <input
                       type="text"
-                      value={formatPrice(ligne.montant)}
+                      value={formatPrice(ligneFormData.montant)}
                       readOnly
                       className="readonly"
                     />
                   </div>
 
-                  <button
-                    type="button"
-                    className="btn-remove-ligne"
-                    onClick={() => handleRemoveLigne(index)}
-                    title="Supprimer"
-                  >
-                    <Trash2 size={18} />
-                  </button>
+                  <div className="ligne-form-actions">
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={handleCloseLigneForm}>
+                      Annuler
+                    </button>
+                    <button type="button" className="btn btn-primary btn-sm" onClick={handleAddLigne}>
+                      Ajouter
+                    </button>
+                  </div>
                 </div>
               </div>
-            ))}
+            )}
+
+            {formData.lignes.length === 0 ? (
+              <div className="ligne-empty-state">
+                Aucune ligne ajoutée pour le moment.
+              </div>
+            ) : (
+              <div className="ligne-table-wrapper">
+                <table className="data-table ligne-table">
+                  <thead>
+                    <tr>
+                      <th>Produit</th>
+                      <th>Désignation</th>
+                      <th>Unité</th>
+                      <th>Quantité</th>
+                      <th>Prix unitaire</th>
+                      <th>Montant</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {formData.lignes.map((ligne, index) => (
+                      <tr key={index}>
+                        <td>
+                          <select
+                            value={ligne.produit_id}
+                            onChange={(e) => handleLigneChange(index, 'produit_id', e.target.value)}
+                          >
+                            <option value="">Sélectionner</option>
+                            {produits.map(produit => (
+                              <option key={produit.id} value={produit.id}>{produit.designation}</option>
+                            ))}
+                          </select>
+                        </td>
+                        <td>
+                          <input
+                            type="text"
+                            value={ligne.designation}
+                            onChange={(e) => handleLigneChange(index, 'designation', e.target.value)}
+                          />
+                        </td>
+                        <td>
+                          <select
+                            value={ligne.unite}
+                            onChange={(e) => handleLigneChange(index, 'unite', e.target.value)}
+                          >
+                            <option value="Unité">Unité</option>
+                            <option value="Gros">Gros</option>
+                            <option value="Lot">Lot</option>
+                            <option value="Pièce">Pièce</option>
+                            <option value="Kilogramme">Kilogramme</option>
+                            <option value="Mètre">Mètre</option>
+                            <option value="Litre">Litre</option>
+                            <option value="Heure">Heure</option>
+                            <option value="Jour">Jour</option>
+                          </select>
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            value={ligne.quantite}
+                            onChange={(e) => handleLigneChange(index, 'quantite', e.target.value)}
+                            min="0"
+                            step="1"
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            value={ligne.prix_unitaire}
+                            onChange={(e) => handleLigneChange(index, 'prix_unitaire', e.target.value)}
+                            min="0"
+                            step="0.01"
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="text"
+                            value={formatPrice(ligne.montant)}
+                            readOnly
+                            className="readonly"
+                          />
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn-remove-ligne"
+                            onClick={() => handleRemoveLigne(index)}
+                            title="Supprimer"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           <div className="totaux-section">
@@ -571,7 +837,7 @@ const Proformas = () => {
                 <strong>{formatPrice(total_materiel_ht)} FCFA</strong>
               </div>
               <div className="totaux-item">
-                <span>Prestations :</span>
+                <span>Main d'œuvre :</span>
                 <strong>{formatPrice(prestations)} FCFA</strong>
               </div>
               <div className="totaux-item">
@@ -583,7 +849,7 @@ const Proformas = () => {
                 <strong>{formatPrice(total_ht)} FCFA</strong>
               </div>
               <div className="totaux-item">
-                <span>TVA ({parseFloat(parametres.tva_taux) || 18}%) :</span>
+                <span>TVA ({tvaApplicable ? tauxTVA : 0}%) :</span>
                 <strong>{formatPrice(tva)} FCFA</strong>
               </div>
               <div className="totaux-item total-ttc">
@@ -685,25 +951,33 @@ const Proformas = () => {
 
           <div className="form-row">
             <div className="form-group">
-              <label>Prix unitaire *</label>
+              <label>Prix unitaire (FCFA)</label>
               <input
                 type="number"
                 value={newProduct.prix_unitaire}
                 onChange={(e) => setNewProduct({ ...newProduct, prix_unitaire: e.target.value })}
                 min="0"
                 step="0.01"
-                required
+                placeholder="Optionnel — à fixer selon le client"
               />
             </div>
 
             <div className="form-group">
-              <label>Unité *</label>
-              <input
-                type="text"
+              <label>Unité</label>
+              <select
                 value={newProduct.unite}
                 onChange={(e) => setNewProduct({ ...newProduct, unite: e.target.value })}
-                required
-              />
+              >
+                <option value="Unité">Unité</option>
+                <option value="Gros">Gros</option>
+                <option value="Lot">Lot</option>
+                <option value="Pièce">Pièce</option>
+                <option value="Kilogramme">Kilogramme</option>
+                <option value="Mètre">Mètre</option>
+                <option value="Litre">Litre</option>
+                <option value="Heure">Heure</option>
+                <option value="Jour">Jour</option>
+              </select>
             </div>
           </div>
 

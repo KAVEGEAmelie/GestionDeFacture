@@ -1,8 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Landmark, Wallet, CheckCircle, Send } from 'lucide-react';
+import { Landmark, Wallet, CheckCircle, Send, FileDown, FileSpreadsheet, Printer } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import FilterBar from '../components/Filters/FilterBar';
+import PeriodFilter from '../components/Filters/PeriodFilter';
+import { inDateRange, inNumberRange } from '../utils/dateFilters';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import { generateTvaPDF } from '../utils/pdfGenerator';
 import './Clients.css';
 import './Proformas.css';
 import './Dashboard.css';
@@ -24,10 +29,26 @@ const Tva = () => {
   });
   const [selected, setSelected] = useState([]);
   const [activeTab, setActiveTab] = useState('a_verser');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [montantMin, setMontantMin] = useState('');
+  const [montantMax, setMontantMax] = useState('');
+  const [parametres, setParametres] = useState({});
 
   useEffect(() => {
     loadStats();
+    loadParametres();
   }, []);
+
+  const loadParametres = async () => {
+    try {
+      const params = await window.electronAPI.parametres.getAll();
+      setParametres(params || {});
+    } catch (error) {
+      // en-tête du rapport utilisera les valeurs par défaut
+    }
+  };
 
   const loadStats = async () => {
     if (!window.electronAPI || !window.electronAPI.tva) {
@@ -39,6 +60,34 @@ const Tva = () => {
     setSelected([]);
   };
 
+  const matchCommon = (f) => {
+    const term = searchTerm.toLowerCase().trim();
+    const matchSearch =
+      !term ||
+      (f.numero && f.numero.toLowerCase().includes(term)) ||
+      (f.client_nom && f.client_nom.toLowerCase().includes(term));
+    const matchMontant = inNumberRange(f.tva, montantMin, montantMax);
+    return matchSearch && matchMontant;
+  };
+
+  const filteredAVerser = stats.aVerser.filter(
+    (f) => matchCommon(f) && inDateRange(f.date_paiement, dateFrom, dateTo)
+  );
+  const filteredVersees = stats.versees.filter(
+    (f) => matchCommon(f) && inDateRange(f.date_versement_tva, dateFrom, dateTo)
+  );
+
+  const activeCount =
+    (dateFrom || dateTo ? 1 : 0) +
+    (montantMin !== '' || montantMax !== '' ? 1 : 0);
+
+  const resetFilters = () => {
+    setDateFrom('');
+    setDateTo('');
+    setMontantMin('');
+    setMontantMax('');
+  };
+
   const toggleSelect = (id) => {
     setSelected((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
@@ -46,14 +95,14 @@ const Tva = () => {
   };
 
   const toggleSelectAll = () => {
-    if (selected.length === stats.aVerser.length) {
+    if (selected.length === filteredAVerser.length) {
       setSelected([]);
     } else {
-      setSelected(stats.aVerser.map((f) => f.id));
+      setSelected(filteredAVerser.map((f) => f.id));
     }
   };
 
-  const totalSelectionne = stats.aVerser
+  const totalSelectionne = filteredAVerser
     .filter((f) => selected.includes(f.id))
     .reduce((sum, f) => sum + (f.tva || 0), 0);
 
@@ -74,6 +123,89 @@ const Tva = () => {
       loadStats();
     } catch (error) {
       toast.error(getErrorMessage(error, 'Erreur lors du versement de la TVA.'));
+    }
+  };
+
+  // Construit le rapport (lignes + totaux) de l'onglet actif
+  const buildRapport = () => {
+    const estAVerser = activeTab === 'a_verser';
+    const source = estAVerser ? filteredAVerser : filteredVersees;
+    const lignes = source.map((f) => ({
+      numero: f.numero,
+      client: f.client_nom,
+      date: estAVerser ? formatDate(f.date_paiement) : formatDate(f.date_versement_tva),
+      total_ttc: f.total_ttc || 0,
+      tva: f.tva || 0,
+    }));
+    const totalTtc = source.reduce((s, f) => s + (f.total_ttc || 0), 0);
+    const totalTva = source.reduce((s, f) => s + (f.tva || 0), 0);
+    return {
+      estAVerser,
+      titre: estAVerser ? 'RAPPORT TVA À REVERSER (OTR)' : 'RAPPORT TVA VERSÉE (OTR)',
+      sousTitre: (dateFrom || dateTo)
+        ? `Période : ${dateFrom ? formatDate(dateFrom) : '...'} au ${dateTo ? formatDate(dateTo) : '...'}`
+        : 'Toutes périodes',
+      dateLabel: estAVerser ? 'DATE PAIEMENT' : 'DATE VERSEMENT',
+      lignes,
+      totalTtc,
+      totalTva,
+    };
+  };
+
+  const handleExportPDF = async (impression = false) => {
+    const rapport = buildRapport();
+    if (rapport.lignes.length === 0) {
+      toast.error('Aucune donnée à exporter.');
+      return;
+    }
+    try {
+      const doc = await generateTvaPDF(rapport, parametres);
+      if (impression) {
+        doc.autoPrint();
+        window.open(doc.output('bloburl'), '_blank');
+      } else {
+        const suffixe = rapport.estAVerser ? 'a-reverser' : 'versee';
+        doc.save(`Rapport_TVA_${suffixe}_${new Date().toISOString().slice(0, 10)}.pdf`);
+        toast.success('Rapport PDF téléchargé.');
+      }
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la génération du PDF.'));
+    }
+  };
+
+  const handleExportExcel = () => {
+    const rapport = buildRapport();
+    if (rapport.lignes.length === 0) {
+      toast.error('Aucune donnée à exporter.');
+      return;
+    }
+    try {
+      const rows = rapport.lignes.map((l, i) => ({
+        'N°': i + 1,
+        'N° Facture': l.numero,
+        'Client': l.client,
+        [rapport.estAVerser ? 'Date paiement' : 'Date versement']: l.date,
+        'Montant TTC (FCFA)': Math.round(l.total_ttc),
+        'TVA (FCFA)': Math.round(l.tva),
+      }));
+      // Ligne de total
+      rows.push({
+        'N°': '',
+        'N° Facture': '',
+        'Client': '',
+        [rapport.estAVerser ? 'Date paiement' : 'Date versement']: 'TOTAL',
+        'Montant TTC (FCFA)': Math.round(rapport.totalTtc),
+        'TVA (FCFA)': Math.round(rapport.totalTva),
+      });
+      const ws = XLSX.utils.json_to_sheet(rows);
+      ws['!cols'] = [{ wch: 5 }, { wch: 16 }, { wch: 28 }, { wch: 16 }, { wch: 18 }, { wch: 16 }];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, rapport.estAVerser ? 'TVA à reverser' : 'TVA versée');
+      const suffixe = rapport.estAVerser ? 'a-reverser' : 'versee';
+      XLSX.writeFile(wb, `Rapport_TVA_${suffixe}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      toast.success('Rapport Excel téléchargé.');
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la génération du fichier Excel.'));
     }
   };
 
@@ -124,6 +256,45 @@ const Tva = () => {
 
       {/* Onglets */}
       <div className="content-card">
+        <FilterBar
+          searchValue={searchTerm}
+          onSearchChange={setSearchTerm}
+          searchPlaceholder="Rechercher par numéro de facture ou client..."
+          activeCount={activeCount}
+          onReset={resetFilters}
+        >
+          <div className="filter-group">
+            <label>Montant de TVA (FCFA)</label>
+            <div className="filter-range">
+              <input
+                type="number"
+                min="0"
+                placeholder="Min"
+                value={montantMin}
+                onChange={(e) => setMontantMin(e.target.value)}
+              />
+              <span>—</span>
+              <input
+                type="number"
+                min="0"
+                placeholder="Max"
+                value={montantMax}
+                onChange={(e) => setMontantMax(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <PeriodFilter
+            label={activeTab === 'a_verser' ? 'Date de paiement' : 'Date de versement'}
+            from={dateFrom}
+            to={dateTo}
+            onChange={(f, t) => {
+              setDateFrom(f);
+              setDateTo(t);
+            }}
+          />
+        </FilterBar>
+
         <div className="tva-tabs">
           <button
             className={`tva-tab ${activeTab === 'a_verser' ? 'active' : ''}`}
@@ -137,11 +308,25 @@ const Tva = () => {
           >
             TVA versée ({stats.nbVersee})
           </button>
+          <div className="tva-export-actions">
+            <button className="btn btn-secondary btn-sm" onClick={() => handleExportPDF(false)} title="Télécharger en PDF">
+              <FileDown size={16} />
+              PDF
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={handleExportExcel} title="Télécharger en Excel">
+              <FileSpreadsheet size={16} />
+              Excel
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={() => handleExportPDF(true)} title="Imprimer">
+              <Printer size={16} />
+              Imprimer
+            </button>
+          </div>
         </div>
 
         {activeTab === 'a_verser' ? (
           <>
-            {stats.aVerser.length > 0 && (
+            {filteredAVerser.length > 0 && (
               <div className="tva-actions-bar">
                 <span>
                   {selected.length} sélectionnée(s) — TVA : <strong>{formatFCFA(totalSelectionne)}</strong>
@@ -159,7 +344,7 @@ const Tva = () => {
                     <th style={{ width: '40px' }}>
                       <input
                         type="checkbox"
-                        checked={stats.aVerser.length > 0 && selected.length === stats.aVerser.length}
+                        checked={filteredAVerser.length > 0 && selected.length === filteredAVerser.length}
                         onChange={toggleSelectAll}
                       />
                     </th>
@@ -171,14 +356,14 @@ const Tva = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {stats.aVerser.length === 0 ? (
+                  {filteredAVerser.length === 0 ? (
                     <tr>
                       <td colSpan="6" className="empty-state">
                         Aucune TVA en attente de versement
                       </td>
                     </tr>
                   ) : (
-                    stats.aVerser.map((f) => (
+                    filteredAVerser.map((f) => (
                       <tr key={f.id}>
                         <td>
                           <input
@@ -219,7 +404,7 @@ const Tva = () => {
                     </td>
                   </tr>
                 ) : (
-                  stats.versees.map((f) => (
+                  filteredVersees.map((f) => (
                     <tr key={f.id}>
                       <td className="font-semibold">{f.numero}</td>
                       <td>{f.client_nom}</td>

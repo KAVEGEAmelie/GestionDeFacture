@@ -34,3 +34,6 @@ yarn-error.log*
 *.swp
 *.swo
 *~
+
+# Aperçus PDF temporaires (harness de test hors application)
+nouveau/_preview/

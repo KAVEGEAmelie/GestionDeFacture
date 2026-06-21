@@ -307,6 +307,43 @@
   line-height: 1.5;
 }
 
+.tva-toggle {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.tva-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-width: 110px;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: #fff;
+  color: var(--gray-800);
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.tva-option:hover {
+  border-color: var(--gray-500);
+}
+
+.tva-option.active {
+  background: var(--primary-color);
+  color: white;
+  border-color: var(--primary-color);
+  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.2);
+}
+
+.tva-option input {
+  display: none;
+}
+
 .form-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
