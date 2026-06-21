@@ -8,6 +8,7 @@ import { generateBordereauPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
 import './Clients.css';
 import './Proformas.css';
 
@@ -92,6 +93,18 @@ const Bordereaux = () => {
     setDateTo('');
   };
 
+  const selection = useBulkSelection(filteredBordereaux);
+  const handleBulkDelete = () =>
+    bulkDelete({
+      ids: selection.selectedIds,
+      deleteFn: (id) => window.electronAPI.bordereaux.delete(id),
+      confirm,
+      toast,
+      reload: loadData,
+      clear: selection.clear,
+      labels: { confirmTitle: 'Supprimer les bordereaux', singular: 'bordereau', plural: 'bordereaux' },
+    });
+
   return (
     <div className="page fade-in">
       <div className="page-header">
@@ -99,6 +112,14 @@ const Bordereaux = () => {
           <h1>Bordereaux de Livraison</h1>
           <p className="subtitle">Gérez vos bordereaux de livraison</p>
         </div>
+        {selection.count > 0 && (
+          <div className="header-actions">
+            <button className="btn btn-danger bulk-delete-btn" onClick={handleBulkDelete}>
+              <Trash2 size={18} />
+              Supprimer la sélection ({selection.count})
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="content-card">
@@ -123,6 +144,14 @@ const Bordereaux = () => {
           <table className="data-table">
             <thead>
               <tr>
+                <th className="select-col">
+                  <input
+                    type="checkbox"
+                    checked={selection.allSelected}
+                    onChange={selection.toggleAll}
+                    title="Tout sélectionner"
+                  />
+                </th>
                 <th>N°</th>
                 <th>Date</th>
                 <th>Client</th>
@@ -132,13 +161,21 @@ const Bordereaux = () => {
             <tbody>
               {filteredBordereaux.length === 0 ? (
                 <tr>
-                  <td colSpan="4" className="empty-state">
+                  <td colSpan="5" className="empty-state">
                     {searchTerm || activeCount > 0 ? 'Aucun bordereau trouvé' : 'Aucun bordereau enregistré'}
                   </td>
                 </tr>
               ) : (
                 filteredBordereaux.map((bordereau) => (
                   <tr key={bordereau.id}>
+                    <td className="select-col">
+                      <input
+                        type="checkbox"
+                        checked={selection.isSelected(bordereau.id)}
+                        onChange={() => selection.toggle(bordereau.id)}
+                        title="Sélectionner"
+                      />
+                    </td>
                     <td className="font-semibold">{bordereau.numero}</td>
                     <td>{formatDate(bordereau.date)}</td>
                     <td>{bordereau.client_nom}</td>

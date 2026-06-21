@@ -62,7 +62,7 @@ function initDatabase() {
     CREATE TABLE IF NOT EXISTS proforma_lignes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       proforma_id INTEGER NOT NULL,
-      produit_id INTEGER NOT NULL,
+      produit_id INTEGER,
       designation TEXT NOT NULL,
       unite TEXT NOT NULL,
       quantite REAL NOT NULL,
@@ -96,7 +96,7 @@ function initDatabase() {
     CREATE TABLE IF NOT EXISTS facture_lignes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       facture_id INTEGER NOT NULL,
-      produit_id INTEGER NOT NULL,
+      produit_id INTEGER,
       designation TEXT NOT NULL,
       unite TEXT NOT NULL,
       quantite REAL NOT NULL,
@@ -154,6 +154,59 @@ function initDatabase() {
   if (!factureCols.includes('date_versement_tva')) {
     db.exec("ALTER TABLE factures ADD COLUMN date_versement_tva DATE");
   }
+
+  // Migration : rendre produit_id nullable sur les lignes (permet la saisie
+  // libre d'une désignation sans produit du catalogue). SQLite ne permet pas
+  // de retirer une contrainte NOT NULL via ALTER : on reconstruit la table.
+  const rendreProduitIdNullable = (table) => {
+    const info = db.prepare(`PRAGMA table_info(${table})`).all();
+    const colProduit = info.find((c) => c.name === 'produit_id');
+    if (!colProduit || colProduit.notnull !== 1) return; // déjà nullable ou absente
+    const cols = info.map((c) => c.name).join(', ');
+    db.pragma('foreign_keys = OFF');
+    const migrer = db.transaction(() => {
+      db.exec(`ALTER TABLE ${table} RENAME TO ${table}_old`);
+      if (table === 'proforma_lignes') {
+        db.exec(`
+          CREATE TABLE proforma_lignes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            proforma_id INTEGER NOT NULL,
+            produit_id INTEGER,
+            designation TEXT NOT NULL,
+            unite TEXT NOT NULL,
+            quantite REAL NOT NULL,
+            prix_unitaire REAL NOT NULL,
+            montant REAL NOT NULL,
+            ordre INTEGER DEFAULT 0,
+            FOREIGN KEY (proforma_id) REFERENCES proformas(id) ON DELETE CASCADE,
+            FOREIGN KEY (produit_id) REFERENCES produits(id)
+          )
+        `);
+      } else {
+        db.exec(`
+          CREATE TABLE facture_lignes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            facture_id INTEGER NOT NULL,
+            produit_id INTEGER,
+            designation TEXT NOT NULL,
+            unite TEXT NOT NULL,
+            quantite REAL NOT NULL,
+            prix_unitaire REAL NOT NULL,
+            montant REAL NOT NULL,
+            ordre INTEGER DEFAULT 0,
+            FOREIGN KEY (facture_id) REFERENCES factures(id) ON DELETE CASCADE,
+            FOREIGN KEY (produit_id) REFERENCES produits(id)
+          )
+        `);
+      }
+      db.exec(`INSERT INTO ${table} (${cols}) SELECT ${cols} FROM ${table}_old`);
+      db.exec(`DROP TABLE ${table}_old`);
+    });
+    migrer();
+    db.pragma('foreign_keys = ON');
+  };
+  rendreProduitIdNullable('proforma_lignes');
+  rendreProduitIdNullable('facture_lignes');
 
   // Insertion des paramètres par défaut (informations de l'entreprise)
   const clientCols = db.prepare("PRAGMA table_info(clients)").all().map((c) => c.name);
@@ -510,7 +563,7 @@ ipcMain.handle('proformas:create', (event, proforma) => {
     data.lignes.forEach((ligne, index) => {
       stmtLigne.run(
         proformaId,
-        ligne.produit_id,
+        Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
         ligne.designation,
         ligne.unite,
         ligne.quantite,
@@ -565,7 +618,7 @@ ipcMain.handle('proformas:update', (event, id, data) => {
     payload.lignes.forEach((ligne, index) => {
       stmtLigne.run(
         id,
-        ligne.produit_id,
+        Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
         ligne.designation,
         ligne.unite,
         ligne.quantite,
@@ -621,7 +674,7 @@ ipcMain.handle('factures:getById', (event, id) => {
   return facture;
 });
 
-ipcMain.handle('factures:createFromProforma', (event, proformaId) => {
+ipcMain.handle('factures:createFromProforma', (event, proformaId, dateFacture) => {
   const transaction = db.transaction((pId) => {
     // Récupérer la proforma
     const proforma = db.prepare('SELECT * FROM proformas WHERE id = ?').get(pId);
@@ -630,6 +683,9 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId) => {
     // Générer le numéro de facture (année courante), en sautant les numéros déjà utilisés.
     const { numero, compteur } = genererNumero('factures', 'facture_compteur', new Date().getFullYear());
     
+    // Date de la facture : celle choisie par l'utilisateur, sinon aujourd'hui.
+    const dateValue = dateFacture || new Date().toISOString().split('T')[0];
+
     // Créer la facture
     const stmt = db.prepare(`
       INSERT INTO factures (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, proforma_id)
@@ -637,7 +693,7 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId) => {
     `);
     const result = stmt.run(
       numero,
-      new Date().toISOString().split('T')[0],
+      dateValue,
       proforma.client_id,
       proforma.objet,
       proforma.total_materiel_ht || 0,
@@ -660,7 +716,7 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId) => {
     lignes.forEach((ligne, index) => {
       stmtLigne.run(
         factureId,
-        ligne.produit_id,
+        Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
         ligne.designation,
         ligne.unite,
         ligne.quantite,

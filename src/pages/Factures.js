@@ -8,6 +8,7 @@ import { generateFacturePDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
 import './Clients.css';
 import './Proformas.css';
 import { useNavigate } from 'react-router-dom';
@@ -27,6 +28,7 @@ const Factures = () => {
   const [parametres, setParametres] = useState({});
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [convertModalOpen, setConvertModalOpen] = useState(false);
+  const [convertDate, setConvertDate] = useState(new Date().toISOString().split('T')[0]);
   const [selectedFacture, setSelectedFacture] = useState(null);
 
   useEffect(() => {
@@ -45,8 +47,12 @@ const Factures = () => {
   };
 
   const handleConvertProforma = async (proformaId) => {
+    if (!convertDate) {
+      toast.error('Veuillez choisir la date de la facture.');
+      return;
+    }
     try {
-      await window.electronAPI.factures.createFromProforma(proformaId);
+      await window.electronAPI.factures.createFromProforma(proformaId, convertDate);
       toast.success('Facture créée avec succès !');
       loadData();
       setConvertModalOpen(false);
@@ -184,6 +190,18 @@ const Factures = () => {
     setMontantMax('');
   };
 
+  const selection = useBulkSelection(filteredFactures);
+  const handleBulkDelete = () =>
+    bulkDelete({
+      ids: selection.selectedIds,
+      deleteFn: (id) => window.electronAPI.factures.delete(id),
+      confirm,
+      toast,
+      reload: loadData,
+      clear: selection.clear,
+      labels: { confirmTitle: 'Supprimer les factures', singular: 'facture', plural: 'factures' },
+    });
+
   return (
     <div className="page fade-in">
       <div className="page-header">
@@ -191,10 +209,18 @@ const Factures = () => {
           <h1>Factures Définitives</h1>
           <p className="subtitle">Gérez vos factures définitives</p>
         </div>
-        <button className="btn btn-primary" onClick={() => setConvertModalOpen(true)}>
-          <FileCheck size={20} />
-          Convertir une proforma
-        </button>
+        <div className="header-actions">
+          {selection.count > 0 && (
+            <button className="btn btn-danger bulk-delete-btn" onClick={handleBulkDelete}>
+              <Trash2 size={18} />
+              Supprimer la sélection ({selection.count})
+            </button>
+          )}
+          <button className="btn btn-primary" onClick={() => { setConvertDate(new Date().toISOString().split('T')[0]); setConvertModalOpen(true); }}>
+            <FileCheck size={20} />
+            Convertir une proforma
+          </button>
+        </div>
       </div>
 
       <div className="content-card">
@@ -253,6 +279,14 @@ const Factures = () => {
           <table className="data-table">
             <thead>
               <tr>
+                <th className="select-col">
+                  <input
+                    type="checkbox"
+                    checked={selection.allSelected}
+                    onChange={selection.toggleAll}
+                    title="Tout sélectionner"
+                  />
+                </th>
                 <th>N°</th>
                 <th>Date</th>
                 <th>Client</th>
@@ -265,13 +299,21 @@ const Factures = () => {
             <tbody>
               {filteredFactures.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="empty-state">
+                  <td colSpan="8" className="empty-state">
                     {searchTerm || activeCount > 0 ? 'Aucune facture trouvée' : 'Aucune facture enregistrée'}
                   </td>
                 </tr>
               ) : (
                 filteredFactures.map((facture) => (
                   <tr key={facture.id}>
+                    <td className="select-col">
+                      <input
+                        type="checkbox"
+                        checked={selection.isSelected(facture.id)}
+                        onChange={() => selection.toggle(facture.id)}
+                        title="Sélectionner"
+                      />
+                    </td>
                     <td className="font-semibold">{facture.numero}</td>
                     <td>{formatDate(facture.date)}</td>
                     <td>{facture.client_nom}</td>
@@ -356,7 +398,18 @@ const Factures = () => {
           {proformas.length === 0 ? (
             <p className="empty-message">Aucune proforma disponible pour conversion</p>
           ) : (
-            <table className="data-table">
+            <>
+              <div className="form-group" style={{ marginBottom: '1rem', maxWidth: '260px' }}>
+                <label htmlFor="convert-date">Date de la facture</label>
+                <input
+                  id="convert-date"
+                  type="date"
+                  className="form-control"
+                  value={convertDate}
+                  onChange={(e) => setConvertDate(e.target.value)}
+                />
+              </div>
+              <table className="data-table">
               <thead>
                 <tr>
                   <th>N°</th>
@@ -385,6 +438,7 @@ const Factures = () => {
                 ))}
               </tbody>
             </table>
+            </>
           )}
         </div>
       </Modal>

@@ -183,7 +183,7 @@ const drawPageFrame = (doc) => {
 };
 
 // --- En-tête commun (logo + identité + coordonnées + RCCM/NIF + filet) ---
-const drawHeader = async (doc, parametres) => {
+const drawHeader = async (doc, parametres, options = {}) => {
   const pageWidth = doc.internal.pageSize.getWidth();
   const contentLeft = MARGIN;
   const rightX = pageWidth - MARGIN;
@@ -234,8 +234,23 @@ const drawHeader = async (doc, parametres) => {
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
   doc.setTextColor(...COLORS.ink);
-  doc.text(`RCCM : ${parametres.entreprise_rccm || 'TG-LOM-2020-B-12345'}`, dividerX + 4, 27);
-  doc.text(`NIF : ${parametres.entreprise_nif || '1001304567'}`, dividerX + 4, 33);
+  if (options.vignette) {
+    // RCCM / NIF remontés pour laisser place au carré "vignette" en dessous
+    doc.text(`RCCM : ${parametres.entreprise_rccm || 'TG-LOM-2020-B-12345'}`, dividerX + 4, 20);
+    doc.text(`NIF : ${parametres.entreprise_nif || '1001304567'}`, dividerX + 4, 26);
+    // Carré "vignette" (emplacement du timbre fiscal), centré dans le bloc droit
+    const vSize = 20; // 2 cm × 2 cm
+    const vX = dividerX + (rightX - dividerX - vSize) / 2;
+    const vY = 28;
+    doc.setDrawColor(...COLORS.navySoft);
+    doc.setLineWidth(0.5);
+    doc.setLineDashPattern([1.2, 1.2], 0);
+    doc.rect(vX, vY, vSize, vSize, 'S');
+    doc.setLineDashPattern([], 0);
+  } else {
+    doc.text(`RCCM : ${parametres.entreprise_rccm || 'TG-LOM-2020-B-12345'}`, dividerX + 4, 27);
+    doc.text(`NIF : ${parametres.entreprise_nif || '1001304567'}`, dividerX + 4, 33);
+  }
 
   // Filet horizontal épais
   const ruleY = 53;
@@ -575,22 +590,6 @@ const drawNumDateRight = (doc, { label = 'N°', numero, date, rightX, y }) => {
   return y + 8;
 };
 
-// --- Cadre "Vignette" (timbre fiscal) : carré pointillé de 2 cm × 2 cm ---
-const drawVignetteBox = (doc, rightX, topY, availH) => {
-  const size = 20; // 2 cm × 2 cm
-  const x = rightX - size;
-  const y = topY + Math.max(0, (availH - size) / 2);
-
-  // Carré en pointillés (emplacement du timbre, sans libellé)
-  doc.setDrawColor(...COLORS.navySoft);
-  doc.setLineWidth(0.5);
-  doc.setLineDashPattern([1.2, 1.2], 0);
-  doc.rect(x, y, size, size, 'S');
-  doc.setLineDashPattern([], 0);
-
-  return y + size;
-};
-
 // --- Encadré "Conditions de paiement" (bas de la facture) ---
 const drawConditionsBox = (doc, x, y, w) => {
   const h = 24;
@@ -801,7 +800,7 @@ export const generateFacturePDF = async (facture, parametres) => {
   const tauxTVA = parametres.tva_taux || 18;
 
   drawPageFrame(doc);
-  const { contentLeft, rightX, headerBottom } = await drawHeader(doc, parametres);
+  const { contentLeft, rightX, headerBottom } = await drawHeader(doc, parametres, { vignette: true });
 
   // Titre
   let yPos = drawTitle(doc, 'FACTURE', headerBottom + 11);
@@ -810,11 +809,10 @@ export const generateFacturePDF = async (facture, parametres) => {
   const dateStr = formatDateLong(facture.date);
   drawNumDate(doc, { label: 'N°', numero: facture.numero, date: dateStr, centerX: pageWidth / 2, rightX, y: yPos + 6 });
 
-  // Client (gauche) + Vignette (droite)
+  // Client (gauche)
   const blockY = yPos + 24;
   const clientW = 92;
   const clientBottom = drawClientBox(doc, contentLeft, blockY, clientW, facture);
-  drawVignetteBox(doc, rightX, blockY + 3, clientBottom - (blockY + 3));
 
   // Objet en ligne, sous l'encadré client
   let objetY = clientBottom + 7;
@@ -846,6 +844,7 @@ export const generateFacturePDF = async (facture, parametres) => {
       { content: formatNumber(qteTotal), styles: { halign: 'center' } },
       '', ''
     ]],
+    showFoot: 'lastPage',
     theme: 'grid',
     headStyles: {
       fillColor: COLORS.navy, textColor: COLORS.white, fontStyle: 'bold',
@@ -864,7 +863,9 @@ export const generateFacturePDF = async (facture, parametres) => {
       5: { cellWidth: 33, halign: 'right' }
     },
     styles: { lineColor: COLORS.line, lineWidth: 0.15 },
-    margin: { left: MARGIN, right: MARGIN, bottom: 40 }
+    margin: { left: MARGIN, right: MARGIN, top: 18, bottom: 40 },
+    // Sur chaque page (y compris les pages de continuation) : bordure + pied de page
+    didDrawPage: () => { drawPageFrame(doc); drawFooter(doc, parametres); }
   });
 
   yPos = doc.lastAutoTable.finalY + 8;
@@ -882,6 +883,7 @@ export const generateFacturePDF = async (facture, parametres) => {
   if (yPos + blocBasH > pageHeight - 24) {
     doc.addPage();
     drawPageFrame(doc);
+    drawFooter(doc, parametres);
     yPos = 30;
   }
 
@@ -903,8 +905,7 @@ export const generateFacturePDF = async (facture, parametres) => {
   // Signature centrée sous les totaux
   drawSignature(doc, totalsX + totalsW / 2, Math.max(totalsBottom, yPos + wordsH) + 10);
 
-  // Pied de page commun
-  drawFooter(doc, parametres);
+  // (Le pied de page est dessiné sur chaque page via didDrawPage / la page de débordement)
 
   return doc;
 };
@@ -947,6 +948,7 @@ export const generateBordereauPDF = async (bordereau, parametres) => {
       { content: formatNumber(qteTotal), styles: { halign: 'center' } },
       ''
     ]],
+    showFoot: 'lastPage',
     theme: 'grid',
     headStyles: {
       fillColor: COLORS.navy, textColor: COLORS.white, fontStyle: 'bold',
@@ -963,7 +965,9 @@ export const generateBordereauPDF = async (bordereau, parametres) => {
       3: { cellWidth: 48 }
     },
     styles: { lineColor: COLORS.line, lineWidth: 0.15 },
-    margin: { left: MARGIN, right: MARGIN, bottom: 40 }
+    margin: { left: MARGIN, right: MARGIN, top: 18, bottom: 40 },
+    // Sur chaque page (y compris les pages de continuation) : bordure + pied de page
+    didDrawPage: () => { drawPageFrame(doc); drawFooter(doc, parametres); }
   });
 
   yPos = doc.lastAutoTable.finalY + 8;
@@ -979,6 +983,7 @@ export const generateBordereauPDF = async (bordereau, parametres) => {
   if (blocTop + blocBasH > footerTop - 2) {
     doc.addPage();
     drawPageFrame(doc);
+    drawFooter(doc, parametres);
     blocTop = Math.max(30, footerTop - 3 - blocBasH);
   }
 
@@ -990,8 +995,7 @@ export const generateBordereauPDF = async (bordereau, parametres) => {
   const annee = new Date(bordereau.date).getFullYear() || new Date().getFullYear();
   drawCertification(doc, contentLeft, rightX, obsBottom + gap, annee);
 
-  // Pied de page commun
-  drawFooter(doc, parametres);
+  // (Le pied de page est dessiné sur chaque page via didDrawPage / la page de débordement)
 
   return doc;
 };

@@ -7,6 +7,7 @@ import { inDateRange, inNumberRange } from '../utils/dateFilters';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
 import './Clients.css';
 
 const Produits = () => {
@@ -151,6 +152,18 @@ const Produits = () => {
     return new Intl.NumberFormat('fr-FR').format(price);
   };
 
+  const selection = useBulkSelection(filteredProduits);
+  const handleBulkDelete = () =>
+    bulkDelete({
+      ids: selection.selectedIds,
+      deleteFn: (id) => window.electronAPI.produits.delete(id),
+      confirm,
+      toast,
+      reload: loadProduits,
+      clear: selection.clear,
+      labels: { confirmTitle: 'Supprimer les produits', singular: 'produit', plural: 'produits' },
+    });
+
   return (
     <div className="page fade-in">
       <div className="page-header">
@@ -158,10 +171,18 @@ const Produits = () => {
           <h1>Gestion des Produits</h1>
           <p className="subtitle">Gérez votre catalogue de produits</p>
         </div>
-        <button className="btn btn-primary" onClick={openModal}>
-          <Plus size={20} />
-          Nouveau produit
-        </button>
+        <div className="header-actions">
+          {selection.count > 0 && (
+            <button className="btn btn-danger bulk-delete-btn" onClick={handleBulkDelete}>
+              <Trash2 size={18} />
+              Supprimer la sélection ({selection.count})
+            </button>
+          )}
+          <button className="btn btn-primary" onClick={openModal}>
+            <Plus size={20} />
+            Nouveau produit
+          </button>
+        </div>
       </div>
 
       <div className="content-card">
@@ -224,6 +245,14 @@ const Produits = () => {
           <table className="data-table">
             <thead>
               <tr>
+                <th className="select-col">
+                  <input
+                    type="checkbox"
+                    checked={selection.allSelected}
+                    onChange={selection.toggleAll}
+                    title="Tout sélectionner"
+                  />
+                </th>
                 <th>Désignation</th>
                 <th>Prix unitaire</th>
                 <th>Unité</th>
@@ -234,13 +263,21 @@ const Produits = () => {
             <tbody>
               {filteredProduits.length === 0 ? (
                 <tr>
-                  <td colSpan="5" className="empty-state">
+                  <td colSpan="6" className="empty-state">
                     {searchTerm || activeCount > 0 ? 'Aucun produit trouvé' : 'Aucun produit enregistré'}
                   </td>
                 </tr>
               ) : (
                 filteredProduits.map((produit) => (
                   <tr key={produit.id}>
+                    <td className="select-col">
+                      <input
+                        type="checkbox"
+                        checked={selection.isSelected(produit.id)}
+                        onChange={() => selection.toggle(produit.id)}
+                        title="Sélectionner"
+                      />
+                    </td>
                     <td className="font-semibold">{produit.designation}</td>
                     <td>
                       {produit.prix_unitaire > 0 ? (

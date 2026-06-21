@@ -8,6 +8,7 @@ import { generateProformaPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
 import './Clients.css';
 import './Proformas.css';
 
@@ -394,6 +395,18 @@ const Proformas = () => {
     setMontantMax('');
   };
 
+  const selection = useBulkSelection(filteredProformas);
+  const handleBulkDelete = () =>
+    bulkDelete({
+      ids: selection.selectedIds,
+      deleteFn: (id) => window.electronAPI.proformas.delete(id),
+      confirm,
+      toast,
+      reload: loadData,
+      clear: selection.clear,
+      labels: { confirmTitle: 'Supprimer les proformas', singular: 'proforma', plural: 'proformas' },
+    });
+
   return (
     <div className="page fade-in">
       <div className="page-header">
@@ -401,10 +414,18 @@ const Proformas = () => {
           <h1>Factures Proforma</h1>
           <p className="subtitle">Créez et gérez vos factures proforma</p>
         </div>
-        <button className="btn btn-primary" onClick={openModal}>
-          <Plus size={20} />
-          Nouvelle proforma
-        </button>
+        <div className="header-actions">
+          {selection.count > 0 && (
+            <button className="btn btn-danger bulk-delete-btn" onClick={handleBulkDelete}>
+              <Trash2 size={18} />
+              Supprimer la sélection ({selection.count})
+            </button>
+          )}
+          <button className="btn btn-primary" onClick={openModal}>
+            <Plus size={20} />
+            Nouvelle proforma
+          </button>
+        </div>
       </div>
 
       <div className="content-card">
@@ -464,6 +485,14 @@ const Proformas = () => {
           <table className="data-table">
             <thead>
               <tr>
+                <th className="select-col">
+                  <input
+                    type="checkbox"
+                    checked={selection.allSelected}
+                    onChange={selection.toggleAll}
+                    title="Tout sélectionner"
+                  />
+                </th>
                 <th>N°</th>
                 <th>Date</th>
                 <th>Client</th>
@@ -476,13 +505,22 @@ const Proformas = () => {
             <tbody>
               {filteredProformas.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="empty-state">
+                  <td colSpan="8" className="empty-state">
                     {searchTerm || statutFilter !== 'tous' ? 'Aucune proforma trouvée' : 'Aucune proforma enregistrée'}
                   </td>
                 </tr>
               ) : (
                 filteredProformas.map((proforma) => (
                   <tr key={proforma.id}>
+                    <td className="select-col">
+                      <input
+                        type="checkbox"
+                        checked={selection.isSelected(proforma.id)}
+                        onChange={() => selection.toggle(proforma.id)}
+                        disabled={proforma.statut === 'facturee'}
+                        title={proforma.statut === 'facturee' ? 'Proforma déjà convertie' : 'Sélectionner'}
+                      />
+                    </td>
                     <td className="font-semibold">{proforma.numero}</td>
                     <td>{formatDate(proforma.date)}</td>
                     <td>{proforma.client_nom}</td>

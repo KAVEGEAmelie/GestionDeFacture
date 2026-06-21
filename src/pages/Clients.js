@@ -5,6 +5,7 @@ import FilterBar from '../components/Filters/FilterBar';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
 import './Clients.css';
 
 const Clients = () => {
@@ -143,6 +144,18 @@ const Clients = () => {
     setSearchField('tous');
   };
 
+  const selection = useBulkSelection(filteredClients);
+  const handleBulkDelete = () =>
+    bulkDelete({
+      ids: selection.selectedIds,
+      deleteFn: (id) => window.electronAPI.clients.delete(id),
+      confirm,
+      toast,
+      reload: loadClients,
+      clear: selection.clear,
+      labels: { confirmTitle: 'Supprimer les clients', singular: 'client', plural: 'clients' },
+    });
+
   return (
     <div className="page fade-in">
       <div className="page-header">
@@ -150,10 +163,18 @@ const Clients = () => {
           <h1>Gestion des Clients</h1>
           <p className="subtitle">Gérez votre base de clients</p>
         </div>
-        <button className="btn btn-primary" onClick={openModal}>
-          <Plus size={20} />
-          Nouveau client
-        </button>
+        <div className="header-actions">
+          {selection.count > 0 && (
+            <button className="btn btn-danger bulk-delete-btn" onClick={handleBulkDelete}>
+              <Trash2 size={18} />
+              Supprimer la sélection ({selection.count})
+            </button>
+          )}
+          <button className="btn btn-primary" onClick={openModal}>
+            <Plus size={20} />
+            Nouveau client
+          </button>
+        </div>
       </div>
 
       <div className="content-card">
@@ -185,6 +206,14 @@ const Clients = () => {
           <table className="data-table">
             <thead>
               <tr>
+                <th className="select-col">
+                  <input
+                    type="checkbox"
+                    checked={selection.allSelected}
+                    onChange={selection.toggleAll}
+                    title="Tout sélectionner"
+                  />
+                </th>
                 <th>Nom</th>
                 <th>Téléphone</th>
                 <th>Email</th>
@@ -197,13 +226,21 @@ const Clients = () => {
             <tbody>
               {filteredClients.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="empty-state">
+                  <td colSpan="8" className="empty-state">
                     {searchTerm ? 'Aucun client trouvé' : 'Aucun client enregistré'}
                   </td>
                 </tr>
               ) : (
                 filteredClients.map((client) => (
                   <tr key={client.id}>
+                    <td className="select-col">
+                      <input
+                        type="checkbox"
+                        checked={selection.isSelected(client.id)}
+                        onChange={() => selection.toggle(client.id)}
+                        title="Sélectionner"
+                      />
+                    </td>
                     <td className="font-semibold">{client.nom}</td>
                     <td>{client.telephone || '-'}</td>
                     <td>{client.email || '-'}</td>
