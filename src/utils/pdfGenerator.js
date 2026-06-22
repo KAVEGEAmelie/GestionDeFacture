@@ -431,14 +431,42 @@ const drawAmountInWords = (doc, x, y, w, h, intro, montantTTC) => {
 };
 
 // --- Signature (à droite, sous les totaux) ---
-const drawSignature = (doc, centerX, y) => {
+const drawSignature = (doc, centerX, y, parametres = {}, withCachet = false) => {
+  const titre = parametres.signataire_titre || 'Le Directeur,';
+  const nom = parametres.signataire_nom || 'Koffi KAVEGE';
+
   doc.setFont('helvetica', 'bolditalic');
   doc.setFontSize(10);
   doc.setTextColor(...COLORS.navy);
-  doc.text('Le Directeur,', centerX, y, { align: 'center' });
+  doc.text(titre, centerX, y, { align: 'center' });
+
+  const img = parametres.signature_image;
+  if (withCachet && img) {
+    try {
+      const props = doc.getImageProperties(img);
+      const maxW = 70;
+      const maxH = 38;
+      let w = maxW;
+      let h = (props.height / props.width) * w;
+      if (h > maxH) {
+        h = maxH;
+        w = (props.width / props.height) * h;
+      }
+      doc.addImage(img, centerX - w / 2, y + 2.5, w, h);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.setTextColor(...COLORS.navy);
+      doc.text(nom, centerX, y + 2.5 + h + 5, { align: 'center' });
+      return;
+    } catch (e) {
+      // image invalide : on retombe sur le rendu texte ci-dessous
+    }
+  }
+
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10);
-  doc.text('Koffi KAVEGE', centerX, y + 13, { align: 'center' });
+  doc.setTextColor(...COLORS.navy);
+  doc.text(nom, centerX, y + 13, { align: 'center' });
 };
 
 // --- Icône de service (cercle bleu + glyphe blanc) ---
@@ -693,7 +721,7 @@ const drawCertification = (doc, x, rightX, y, annee) => {
 };
 
 // Génération PDF Proforma
-export const generateProformaPDF = async (proforma, parametres) => {
+export const generateProformaPDF = async (proforma, parametres, options = {}) => {
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
@@ -783,7 +811,7 @@ export const generateProformaPDF = async (proforma, parametres) => {
   }, tauxTVA);
 
   // Signature centrée sous les totaux (un peu plus bas)
-  drawSignature(doc, totalsX + totalsW / 2, Math.max(totalsBottom, yPos + wordsH) + 10);
+  drawSignature(doc, totalsX + totalsW / 2, Math.max(totalsBottom, yPos + wordsH) + 10, parametres, options.withCachet === true);
 
   // Pied de page commun
   drawFooter(doc, parametres);
@@ -903,7 +931,7 @@ export const generateFacturePDF = async (facture, parametres) => {
   drawConditionsBox(doc, contentLeft, yPos + wordsH + condGap, wordsW);
 
   // Signature centrée sous les totaux
-  drawSignature(doc, totalsX + totalsW / 2, Math.max(totalsBottom, yPos + wordsH) + 10);
+  drawSignature(doc, totalsX + totalsW / 2, Math.max(totalsBottom, yPos + wordsH) + 10, parametres);
 
   // (Le pied de page est dessiné sur chaque page via didDrawPage / la page de débordement)
 

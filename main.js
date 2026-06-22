@@ -54,6 +54,7 @@ function initDatabase() {
       total_ttc REAL NOT NULL,
       statut TEXT DEFAULT 'en_attente',
       facture_id INTEGER,
+      avec_cachet INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (client_id) REFERENCES clients(id)
@@ -155,6 +156,12 @@ function initDatabase() {
     db.exec("ALTER TABLE factures ADD COLUMN date_versement_tva DATE");
   }
 
+  // Migration : choix d'ajouter le cachet + signature sur la proforma.
+  const proformaCols = db.prepare("PRAGMA table_info(proformas)").all().map((c) => c.name);
+  if (!proformaCols.includes('avec_cachet')) {
+    db.exec("ALTER TABLE proformas ADD COLUMN avec_cachet INTEGER DEFAULT 0");
+  }
+
   // Migration : rendre produit_id nullable sur les lignes (permet la saisie
   // libre d'une désignation sans produit du catalogue). SQLite ne permet pas
   // de retirer une contrainte NOT NULL via ALTER : on reconstruit la table.
@@ -228,6 +235,8 @@ function initDatabase() {
     insertParam.run('entreprise_utb', '010350245170210119');
     insertParam.run('entreprise_slogan_pied1', 'Votre partenaire en réseaux informatiques,');
     insertParam.run('entreprise_slogan_pied2', 'télécommunications et sécurité électronique.');
+    insertParam.run('signataire_titre', 'Le Directeur,');
+    insertParam.run('signataire_nom', 'Koffi KAVEGE');
     insertParam.run('tva_taux', '18');
     insertParam.run('proforma_compteur', '5');
     insertParam.run('facture_compteur', '17');
@@ -241,6 +250,8 @@ function initDatabase() {
   ensureParam.run('entreprise_slogan2', 'Sécurité Électronique • Énergie');
   ensureParam.run('entreprise_slogan_pied1', 'Votre partenaire en réseaux informatiques,');
   ensureParam.run('entreprise_slogan_pied2', 'télécommunications et sécurité électronique.');
+  ensureParam.run('signataire_titre', 'Le Directeur,');
+  ensureParam.run('signataire_nom', 'Koffi KAVEGE');
 
   // Valeurs de sécurité par défaut (mot de passe désactivé au départ)
   const checkSecu = db.prepare('SELECT COUNT(*) as count FROM securite').get();
@@ -535,8 +546,8 @@ ipcMain.handle('proformas:create', (event, proforma) => {
     
     // Créer la proforma
     const stmt = db.prepare(`
-      INSERT INTO proformas (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO proformas (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut, avec_cachet)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       numero,
@@ -549,7 +560,8 @@ ipcMain.handle('proformas:create', (event, proforma) => {
       data.total_ht,
       data.tva,
       data.total_ttc,
-      'en_attente'
+      'en_attente',
+      data.avec_cachet ? 1 : 0
     );
     
     const proformaId = result.lastInsertRowid;
@@ -594,7 +606,7 @@ ipcMain.handle('proformas:update', (event, id, data) => {
   const transaction = db.transaction((payload) => {
     db.prepare(`
       UPDATE proformas
-      SET date = ?, client_id = ?, objet = ?, total_materiel_ht = ?, prestations = ?, remise = ?, total_ht = ?, tva = ?, total_ttc = ?, updated_at = CURRENT_TIMESTAMP
+      SET date = ?, client_id = ?, objet = ?, total_materiel_ht = ?, prestations = ?, remise = ?, total_ht = ?, tva = ?, total_ttc = ?, avec_cachet = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(
       payload.date,
@@ -606,6 +618,7 @@ ipcMain.handle('proformas:update', (event, id, data) => {
       payload.total_ht,
       payload.tva,
       payload.total_ttc,
+      payload.avec_cachet ? 1 : 0,
       id
     );
 

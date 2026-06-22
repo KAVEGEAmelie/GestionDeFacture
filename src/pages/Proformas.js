@@ -52,6 +52,7 @@ const Proformas = () => {
     objet: '',
     prestations: 0,
     remise: 0,
+    avec_cachet: false,
     lignes: []
   });
 
@@ -191,6 +192,7 @@ const Proformas = () => {
       total_ht,
       tva,
       total_ttc,
+      avec_cachet: formData.avec_cachet,
       lignes: formData.lignes.map(l => ({
         produit_id: parseInt(l.produit_id),
         designation: l.designation,
@@ -268,6 +270,7 @@ const Proformas = () => {
       objet: full.objet || '',
       prestations: full.prestations || 0,
       remise: full.remise || 0,
+      avec_cachet: full.avec_cachet === 1,
       lignes: (full.lignes || []).map(l => ({
         produit_id: String(l.produit_id),
         designation: l.designation,
@@ -321,14 +324,16 @@ const Proformas = () => {
 
   const handlePrint = async (proforma) => {
     const fullProforma = await window.electronAPI.proformas.getById(proforma.id);
-    const doc = await generateProformaPDF(fullProforma, parametres);
+    const withCachet = fullProforma.avec_cachet === 1;
+    const doc = await generateProformaPDF(fullProforma, parametres, { withCachet });
     doc.autoPrint();
     window.open(doc.output('bloburl'), '_blank');
   };
 
   const handleExport = async (proforma) => {
     const fullProforma = await window.electronAPI.proformas.getById(proforma.id);
-    const doc = await generateProformaPDF(fullProforma, parametres);
+    const withCachet = fullProforma.avec_cachet === 1;
+    const doc = await generateProformaPDF(fullProforma, parametres, { withCachet });
     doc.save(`Proforma_${fullProforma.numero.replace(/\//g, '-')}.pdf`);
   };
 
@@ -340,6 +345,7 @@ const Proformas = () => {
       objet: '',
       prestations: 0,
       remise: 0,
+      avec_cachet: false,
       lignes: []
     });
     setIsModalOpen(true);
@@ -654,6 +660,30 @@ const Proformas = () => {
                 placeholder="0"
               />
             </div>
+          </div>
+
+          <div className="form-group" style={{
+            border: '2px solid #0d2a5c',
+            borderRadius: '8px',
+            padding: '0.85rem 1rem',
+            background: parametres.signature_image ? '#eef3fb' : '#f3f4f6',
+            marginTop: '0.5rem'
+          }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: parametres.signature_image ? 'pointer' : 'not-allowed', fontWeight: 600, margin: 0 }}>
+              <input
+                type="checkbox"
+                checked={formData.avec_cachet}
+                disabled={!parametres.signature_image}
+                onChange={(e) => setFormData({ ...formData, avec_cachet: e.target.checked })}
+                style={{ width: '18px', height: '18px' }}
+              />
+              Ajouter le cachet et la signature sur cette proforma
+            </label>
+            {!parametres.signature_image && (
+              <small style={{ color: '#b91c1c', display: 'block', marginTop: '0.4rem' }}>
+                Importez d'abord une image de cachet/signature dans Paramètres pour activer cette option.
+              </small>
+            )}
           </div>
 
           <div className="lignes-section">

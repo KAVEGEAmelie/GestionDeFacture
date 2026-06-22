@@ -108,6 +108,31 @@ const Parametres = () => {
     });
   };
 
+  const handleSignatureUpload = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast.error('Veuillez choisir un fichier image (PNG, JPG...).');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error('Image trop volumineuse (2 Mo maximum).');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      handleChange('signature_image', reader.result);
+      toast.success('Image chargée. Cliquez sur « Enregistrer » pour la conserver.');
+    };
+    reader.onerror = () => toast.error('Impossible de lire le fichier image.');
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const handleRemoveSignature = () => {
+    handleChange('signature_image', '');
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSaving(true);
@@ -289,6 +314,75 @@ const Parametres = () => {
                   onChange={(e) => handleChange('entreprise_slogan_pied2', e.target.value)}
                 />
               </div>
+            </div>
+          </div>
+
+          <div className="form-section">
+            <h3 className="form-section-title">Signataire &amp; Cachet</h3>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>Titre du signataire</label>
+                <input
+                  type="text"
+                  value={parametres.signataire_titre || ''}
+                  onChange={(e) => handleChange('signataire_titre', e.target.value)}
+                  placeholder="Le Directeur,"
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Nom du signataire</label>
+                <input
+                  type="text"
+                  value={parametres.signataire_nom || ''}
+                  onChange={(e) => handleChange('signataire_nom', e.target.value)}
+                  placeholder="Koffi KAVEGE"
+                />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label>Image du cachet et de la signature (scan)</label>
+              <small style={{ color: '#6b7280', fontSize: '0.875rem', marginBottom: '0.5rem', display: 'block' }}>
+                Importez une image (PNG de préférence, fond transparent) qui sera placée automatiquement
+                au-dessus du nom du signataire sur les proformas et factures.
+              </small>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                <label className="btn btn-secondary" style={{ cursor: 'pointer', marginBottom: 0 }}>
+                  <Upload size={18} />
+                  Choisir une image
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleSignatureUpload}
+                    style={{ display: 'none' }}
+                  />
+                </label>
+                {parametres.signature_image ? (
+                  <button type="button" className="btn btn-danger" onClick={handleRemoveSignature}>
+                    Retirer l'image
+                  </button>
+                ) : null}
+              </div>
+              {parametres.signature_image ? (
+                <div
+                  style={{
+                    marginTop: '1rem',
+                    padding: '0.75rem',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '8px',
+                    display: 'inline-block',
+                    background: '#f9fafb',
+                  }}
+                >
+                  <img
+                    src={parametres.signature_image}
+                    alt="Cachet et signature"
+                    style={{ maxWidth: '220px', maxHeight: '120px', display: 'block' }}
+                  />
+                </div>
+              ) : null}
             </div>
           </div>
 
