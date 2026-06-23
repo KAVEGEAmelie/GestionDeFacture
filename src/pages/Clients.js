@@ -219,14 +219,13 @@ const Clients = () => {
                 <th>Email</th>
                 <th>Adresse</th>
                 <th>NIF</th>
-                <th>TVA</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {filteredClients.length === 0 ? (
                 <tr>
-                  <td colSpan="8" className="empty-state">
+                  <td colSpan="7" className="empty-state">
                     {searchTerm ? 'Aucun client trouvé' : 'Aucun client enregistré'}
                   </td>
                 </tr>
@@ -246,7 +245,6 @@ const Clients = () => {
                     <td>{client.email || '-'}</td>
                     <td>{client.adresse || '-'}</td>
                     <td>{client.nif || '-'}</td>
-                    <td>{client.tva_applicable === 1 ? 'Oui' : 'Non'}</td>
                     <td>
                       <div className="action-buttons">
                         <button
@@ -336,32 +334,6 @@ const Clients = () => {
               onChange={handleInputChange}
               placeholder="Numéro d'identification fiscale"
             />
-          </div>
-
-          <div className="form-group">
-            <label>Client assujetti à la TVA</label>
-            <div className="tva-toggle">
-              <label className={`tva-option ${formData.tva_applicable ? 'active' : ''}`}>
-                <input
-                  type="radio"
-                  name="tva_applicable"
-                  value="1"
-                  checked={formData.tva_applicable}
-                  onChange={() => setFormData({ ...formData, tva_applicable: true })}
-                />
-                Oui
-              </label>
-              <label className={`tva-option ${formData.tva_applicable ? '' : 'active'}`}>
-                <input
-                  type="radio"
-                  name="tva_applicable"
-                  value="0"
-                  checked={!formData.tva_applicable}
-                  onChange={() => setFormData({ ...formData, tva_applicable: false })}
-                />
-                Non
-              </label>
-            </div>
           </div>
 
           <div className="form-actions">

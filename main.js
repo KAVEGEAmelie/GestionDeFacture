@@ -55,6 +55,7 @@ function initDatabase() {
       statut TEXT DEFAULT 'en_attente',
       facture_id INTEGER,
       avec_cachet INTEGER DEFAULT 0,
+      tva_applicable INTEGER DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (client_id) REFERENCES clients(id)
@@ -138,6 +139,21 @@ function initDatabase() {
       cle TEXT PRIMARY KEY,
       valeur TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS rapports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      numero TEXT UNIQUE NOT NULL,
+      date DATE NOT NULL,
+      titre TEXT NOT NULL,
+      client_id INTEGER REFERENCES clients(id),
+      client_nom TEXT,
+      lieu TEXT,
+      objet TEXT,
+      sections TEXT,
+      avec_cachet INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   // Migration : ajout des colonnes de suivi du paiement et de la TVA
@@ -160,6 +176,10 @@ function initDatabase() {
   const proformaCols = db.prepare("PRAGMA table_info(proformas)").all().map((c) => c.name);
   if (!proformaCols.includes('avec_cachet')) {
     db.exec("ALTER TABLE proformas ADD COLUMN avec_cachet INTEGER DEFAULT 0");
+  }
+  // Migration : choix d'appliquer la TVA sur la proforma (et donc la facture).
+  if (!proformaCols.includes('tva_applicable')) {
+    db.exec("ALTER TABLE proformas ADD COLUMN tva_applicable INTEGER DEFAULT 1");
   }
 
   // Migration : rendre produit_id nullable sur les lignes (permet la saisie
@@ -220,6 +240,12 @@ function initDatabase() {
   if (!clientCols.includes('tva_applicable')) {
     db.exec("ALTER TABLE clients ADD COLUMN tva_applicable INTEGER DEFAULT 1");
   }
+
+  // Migration : lier un rapport technique à un client enregistré.
+  const rapportCols = db.prepare("PRAGMA table_info(rapports)").all().map((c) => c.name);
+  if (!rapportCols.includes('client_id')) {
+    db.exec("ALTER TABLE rapports ADD COLUMN client_id INTEGER REFERENCES clients(id)");
+  }
   const checkParams = db.prepare('SELECT COUNT(*) as count FROM parametres').get();
   if (checkParams.count === 0) {
     const insertParam = db.prepare('INSERT INTO parametres (cle, valeur) VALUES (?, ?)');
@@ -252,6 +278,8 @@ function initDatabase() {
   ensureParam.run('entreprise_slogan_pied2', 'télécommunications et sécurité électronique.');
   ensureParam.run('signataire_titre', 'Le Directeur,');
   ensureParam.run('signataire_nom', 'Koffi KAVEGE');
+  // Compteur des rapports techniques (créé pour les bases existantes aussi)
+  ensureParam.run('rapport_compteur', '0');
 
   // Valeurs de sécurité par défaut (mot de passe désactivé au départ)
   const checkSecu = db.prepare('SELECT COUNT(*) as count FROM securite').get();
@@ -485,6 +513,86 @@ ipcMain.handle('produits:delete', (event, id) => {
   return { success: true };
 });
 
+// RAPPORTS TECHNIQUES
+ipcMain.handle('rapports:getAll', () => {
+  return db.prepare('SELECT * FROM rapports ORDER BY created_at DESC').all();
+});
+
+ipcMain.handle('rapports:getById', (event, id) => {
+  const rapport = db.prepare('SELECT * FROM rapports WHERE id = ?').get(id);
+  if (rapport) {
+    try {
+      rapport.sections = rapport.sections ? JSON.parse(rapport.sections) : [];
+    } catch {
+      rapport.sections = [];
+    }
+  }
+  return rapport;
+});
+
+ipcMain.handle('rapports:create', (event, data) => {
+  const annee = new Date(data.date || Date.now()).getFullYear();
+  const { numero, compteur } = genererNumero('rapports', 'rapport_compteur', annee);
+
+  // Si un client est lié, on récupère son nom pour l'historique (dénormalisé).
+  let clientNom = data.client_nom || '';
+  const clientId = data.client_id ? parseInt(data.client_id) : null;
+  if (clientId) {
+    const c = db.prepare('SELECT nom FROM clients WHERE id = ?').get(clientId);
+    if (c) clientNom = c.nom;
+  }
+
+  const stmt = db.prepare(`
+    INSERT INTO rapports (numero, date, titre, client_id, client_nom, lieu, objet, sections, avec_cachet)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const result = stmt.run(
+    numero,
+    data.date,
+    data.titre,
+    clientId,
+    clientNom,
+    data.lieu || '',
+    data.objet || '',
+    JSON.stringify(data.sections || []),
+    data.avec_cachet ? 1 : 0
+  );
+
+  db.prepare('UPDATE parametres SET valeur = ? WHERE cle = ?').run(compteur.toString(), 'rapport_compteur');
+  return { id: result.lastInsertRowid, numero };
+});
+
+ipcMain.handle('rapports:update', (event, id, data) => {
+  let clientNom = data.client_nom || '';
+  const clientId = data.client_id ? parseInt(data.client_id) : null;
+  if (clientId) {
+    const c = db.prepare('SELECT nom FROM clients WHERE id = ?').get(clientId);
+    if (c) clientNom = c.nom;
+  }
+
+  db.prepare(`
+    UPDATE rapports
+    SET date = ?, titre = ?, client_id = ?, client_nom = ?, lieu = ?, objet = ?, sections = ?, avec_cachet = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(
+    data.date,
+    data.titre,
+    clientId,
+    clientNom,
+    data.lieu || '',
+    data.objet || '',
+    JSON.stringify(data.sections || []),
+    data.avec_cachet ? 1 : 0,
+    id
+  );
+  return { success: true };
+});
+
+ipcMain.handle('rapports:delete', (event, id) => {
+  db.prepare('DELETE FROM rapports WHERE id = ?').run(id);
+  return { success: true };
+});
+
 // PARAMETRES
 ipcMain.handle('parametres:getAll', () => {
   const params = db.prepare('SELECT * FROM parametres').all();
@@ -546,8 +654,8 @@ ipcMain.handle('proformas:create', (event, proforma) => {
     
     // Créer la proforma
     const stmt = db.prepare(`
-      INSERT INTO proformas (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut, avec_cachet)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO proformas (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut, avec_cachet, tva_applicable)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       numero,
@@ -561,7 +669,8 @@ ipcMain.handle('proformas:create', (event, proforma) => {
       data.tva,
       data.total_ttc,
       'en_attente',
-      data.avec_cachet ? 1 : 0
+      data.avec_cachet ? 1 : 0,
+      data.tva_applicable === false ? 0 : 1
     );
     
     const proformaId = result.lastInsertRowid;
@@ -606,7 +715,7 @@ ipcMain.handle('proformas:update', (event, id, data) => {
   const transaction = db.transaction((payload) => {
     db.prepare(`
       UPDATE proformas
-      SET date = ?, client_id = ?, objet = ?, total_materiel_ht = ?, prestations = ?, remise = ?, total_ht = ?, tva = ?, total_ttc = ?, avec_cachet = ?, updated_at = CURRENT_TIMESTAMP
+      SET date = ?, client_id = ?, objet = ?, total_materiel_ht = ?, prestations = ?, remise = ?, total_ht = ?, tva = ?, total_ttc = ?, avec_cachet = ?, tva_applicable = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(
       payload.date,
@@ -619,6 +728,7 @@ ipcMain.handle('proformas:update', (event, id, data) => {
       payload.tva,
       payload.total_ttc,
       payload.avec_cachet ? 1 : 0,
+      payload.tva_applicable === false ? 0 : 1,
       id
     );
 

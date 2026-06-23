@@ -8,6 +8,7 @@ import {
   Receipt, 
   Truck,
   Landmark,
+  ClipboardList,
   Settings 
 } from 'lucide-react';
 import './Layout.css';
@@ -22,6 +23,7 @@ const Layout = () => {
     { path: '/factures', icon: Receipt, label: 'Factures' },
     { path: '/bordereaux', icon: Truck, label: 'Bordereaux' },
     { path: '/tva', icon: Landmark, label: 'TVA / OTR' },
+    { path: '/rapports', icon: ClipboardList, label: 'Rapports' },
     { path: '/parametres', icon: Settings, label: 'Paramètres' }
   ];
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Eye, Trash2, FileText, DollarSign, Printer, Download, PackagePlus, Edit2, X, Truck } from 'lucide-react';
+import { Plus, Eye, Trash2, FileText, DollarSign, Printer, Download, PackagePlus, Edit2, X, Truck, Stamp, Percent } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
@@ -53,6 +53,7 @@ const Proformas = () => {
     prestations: 0,
     remise: 0,
     avec_cachet: false,
+    tva_applicable: true,
     lignes: []
   });
 
@@ -164,8 +165,7 @@ const Proformas = () => {
     const prestations = parseFloat(formData.prestations) || 0;
     const remise = parseFloat(formData.remise) || 0;
     const total_ht = total_materiel_ht + prestations - remise;
-    const client = clients.find((c) => String(c.id) === String(formData.client_id));
-    const tvaApplicable = client ? client.tva_applicable === 1 : true;
+    const tvaApplicable = formData.tva_applicable !== false;
     const tauxTVA = parseFloat(parametres.tva_taux) || 18;
     const tva = tvaApplicable ? total_ht * (tauxTVA / 100) : 0;
     const total_ttc = total_ht + tva;
@@ -193,6 +193,7 @@ const Proformas = () => {
       tva,
       total_ttc,
       avec_cachet: formData.avec_cachet,
+      tva_applicable: formData.tva_applicable,
       lignes: formData.lignes.map(l => ({
         produit_id: parseInt(l.produit_id),
         designation: l.designation,
@@ -271,6 +272,7 @@ const Proformas = () => {
       prestations: full.prestations || 0,
       remise: full.remise || 0,
       avec_cachet: full.avec_cachet === 1,
+      tva_applicable: full.tva_applicable !== 0,
       lignes: (full.lignes || []).map(l => ({
         produit_id: String(l.produit_id),
         designation: l.designation,
@@ -346,6 +348,7 @@ const Proformas = () => {
       prestations: 0,
       remise: 0,
       avec_cachet: false,
+      tva_applicable: true,
       lignes: []
     });
     setIsModalOpen(true);
@@ -662,28 +665,55 @@ const Proformas = () => {
             </div>
           </div>
 
-          <div className="form-group" style={{
-            border: '2px solid #0d2a5c',
-            borderRadius: '8px',
-            padding: '0.85rem 1rem',
-            background: parametres.signature_image ? '#eef3fb' : '#f3f4f6',
-            marginTop: '0.5rem'
-          }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: parametres.signature_image ? 'pointer' : 'not-allowed', fontWeight: 600, margin: 0 }}>
-              <input
-                type="checkbox"
-                checked={formData.avec_cachet}
-                disabled={!parametres.signature_image}
-                onChange={(e) => setFormData({ ...formData, avec_cachet: e.target.checked })}
-                style={{ width: '18px', height: '18px' }}
-              />
-              Ajouter le cachet et la signature sur cette proforma
+          <div className="options-grid">
+            {/* Option cachet & signature */}
+            <label className={`option-card ${formData.avec_cachet ? 'is-active' : ''} ${!parametres.signature_image ? 'is-disabled' : ''}`}>
+              <span className="option-card__icon">
+                <Stamp size={22} />
+              </span>
+              <span className="option-card__body">
+                <span className="option-card__title">Cachet &amp; signature</span>
+                <span className={`option-card__desc ${!parametres.signature_image ? 'is-warning' : ''}`}>
+                  {parametres.signature_image
+                    ? 'Appliquer le cachet et la signature sur cette proforma.'
+                    : 'Importez d’abord une image dans Paramètres pour activer cette option.'}
+                </span>
+              </span>
+              <span className="switch">
+                <input
+                  type="checkbox"
+                  checked={formData.avec_cachet}
+                  disabled={!parametres.signature_image}
+                  onChange={(e) => setFormData({ ...formData, avec_cachet: e.target.checked })}
+                />
+                <span className="switch__track"><span className="switch__thumb" /></span>
+              </span>
             </label>
-            {!parametres.signature_image && (
-              <small style={{ color: '#b91c1c', display: 'block', marginTop: '0.4rem' }}>
-                Importez d'abord une image de cachet/signature dans Paramètres pour activer cette option.
-              </small>
-            )}
+
+            {/* Option TVA */}
+            <label className={`option-card ${formData.tva_applicable ? 'is-active' : ''}`}>
+              <span className="option-card__icon">
+                <Percent size={22} />
+              </span>
+              <span className="option-card__body">
+                <span className="option-card__title">
+                  TVA ({parseFloat(parametres.tva_taux) || 18}%)
+                </span>
+                <span className="option-card__desc">
+                  {formData.tva_applicable
+                    ? 'La TVA est appliquée à cette proforma et à la facture.'
+                    : 'Proforma et facture émises sans TVA.'}
+                </span>
+              </span>
+              <span className="switch">
+                <input
+                  type="checkbox"
+                  checked={formData.tva_applicable}
+                  onChange={(e) => setFormData({ ...formData, tva_applicable: e.target.checked })}
+                />
+                <span className="switch__track"><span className="switch__thumb" /></span>
+              </span>
+            </label>
           </div>
 
           <div className="lignes-section">

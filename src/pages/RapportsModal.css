@@ -1,0 +1,505 @@
+/* ============================================================
+   RAPPORTS MODAL — Formulaire de création/édition
+   ============================================================
+   Design : formulaire sectionné avec rythme typographique,
+   champ hero pour le titre, footer ancré.
+   À importer dans Rapports.jsx : import './RapportsModal.css';
+   ============================================================ */
+
+/* ============================================================
+   STRUCTURE GÉNÉRALE DU FORMULAIRE
+   ============================================================ */
+.rapports-form {
+  display: flex;
+  flex-direction: column;
+  /* Pas de gap : les sections gèrent leur propre espacement */
+}
+
+/* ============================================================
+   SECTIONS DU FORMULAIRE — Rythme et hiérarchie
+   ============================================================
+   Chaque section est délimitée par un hairline. Les sections
+   sont nommées par un "eyebrow" en haut, qui encode la fonction
+   plutôt que de décorer.
+   ============================================================ */
+.form-section {
+  padding: 1.5rem 0;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.form-section:first-of-type {
+  padding-top: 0.25rem;
+}
+
+.form-section:last-of-type {
+  padding-bottom: 0.5rem;
+  border-bottom: none;
+}
+
+/* Eyebrow : titre de section discret mais structurant */
+.form-section__eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--gray-500, #6b7280);
+  margin: 0 0 1.1rem 0;
+}
+
+.form-section__eyebrow::before {
+  content: '';
+  display: inline-block;
+  width: 3px;
+  height: 13px;
+  background: var(--primary-color);
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+/* Header de section avec action à droite (ex: "+ Ajouter une section") */
+.form-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.form-section__header .form-section__eyebrow {
+  margin-bottom: 0;
+}
+
+/* ============================================================
+   GROUPES DE CHAMPS
+   ============================================================ */
+.rapports-form .form-group {
+  margin-bottom: 0;
+}
+
+.rapports-form .form-group + .form-group,
+.rapports-form .form-group + .form-row,
+.rapports-form .form-row + .form-group,
+.rapports-form .form-row + .form-row {
+  margin-top: 1rem;
+}
+
+.rapports-form .form-group label {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--gray-700, #374151);
+  margin-bottom: 0.45rem;
+  letter-spacing: 0.005em;
+}
+
+/* Lignes à 2 colonnes */
+.rapports-form .form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 0;
+}
+
+/* ============================================================
+   CHAMP TITRE EN MODE "HERO"
+   ============================================================
+   Le titre du rapport est la donnée la plus importante du
+   formulaire. Il mérite une présence visuelle distincte.
+   ============================================================ */
+.rapports-form .form-group--hero {
+  margin-bottom: 0;
+}
+
+.rapports-form .form-group--hero label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--gray-800, #1f2937);
+  margin-bottom: 0.55rem;
+  letter-spacing: -0.005em;
+}
+
+.rapports-form .form-group--hero input[type='text'] {
+  font-size: 1rem;
+  font-weight: 500;
+  padding: 0.9rem 1.1rem;
+  letter-spacing: -0.01em;
+  color: var(--gray-900, #111827);
+}
+
+.rapports-form .form-group--hero input[type='text']::placeholder {
+  font-weight: 400;
+  color: var(--gray-400, #9ca3af);
+}
+
+/* ============================================================
+   INDICATEUR "REQUIS"
+   ============================================================
+   Au lieu de l'astérisque rouge alarmiste, on utilise la couleur
+   primaire. Cohérent avec l'identité visuelle, et l'utilisateur
+   comprend toujours "ce champ est obligatoire".
+   ============================================================ */
+.form-required {
+  display: inline-block;
+  margin-left: 0.35rem;
+  color: var(--primary-color);
+  font-weight: 700;
+  font-size: 1.15em;
+  line-height: 0.5;
+  position: relative;
+  top: -1px;
+}
+
+/* ============================================================
+   INPUTS — Affinés pour le formulaire
+   ============================================================
+   Fond légèrement teinté au repos. Passe au blanc pur au focus :
+   le champ "se lève" visuellement quand on l'édite.
+   ============================================================ */
+.rapports-form .form-group input[type='text'],
+.rapports-form .form-group input[type='date'],
+.rapports-form .form-group input[type='number'],
+.rapports-form .form-group input[type='email'],
+.rapports-form .form-group select,
+.rapports-form .form-group textarea {
+  width: 100%;
+  padding: 0.7rem 0.95rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fafbfc;
+  font-size: 0.93rem;
+  font-family: inherit;
+  color: var(--gray-900, #111827);
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  line-height: 1.4;
+}
+
+.rapports-form .form-group input:hover,
+.rapports-form .form-group select:hover,
+.rapports-form .form-group textarea:hover {
+  background: #ffffff;
+  border-color: var(--gray-300, #d1d5db);
+}
+
+.rapports-form .form-group input:focus,
+.rapports-form .form-group select:focus,
+.rapports-form .form-group textarea:focus {
+  outline: none;
+  background: #ffffff;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 3px var(--primary-100, rgba(37, 99, 235, 0.12));
+}
+
+.rapports-form .form-group input::placeholder,
+.rapports-form .form-group textarea::placeholder {
+  color: var(--gray-400, #9ca3af);
+}
+
+/* Affinage du sélecteur natif de date */
+.rapports-form .form-group input[type='date']::-webkit-calendar-picker-indicator {
+  opacity: 0.45;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  filter: invert(0.4);
+  transition: opacity 0.15s ease;
+}
+
+.rapports-form .form-group input[type='date']::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
+/* ============================================================
+   BOÎTE D'ASTUCE
+   ============================================================
+   Une information utile mérite mieux qu'un texte gris perdu.
+   Encart ambré avec icône ampoule, ton invitant.
+   ============================================================ */
+.form-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.8rem 1rem;
+  margin-bottom: 1.1rem;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 10px;
+  font-size: 0.825rem;
+  line-height: 1.5;
+  color: #78350f;
+}
+
+.form-tip__icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: #d97706;
+}
+
+.form-tip strong {
+  color: #78350f;
+  font-weight: 700;
+}
+
+/* Variante info (bleue) si besoin */
+.form-tip--info {
+  background: var(--primary-50, #eff6ff);
+  border-color: var(--primary-100, #dbeafe);
+  color: #1e3a8a;
+}
+
+.form-tip--info .form-tip__icon {
+  color: var(--primary-color);
+}
+
+.form-tip--info strong {
+  color: #1e3a8a;
+}
+
+/* ============================================================
+   FORM ACTIONS — Footer ancré
+   ============================================================
+   Les boutons Annuler/Créer sont visuellement amarrés au
+   formulaire par un hairline supérieur. Plus orphelins.
+   ============================================================ */
+.rapports-form .form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding-top: 1.25rem;
+  margin-top: 1.5rem;
+  border-top: 1px solid #e5e7eb;
+}
+
+/* ============================================================
+   GRID DES OPTIONS DANS LA SECTION OPTIONS
+   ============================================================
+   Réduction de la marge verticale puisque la section
+   form-section gère déjà l'espacement.
+   ============================================================ */
+.rapports-form .options-grid {
+  margin: 0;
+}
+
+/* ============================================================
+   COMPTEUR DE SECTIONS (pastille dans l'eyebrow)
+   ============================================================ */
+.form-section__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 0.35rem;
+  margin-left: 0.1rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--primary-color);
+  background: var(--primary-50, #eff6ff);
+  border: 1px solid var(--primary-100, #dbeafe);
+  border-radius: 999px;
+}
+
+/* ============================================================
+   ACTIONS DU HEADER DE SECTION (Importer Word + Ajouter)
+   ============================================================ */
+.form-section__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* Bouton « Importer un Word » — accent secondaire élégant */
+.btn-import {
+  background: #ffffff;
+  color: var(--primary-color);
+  border: 1px solid var(--primary-200, #bfdbfe);
+  box-shadow: var(--shadow-xs);
+}
+
+.btn-import:hover:not(:disabled) {
+  background: var(--primary-50, #eff6ff);
+  border-color: var(--primary-color);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-import:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn-import:disabled {
+  opacity: 0.65;
+  cursor: progress;
+}
+
+/* ============================================================
+   ÉTAT VIDE DES SECTIONS
+   ============================================================ */
+.sections-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--gray-400, #9ca3af);
+  background: #fafbfc;
+  border: 1px dashed #d1d5db;
+  border-radius: 12px;
+}
+
+.sections-empty p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--gray-500, #6b7280);
+}
+
+/* ============================================================
+   CARTE DE SECTION — Surcharge pour le formulaire rapports
+   ============================================================ */
+.rapports-form .rapport-section {
+  padding: 0.85rem 0.95rem 0.95rem;
+  margin-bottom: 0.9rem;
+  background: #fcfcfd;
+}
+
+.rapports-form .rapport-section:last-of-type {
+  margin-bottom: 0;
+}
+
+.rapports-form .rapport-section:focus-within {
+  background: #ffffff;
+}
+
+.rapports-form .rapport-section__title {
+  flex: 1;
+  font-size: 1.02rem;
+  font-weight: 600;
+  padding: 0.7rem 0.95rem;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 9px;
+  color: var(--gray-900, #111827);
+  letter-spacing: -0.005em;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.rapports-form .rapport-section__title::placeholder {
+  font-weight: 500;
+  color: var(--gray-400, #9ca3af);
+}
+
+.rapports-form .rapport-section__title:hover {
+  border-color: var(--gray-300, #d1d5db);
+}
+
+.rapports-form .rapport-section__title:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 3px var(--primary-100, rgba(37, 99, 235, 0.12));
+}
+
+/* ============================================================
+   BARRE D'OUTILS DE MISE EN FORME
+   ============================================================
+   Boutons compacts au-dessus du textarea, qui injectent la
+   syntaxe (puce / sous-titre) à la position du curseur.
+   ============================================================ */
+.rapport-section__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.55rem;
+}
+
+.format-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.6rem;
+  font-size: 0.76rem;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--gray-600, #4b5563);
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.format-btn:hover {
+  color: var(--primary-color);
+  border-color: var(--primary-200, #bfdbfe);
+  background: var(--primary-50, #eff6ff);
+  transform: translateY(-1px);
+}
+
+.format-btn:active {
+  transform: translateY(0);
+}
+
+.format-btn svg {
+  opacity: 0.85;
+}
+
+/* Textarea de contenu : police mono légère pour visualiser la structure */
+.rapports-form .rapport-section__body {
+  width: 100%;
+  resize: vertical;
+  min-height: 110px;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--gray-800, #1f2937);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.rapports-form .rapport-section__body:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 3px var(--primary-100, rgba(37, 99, 235, 0.12));
+}
+
+.rapports-form .rapport-section__body::placeholder {
+  color: var(--gray-400, #9ca3af);
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 640px) {
+  .rapports-form .form-row {
+    grid-template-columns: 1fr;
+    gap: 0.85rem;
+  }
+
+  .rapports-form .form-section {
+    padding: 1.25rem 0;
+  }
+
+  .rapports-form .form-group--hero input[type='text'] {
+    font-size: 0.95rem;
+    padding: 0.75rem 0.95rem;
+  }
+
+  .rapports-form .form-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .rapports-form .form-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}

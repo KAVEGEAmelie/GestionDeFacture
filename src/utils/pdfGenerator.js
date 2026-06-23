@@ -399,7 +399,8 @@ const drawTotals = (doc, x, y, w, data, tauxTVA) => {
   doc.setLineWidth(0.4);
   doc.line(x, ry - lineH + 2.5, x + w, ry - lineH + 2.5);
   row('TOTAL HT', formatNumber(data.total_ht), { bold: true, color: COLORS.navySoft });
-  row(`TVA (${tauxTVA}%)`, formatNumber(data.tva), { color: COLORS.ink });
+  const tauxAffiche = data.tva && data.tva > 0 ? tauxTVA : 0;
+  row(`TVA (${tauxAffiche}%)`, formatNumber(data.tva || 0), { color: COLORS.ink });
 
   // Barre TOTAL TTC
   const barH = 9;
@@ -434,40 +435,42 @@ const drawAmountInWords = (doc, x, y, w, h, intro, montantTTC) => {
 const drawSignature = (doc, centerX, y, parametres = {}, withCachet = false) => {
   const titre = parametres.signataire_titre || 'Le Directeur,';
   const nom = parametres.signataire_nom || 'Koffi KAVEGE';
-
-  doc.setFont('helvetica', 'bolditalic');
-  doc.setFontSize(10);
-  doc.setTextColor(...COLORS.navy);
-  doc.text(titre, centerX, y, { align: 'center' });
-
   const img = parametres.signature_image;
+
+  const nomY = withCachet && img ? y + 6 : y + 13;
+
+  // 1) Cachet/signature dessiné EN PREMIER (en dessous) pour que le texte
+  //    reste lisible par-dessus, même si le scan a un fond blanc opaque.
   if (withCachet && img) {
     try {
       const props = doc.getImageProperties(img);
-      const maxW = 52;
-      const maxH = 30;
+      const maxW = 40;
+      const maxH = 28;
       let w = maxW;
       let h = (props.height / props.width) * w;
       if (h > maxH) {
         h = maxH;
         w = (props.width / props.height) * h;
       }
-      // Cachet collé sous le titre, nom collé sous le cachet (rendu compact)
-      doc.addImage(img, centerX - w / 2, y + 1, w, h);
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(10);
-      doc.setTextColor(...COLORS.navy);
-      doc.text(nom, centerX, y + 1 + h + 1, { align: 'center' });
-      return;
+      const cx = centerX + 4;
+      const cyCenter = (y + nomY) / 2;
+      doc.addImage(img, cx - w / 2, cyCenter - h / 2, w, h);
     } catch (e) {
-      // image invalide : on retombe sur le rendu texte ci-dessous
+      // image invalide : on garde uniquement le texte ci-dessous
     }
   }
 
+  // 2) Titre par-dessus le cachet
+  doc.setFont('helvetica', 'bolditalic');
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.navy);
+  doc.text(titre, centerX, y, { align: 'center' });
+
+  // 3) Nom par-dessus le cachet
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10);
   doc.setTextColor(...COLORS.navy);
-  doc.text(nom, centerX, y + 13, { align: 'center' });
+  doc.text(nom, centerX, nomY, { align: 'center' });
 };
 
 // --- Icône de service (cercle bleu + glyphe blanc) ---
@@ -1102,6 +1105,188 @@ export const generateTvaPDF = async (rapport, parametres) => {
 
   // Pied de page commun
   drawFooter(doc, parametres);
+
+  return doc;
+};
+
+// =====================================================================
+//  RAPPORT TECHNIQUE (texte libre, sections numérotées, pagination auto)
+// =====================================================================
+export const generateRapportPDF = async (rapport, parametres = {}) => {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const contentWidth = pageWidth - MARGIN * 2;
+  const bottomLimit = pageHeight - 30; // réserve l'espace du pied de page
+
+  drawPageFrame(doc);
+  const header = await drawHeader(doc, parametres);
+  drawFooter(doc, parametres);
+
+  let yPos = header.headerBottom + 12;
+
+  // Référence (numéro) à droite, sous le filet
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(...COLORS.grey);
+  doc.text(`Réf : ${rapport.numero || ''}`, header.rightX, yPos, { align: 'right' });
+  yPos += 7;
+
+  // Titre (peut être long) : police réduite, multi-lignes, centré
+  const titre = (rapport.titre || 'RAPPORT TECHNIQUE').toUpperCase();
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  doc.setTextColor(...COLORS.navy);
+  const titleLines = doc.splitTextToSize(titre, contentWidth - 16);
+  titleLines.forEach((line) => {
+    doc.text(line, pageWidth / 2, yPos, { align: 'center' });
+    yPos += 7;
+  });
+  doc.setDrawColor(...COLORS.navy);
+  doc.setLineWidth(0.6);
+  doc.line(pageWidth / 2 - 32, yPos - 2, pageWidth / 2 + 32, yPos - 2);
+  yPos += 7;
+
+  // --- Bloc « Informations générales » dans un encadré léger ---
+  const infos = [];
+  if (rapport.client_nom) infos.push(['Client', rapport.client_nom]);
+  infos.push(['Prestataire', parametres.entreprise_nom || 'IN-TEL SERVICES']);
+  if (rapport.lieu) infos.push(['Lieu', rapport.lieu]);
+  infos.push(['Date', formatDateLong(rapport.date)]);
+  if (rapport.objet) infos.push(['Objet', rapport.objet]);
+
+  const infoPad = 4;
+  const labelW = 28;
+  const infoLineH = 5.6;
+  doc.setFontSize(10);
+  doc.setFont('helvetica', 'normal');
+  const valueW = contentWidth - labelW - infoPad * 2;
+  let measured = 0;
+  const infoRendered = infos.map(([label, value]) => {
+    const lines = doc.splitTextToSize(String(value || ''), valueW);
+    measured += lines.length * infoLineH;
+    return { label, lines };
+  });
+  const boxH = measured + infoPad * 2 + 1;
+  doc.setFillColor(...COLORS.boxBg);
+  doc.setDrawColor(...COLORS.line);
+  doc.setLineWidth(0.4);
+  doc.roundedRect(MARGIN, yPos, contentWidth, boxH, 2, 2, 'FD');
+  let infoY = yPos + infoPad + 3.5;
+  infoRendered.forEach(({ label, lines }) => {
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...COLORS.navy);
+    doc.text(`${label} :`, MARGIN + infoPad, infoY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(...COLORS.ink);
+    lines.forEach((line, idx) => {
+      doc.text(line, MARGIN + infoPad + labelW, infoY + idx * infoLineH);
+    });
+    infoY += lines.length * infoLineH;
+  });
+  yPos += boxH + 9;
+
+  // --- Helper : saut de page avec en-tête + pied + cadre redessinés ---
+  const ensureSpace = async (needed) => {
+    if (yPos + needed > bottomLimit) {
+      doc.addPage();
+      drawPageFrame(doc);
+      const h = await drawHeader(doc, parametres);
+      drawFooter(doc, parametres);
+      yPos = h.headerBottom + 12;
+    }
+  };
+
+  // --- Sections numérotées ---
+  const sections = Array.isArray(rapport.sections) ? rapport.sections : [];
+  let idx = 1;
+  for (const section of sections) {
+    if (!section || (!section.titre && !section.contenu)) continue;
+
+    // Titre de section
+    const heading = `${idx}. ${(section.titre || '').toUpperCase()}`;
+    await ensureSpace(16);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11.5);
+    doc.setTextColor(...COLORS.navy);
+    const headingLines = doc.splitTextToSize(heading, contentWidth);
+    headingLines.forEach((line) => {
+      doc.text(line, MARGIN, yPos);
+      yPos += 6;
+    });
+    doc.setDrawColor(...COLORS.line);
+    doc.setLineWidth(0.3);
+    doc.line(MARGIN, yPos - 3, MARGIN + contentWidth, yPos - 3);
+    yPos += 3;
+
+    // Corps de section
+    const paragraphs = String(section.contenu || '').split('\n');
+    for (const para of paragraphs) {
+      const trimmed = para.trim();
+      if (trimmed === '') { yPos += 2.5; continue; }
+
+      const isBullet = /^(-|•|\*|–)\s+/.test(trimmed);
+      const isSubHeading = !isBullet && trimmed.endsWith(':') && trimmed.length <= 70;
+      let text = trimmed;
+      let indent = 0;
+
+      if (isBullet) {
+        text = trimmed.replace(/^(-|•|\*|–)\s+/, '');
+        indent = 6;
+      }
+
+      if (isSubHeading) {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(10);
+        doc.setTextColor(...COLORS.navySoft);
+      } else {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        doc.setTextColor(...COLORS.ink);
+      }
+
+      const wrapped = doc.splitTextToSize(text, contentWidth - indent);
+      for (let i = 0; i < wrapped.length; i++) {
+        await ensureSpace(6);
+        if (isBullet && i === 0) {
+          doc.setFillColor(...COLORS.navySoft);
+          doc.circle(MARGIN + 2, yPos - 1.4, 0.7, 'F');
+        }
+        doc.text(wrapped[i], MARGIN + indent, yPos);
+        yPos += 5.4;
+      }
+      if (isSubHeading) yPos += 1;
+    }
+    yPos += 6;
+    idx++;
+  }
+
+  // --- Clôture : lieu/date + « Pour … » + signature/cachet ---
+  await ensureSpace(46);
+  yPos += 4;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10.5);
+  doc.setTextColor(...COLORS.ink);
+  const lieu = rapport.lieu || 'Lomé';
+  doc.text(`Fait à ${lieu}, le ${formatDateLong(rapport.date)}.`, MARGIN, yPos);
+  yPos += 9;
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(...COLORS.navy);
+  doc.text(`Pour ${parametres.entreprise_nom || 'IN-TEL SERVICES'}`, MARGIN, yPos);
+
+  const withCachet = rapport.avec_cachet === 1 || rapport.avec_cachet === true;
+  const sigCenterX = pageWidth - MARGIN - 32;
+  drawSignature(doc, sigCenterX, yPos, parametres, withCachet);
+
+  // --- Numérotation « Page X / Y » sur toutes les pages ---
+  const totalPages = doc.internal.getNumberOfPages();
+  for (let p = 1; p <= totalPages; p++) {
+    doc.setPage(p);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(...COLORS.grey);
+    doc.text(`Page ${p} / ${totalPages}`, pageWidth / 2, pageHeight - 8, { align: 'center' });
+  }
 
   return doc;
 };
