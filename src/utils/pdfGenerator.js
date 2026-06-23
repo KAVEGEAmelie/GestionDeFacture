@@ -444,19 +444,20 @@ const drawSignature = (doc, centerX, y, parametres = {}, withCachet = false) => 
   if (withCachet && img) {
     try {
       const props = doc.getImageProperties(img);
-      const maxW = 70;
-      const maxH = 38;
+      const maxW = 52;
+      const maxH = 30;
       let w = maxW;
       let h = (props.height / props.width) * w;
       if (h > maxH) {
         h = maxH;
         w = (props.width / props.height) * h;
       }
-      doc.addImage(img, centerX - w / 2, y + 2.5, w, h);
+      // Cachet collé sous le titre, nom collé sous le cachet (rendu compact)
+      doc.addImage(img, centerX - w / 2, y + 1, w, h);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(10);
       doc.setTextColor(...COLORS.navy);
-      doc.text(nom, centerX, y + 2.5 + h + 5, { align: 'center' });
+      doc.text(nom, centerX, y + 1 + h + 1, { align: 'center' });
       return;
     } catch (e) {
       // image invalide : on retombe sur le rendu texte ci-dessous
