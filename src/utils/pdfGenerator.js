@@ -437,6 +437,7 @@ const drawSignature = (doc, centerX, y, parametres = {}, withCachet = false) => 
   const nom = parametres.signataire_nom || 'Koffi KAVEGE';
   const img = parametres.signature_image;
 
+  const titreY = y + 2;
   const nomY = y + 13;
 
   // 1) Cachet/signature dessiné EN PREMIER (en dessous) pour que le texte
@@ -452,8 +453,8 @@ const drawSignature = (doc, centerX, y, parametres = {}, withCachet = false) => 
         h = maxH;
         w = (props.width / props.height) * h;
       }
-      const cx = centerX + 15;
-      const cyCenter = (y + nomY) / 2 - 2;
+      const cx = centerX + 12;
+      const cyCenter = (y + nomY) / 2 + 1;
       doc.addImage(img, cx - w / 2, cyCenter - h / 2, w, h);
     } catch (e) {
       // image invalide : on garde uniquement le texte ci-dessous
@@ -464,11 +465,11 @@ const drawSignature = (doc, centerX, y, parametres = {}, withCachet = false) => 
   doc.setFont('helvetica', 'bolditalic');
   doc.setFontSize(10);
   doc.setTextColor(...COLORS.navy);
-  doc.text(titre, centerX, y, { align: 'center' });
+  doc.text(titre, centerX, titreY, { align: 'center' });
 
   // 3) Nom par-dessus le cachet
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10);
+  doc.setFontSize(9);
   doc.setTextColor(...COLORS.navy);
   doc.text(nom, centerX, nomY, { align: 'center' });
 };
@@ -1281,21 +1282,23 @@ export const generateRapportPDF = async (rapport, parametres = {}) => {
   }
 
   // --- Clôture : lieu/date + « Pour … » + signature/cachet ---
-  await ensureSpace(46);
-  yPos += 4;
+  await ensureSpace(56);
+  yPos += 8;
+  const sigCenterX = pageWidth - MARGIN - 32;
+  const closureX = sigCenterX;
+
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(10.5);
   doc.setTextColor(...COLORS.ink);
   const lieu = rapport.lieu || 'Lomé';
-  doc.text(`Fait à ${lieu}, le ${formatDateLong(rapport.date)}.`, MARGIN, yPos);
-  yPos += 9;
+  doc.text(`Fait à ${lieu}, le ${formatDateLong(rapport.date)}.`, closureX, yPos, { align: 'center' });
+  yPos += 8;
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(...COLORS.navy);
-  doc.text(`Pour ${parametres.entreprise_nom || 'IN-TEL SERVICES'}`, MARGIN, yPos);
+  doc.text(`Pour ${parametres.entreprise_nom || 'IN-TEL SERVICES'}`, closureX, yPos, { align: 'center' });
 
   const withCachet = rapport.avec_cachet === 1 || rapport.avec_cachet === true;
-  const sigCenterX = pageWidth - MARGIN - 32;
-  drawSignature(doc, sigCenterX, yPos, parametres, withCachet);
+  drawSignature(doc, sigCenterX, yPos + 8, parametres, withCachet);
 
   // --- Numérotation « Page X / Y » sur toutes les pages ---
   const totalPages = doc.internal.getNumberOfPages();

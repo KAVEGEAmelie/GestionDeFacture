@@ -1,15 +1,36 @@
-/* BADGES */
+/* ============================================================
+   PROFORMAS / RAPPORTS — Design système raffiné
+   ============================================================
+   Améliorations : tableaux pro, boutons groupés en pilule,
+   sections avec hiérarchie claire, micro-interactions soignées.
+   ============================================================ */
+
+/* ============================================================
+   VARIABLES COMPLÉMENTAIRES (à ajouter si non définies)
+   ============================================================ */
+:root {
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 6px -1px rgba(15, 23, 42, 0.08), 0 2px 4px -2px rgba(15, 23, 42, 0.04);
+  --shadow-lg: 0 10px 20px -5px rgba(15, 23, 42, 0.1), 0 4px 8px -4px rgba(15, 23, 42, 0.06);
+  --ring-primary: 0 0 0 3px var(--primary-100, rgba(37, 99, 235, 0.12));
+}
+
+/* ============================================================
+   BADGES — Plus de présence, indicateur de statut épuré
+   ============================================================ */
 .badge {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  padding: 0.35rem 0.75rem;
-  border-radius: var(--radius-full);
-  font-size: 0.72rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: var(--radius-full, 999px);
+  font-size: 0.7rem;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   line-height: 1;
+  border: 1px solid transparent;
 }
 
 .badge::before {
@@ -18,58 +39,111 @@
   height: 6px;
   border-radius: 50%;
   background: currentColor;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6);
 }
 
-/* FILTRE DE STATUT */
+.badge-success {
+  background-color: #ecfdf5;
+  color: #047857;
+  border-color: #a7f3d0;
+}
+
+.badge-warning {
+  background-color: #fffbeb;
+  color: #b45309;
+  border-color: #fde68a;
+}
+
+.badge-danger {
+  background-color: #fef2f2;
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+
+.badge-info {
+  background-color: var(--primary-50, #eff6ff);
+  color: var(--primary-dark, #1d4ed8);
+  border-color: var(--primary-100, #dbeafe);
+}
+
+/* ============================================================
+   FILTRE SELECT — Affiné
+   ============================================================ */
 .filter-select {
-  border: 1px solid var(--border-color);
-  padding: 0.7rem 1rem;
-  border-radius: var(--radius);
-  font-size: 0.95rem;
-  background: #fff;
+  border: 1px solid var(--border-color, #e5e7eb);
+  padding: 0.65rem 2.5rem 0.65rem 1rem;
+  border-radius: var(--radius, 10px);
+  font-size: 0.9rem;
+  background: #fff
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1 1L6 6L11 1' stroke='%236b7280' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    no-repeat right 1rem center;
   cursor: pointer;
-  transition: all var(--transition);
-  color: var(--gray-700);
+  transition: all 0.15s ease;
+  color: var(--gray-700, #374151);
   font-family: inherit;
+  appearance: none;
+  -webkit-appearance: none;
 }
 
 .filter-select:hover {
-  border-color: var(--gray-300);
+  border-color: var(--gray-400, #9ca3af);
+  background-color: #fafbfc;
 }
 
 .filter-select:focus {
   outline: none;
   border-color: var(--primary-color);
-  box-shadow: 0 0 0 4px var(--primary-100);
+  box-shadow: var(--ring-primary);
 }
 
-/* ONGLETS TVA */
+/* ============================================================
+   ONGLETS TVA — Indicateur plus présent, transition fluide
+   ============================================================ */
 .tva-tabs {
   display: flex;
-  gap: 0.5rem;
-  padding: 1rem 1.5rem 0;
+  gap: 0.25rem;
+  padding: 0.75rem 1.5rem 0;
   border-bottom: 1px solid #e5e7eb;
 }
 
 .tva-tab {
+  position: relative;
   background: transparent;
   border: none;
-  padding: 0.75rem 1rem;
-  font-size: 0.95rem;
+  padding: 0.75rem 1.25rem;
+  font-size: 0.9rem;
   font-weight: 600;
-  color: var(--gray-500);
+  color: var(--gray-500, #6b7280);
   cursor: pointer;
-  border-bottom: 3px solid transparent;
-  transition: color var(--transition), border-color var(--transition);
+  transition: color 0.15s ease;
+  border-radius: 8px 8px 0 0;
+}
+
+.tva-tab::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 1rem;
+  right: 1rem;
+  height: 2.5px;
+  background: var(--primary-color);
+  border-radius: 2px 2px 0 0;
+  transform: scaleX(0);
+  transform-origin: center;
+  transition: transform 0.2s ease;
 }
 
 .tva-tab:hover {
-  color: var(--gray-700);
+  color: var(--gray-800, #1f2937);
+  background: rgba(15, 23, 42, 0.02);
 }
 
 .tva-tab.active {
   color: var(--primary-color);
-  border-bottom-color: var(--primary-color);
+}
+
+.tva-tab.active::after {
+  transform: scaleX(1);
 }
 
 .tva-export-actions {
@@ -86,86 +160,373 @@
   justify-content: space-between;
   gap: 1rem;
   padding: 1rem 1.5rem;
-  background: #f9fafb;
+  background: linear-gradient(180deg, #f9fafb 0%, #f3f4f6 100%);
   border-bottom: 1px solid #e5e7eb;
-  font-size: 0.9rem;
-  color: #374151;
+  font-size: 0.875rem;
+  color: var(--gray-700, #374151);
   flex-wrap: wrap;
 }
 
-.badge-success {
-  background-color: var(--success-50);
-  color: #047857;
+/* ============================================================
+   TABLEAUX DE DONNÉES — Style "data product" pro
+   ============================================================
+   Note : ces styles ciblent .data-table dans le contexte des
+   pages avec Proformas.css. Si .data-table est défini ailleurs,
+   ces règles s'appliqueront par cascade.
+   ============================================================ */
+
+.content-card .data-table,
+.table-container .data-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.9rem;
 }
 
-.badge-warning {
-  background-color: var(--warning-50);
-  color: #b45309;
+.content-card .data-table thead th,
+.table-container .data-table thead th {
+  background: #f9fafb;
+  color: var(--gray-600, #4b5563);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.875rem 1.1rem;
+  text-align: left;
+  border-bottom: 1px solid #e5e7eb;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 5;
 }
 
-.badge-danger {
-  background-color: var(--danger-50);
-  color: #b91c1c;
+.content-card .data-table thead th:first-child,
+.table-container .data-table thead th:first-child {
+  border-top-left-radius: 12px;
 }
 
-.badge-info {
-  background-color: var(--primary-50);
-  color: var(--primary-dark);
+.content-card .data-table thead th:last-child,
+.table-container .data-table thead th:last-child {
+  border-top-right-radius: 12px;
 }
 
-/* LIGNES SECTION */
+.content-card .data-table tbody td,
+.table-container .data-table tbody td {
+  padding: 0.95rem 1.1rem;
+  border-bottom: 1px solid #f3f4f6;
+  color: var(--gray-700, #374151);
+  vertical-align: middle;
+}
+
+.content-card .data-table tbody tr,
+.table-container .data-table tbody tr {
+  transition: background-color 0.12s ease;
+}
+
+.content-card .data-table tbody tr:hover,
+.table-container .data-table tbody tr:hover {
+  background-color: rgba(37, 99, 235, 0.025);
+}
+
+.content-card .data-table tbody tr:last-child td,
+.table-container .data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.data-table .select-col {
+  width: 42px;
+  padding-right: 0;
+}
+
+.data-table .select-col input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary-color);
+  cursor: pointer;
+}
+
+.data-table .font-semibold {
+  font-weight: 600;
+  color: var(--gray-900, #111827);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+/* ============================================================
+   EMPTY STATE — Invitation plutôt qu'absence
+   ============================================================ */
+.empty-state {
+  text-align: center;
+  padding: 3.5rem 1.5rem !important;
+  color: var(--gray-500, #6b7280);
+  font-size: 0.95rem;
+  background: linear-gradient(180deg, #ffffff 0%, #fafbfc 100%);
+}
+
+.empty-state::before {
+  content: '';
+  display: block;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 1rem;
+  border-radius: 50%;
+  background: var(--primary-50, #eff6ff)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 24 24' fill='none' stroke='%232563eb' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpolyline points='14 2 14 8 20 8'/%3E%3Cline x1='16' y1='13' x2='8' y2='13'/%3E%3Cline x1='16' y1='17' x2='8' y2='17'/%3E%3C/svg%3E")
+    no-repeat center;
+}
+
+/* ============================================================
+   ACTIONS BUTTONS — La SIGNATURE : pilule unifiée
+   ============================================================
+   Au lieu de 4 boutons qui crient en couleur, un seul module
+   discret qui révèle son identité au survol. Inspiré des outils
+   pro modernes (Linear, Notion, Stripe).
+   ============================================================ */
+
+.action-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  padding: 0.25rem;
+  background: #f9fafb;
+  border: 1px solid #f3f4f6;
+  border-radius: 999px;
+  transition: all 0.15s ease;
+}
+
+.action-buttons:hover {
+  background: #fff;
+  border-color: #e5e7eb;
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-icon {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: 50%;
+  color: var(--gray-500, #6b7280);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  padding: 0;
+}
+
+.btn-icon:hover {
+  background: #ffffff;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(15, 23, 42, 0.08);
+}
+
+.btn-icon:active {
+  transform: translateY(0);
+}
+
+.btn-icon:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-primary);
+}
+
+.btn-icon:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+/* Identités colorées au survol — chaque action a son rôle */
+.btn-icon-edit:hover,
+.action-buttons .btn-icon[title="Modifier"]:hover {
+  color: #d97706;
+}
+
+.btn-icon-success:hover,
+.action-buttons .btn-icon[title="Imprimer"]:hover {
+  color: #059669;
+}
+
+.btn-icon-info:hover,
+.action-buttons .btn-icon[title*="Exporter"]:hover {
+  color: #2563eb;
+}
+
+.btn-icon-danger:hover,
+.action-buttons .btn-icon[title="Supprimer"]:hover {
+  color: #dc2626;
+}
+
+/* Variante hors-pilule (dans les sections rapport, etc.) */
+.rapport-section__actions .btn-icon,
+.ligne-form-header .btn-icon {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+}
+
+.rapport-section__actions .btn-icon:hover {
+  border-color: var(--gray-300, #d1d5db);
+}
+
+/* ============================================================
+   BOUTONS PRIMAIRES — Présence sans agressivité
+   ============================================================ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.65rem 1.1rem;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s ease;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.btn:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-primary);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--primary-color);
+  color: #ffffff;
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--primary-dark, #1d4ed8);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(37, 99, 235, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.18);
+}
+
+.btn-secondary {
+  background: #fff;
+  color: var(--gray-700, #374151);
+  border-color: #e5e7eb;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: #f9fafb;
+  border-color: var(--gray-300, #d1d5db);
+  color: var(--gray-900, #111827);
+}
+
+.btn-danger {
+  background: #dc2626;
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(220, 38, 38, 0.2);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #b91c1c;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(220, 38, 38, 0.25);
+}
+
+.btn-sm {
+  padding: 0.5rem 0.9rem;
+  font-size: 0.825rem;
+  border-radius: 8px;
+}
+
+.bulk-delete-btn {
+  animation: slideInFromRight 0.2s ease;
+}
+
+@keyframes slideInFromRight {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ============================================================
+   LIGNES SECTION — Container plus respiré
+   ============================================================ */
 .lignes-section {
   border: 1px solid #e5e7eb;
-  border-radius: 8px;
+  border-radius: 14px;
   padding: 1.5rem;
-  background-color: #f9fafb;
+  background: linear-gradient(180deg, #fafbfc 0%, #f9fafb 100%);
 }
 
 .lignes-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 1.5rem;
+  margin-bottom: 1.25rem;
 }
 
 .lignes-header h3 {
-  font-size: 1.125rem;
-  font-weight: 600;
-  color: var(--gray-900);
-}
-
-.btn-sm {
-  padding: 0.5rem 1rem;
-  font-size: 0.875rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--gray-900, #111827);
+  letter-spacing: -0.01em;
 }
 
 .ligne-item {
   background: white;
   border: 1px solid #e5e7eb;
-  border-radius: 8px;
+  border-radius: 12px;
   padding: 1rem;
-  margin-bottom: 1rem;
+  margin-bottom: 0.75rem;
   position: relative;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
+.ligne-item:focus-within {
+  border-color: var(--primary-color);
+  box-shadow: var(--ring-primary);
+}
+
+/* ============================================================
+   PANEL FORMULAIRE LIGNE — Affiné
+   ============================================================ */
 .ligne-form-panel {
   position: relative;
-  background: rgba(255, 255, 255, 0.95);
-  border: 1px solid rgba(37, 99, 235, 0.15);
-  border-radius: 16px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-left: 3px solid var(--primary-color);
+  border-radius: 12px;
   padding: 1.25rem;
   margin-bottom: 1rem;
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
-  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-md);
   z-index: 5;
 }
 
 .ligne-form-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
   margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid #f3f4f6;
 }
 
 .ligne-form-header h4 {
@@ -177,27 +538,29 @@
 
 .ligne-form-header p {
   margin: 0.25rem 0 0;
-  font-size: 0.82rem;
+  font-size: 0.825rem;
   color: var(--gray-500);
 }
 
 .btn-close-panel {
-  border: none;
-  background: rgba(15, 23, 42, 0.04);
-  color: var(--gray-700);
-  width: 36px;
-  height: 36px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  color: var(--gray-500);
+  width: 32px;
+  height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
+  border-radius: 8px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
 }
 
 .btn-close-panel:hover {
-  background: rgba(37, 99, 235, 0.12);
-  color: var(--primary-color);
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #dc2626;
 }
 
 .ligne-form-grid {
@@ -213,42 +576,19 @@
   justify-content: flex-end;
   gap: 0.75rem;
   grid-column: 1 / -1;
+  padding-top: 0.5rem;
+  border-top: 1px solid #f3f4f6;
+  margin-top: 0.5rem;
 }
 
-.ligne-grid {
-  display: grid;
-  grid-template-columns: 2fr 1.5fr 0.8fr 0.8fr 1fr 1fr 40px;
-  gap: 0.75rem;
-  align-items: end;
-}
-
-.btn-remove-ligne {
-  background: none;
-  border: none;
-  color: var(--danger-color);
-  cursor: pointer;
-  padding: 0.5rem;
-  border-radius: 6px;
-  transition: all 0.2s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.btn-remove-ligne:hover {
-  background-color: #fee2e2;
-}
-
-.readonly {
-  background-color: #f3f4f6;
-  cursor: not-allowed;
-}
-
+/* ============================================================
+   TABLEAU LIGNES — Plus net
+   ============================================================ */
 .ligne-table-wrapper {
   overflow-x: auto;
   margin-bottom: 1rem;
   border: 1px solid #e5e7eb;
-  border-radius: 14px;
+  border-radius: 12px;
   background: #fff;
   box-shadow: var(--shadow-xs);
 }
@@ -261,73 +601,120 @@
 
 .ligne-table th,
 .ligne-table td {
-  padding: 0.9rem 0.85rem;
-  border-bottom: 1px solid #e5e7eb;
+  padding: 0.85rem 0.85rem;
+  border-bottom: 1px solid #f3f4f6;
   vertical-align: middle;
 }
 
 .ligne-table th {
-  background: #f3f4f6;
+  background: #f9fafb;
   color: var(--gray-600);
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.02em;
-  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  font-size: 0.7rem;
+  text-align: left;
 }
 
-.ligne-table td {
-  background: #fff;
+.ligne-table tbody tr {
+  transition: background 0.12s ease;
+}
+
+.ligne-table tbody tr:hover {
+  background: #fafbfc;
+}
+
+.ligne-table tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .ligne-table input,
 .ligne-table select {
   width: 100%;
   min-width: 0;
-  padding: 0.55rem 0.75rem;
-  border: 1px solid #e5e7eb;
-  border-radius: 0.75rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 0.875rem;
+  transition: all 0.15s ease;
+}
+
+.ligne-table input:hover,
+.ligne-table select:hover {
   background: #f9fafb;
-  font-size: 0.9rem;
+  border-color: #e5e7eb;
+}
+
+.ligne-table input:focus,
+.ligne-table select:focus {
+  outline: none;
+  background: #fff;
+  border-color: var(--primary-color);
+  box-shadow: var(--ring-primary);
 }
 
 .ligne-table input[type='number'] {
   -moz-appearance: textfield;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
-.ligne-table select {
-  background: #fff;
-}
-
-.ligne-table tbody tr:hover {
-  background: #f8fafc;
+.ligne-table input[type='number']::-webkit-outer-spin-button,
+.ligne-table input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 .ligne-table td:last-child {
   width: 60px;
+  text-align: center;
 }
 
 .ligne-empty-state {
-  padding: 1rem;
+  padding: 2rem 1rem;
   color: var(--gray-500);
-  font-size: 0.95rem;
-  background: #fff;
+  font-size: 0.9rem;
+  background: #fafbfc;
   border: 1px dashed #d1d5db;
   border-radius: 10px;
+  text-align: center;
 }
 
-/* TOTAUX SECTION */
+.btn-remove-ligne {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--gray-400);
+  cursor: pointer;
+  padding: 0.4rem;
+  border-radius: 6px;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-remove-ligne:hover {
+  background-color: #fef2f2;
+  color: #dc2626;
+  border-color: #fecaca;
+}
+
+/* ============================================================
+   TOTAUX — Plus de présence pour le TTC
+   ============================================================ */
 .totaux-section {
-  background-color: #f9fafb;
+  background: linear-gradient(180deg, #fafbfc 0%, #f3f4f6 100%);
   border: 1px solid #e5e7eb;
-  border-radius: 8px;
+  border-radius: 14px;
   padding: 1.5rem;
 }
 
 .totaux-grid {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  max-width: 400px;
+  gap: 0.5rem;
+  max-width: 420px;
   margin-left: auto;
 }
 
@@ -335,26 +722,36 @@
   display: flex;
   justify-content: space-between;
   padding: 0.5rem 0;
-  font-size: 0.95rem;
-}
-
-.totaux-item.total-ttc {
-  border-top: 2px solid #e5e7eb;
-  padding-top: 1rem;
-  font-size: 1.125rem;
-  color: var(--primary-color);
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .totaux-item span {
-  color: var(--gray-700);
+  color: var(--gray-600);
 }
 
 .totaux-item strong {
   color: var(--gray-900);
+  font-weight: 600;
+}
+
+.totaux-item.total-ttc {
+  border-top: 2px solid #e5e7eb;
+  padding-top: 0.9rem;
+  margin-top: 0.4rem;
+  font-size: 1.2rem;
+  color: var(--primary-color);
+}
+
+.totaux-item.total-ttc span,
+.totaux-item.total-ttc strong {
+  color: var(--primary-color);
   font-weight: 700;
 }
 
-/* VIEW DOCUMENT */
+/* ============================================================
+   VIEW DOCUMENT (lecture seule)
+   ============================================================ */
 .view-document {
   display: flex;
   flex-direction: column;
@@ -366,8 +763,9 @@
   justify-content: space-between;
   align-items: start;
   padding: 1.5rem;
-  background-color: #f9fafb;
-  border-radius: 8px;
+  background: linear-gradient(135deg, #fafbfc 0%, #f3f4f6 100%);
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
   gap: 2rem;
 }
 
@@ -380,6 +778,8 @@
   width: 100%;
   border-collapse: collapse;
   border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  overflow: hidden;
 }
 
 .view-table thead {
@@ -387,18 +787,19 @@
 }
 
 .view-table th {
-  padding: 0.75rem 1rem;
+  padding: 0.85rem 1rem;
   text-align: left;
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--gray-700);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--gray-600);
   text-transform: uppercase;
-  border-bottom: 2px solid #e5e7eb;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid #e5e7eb;
 }
 
 .view-table td {
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid #e5e7eb;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid #f3f4f6;
   color: var(--gray-700);
 }
 
@@ -408,10 +809,10 @@
 
 .view-totaux {
   border: 1px solid #e5e7eb;
-  border-radius: 8px;
+  border-radius: 12px;
   padding: 1.5rem;
-  background-color: #f9fafb;
-  max-width: 400px;
+  background: linear-gradient(180deg, #fafbfc 0%, #f3f4f6 100%);
+  max-width: 420px;
   margin-left: auto;
 }
 
@@ -419,52 +820,30 @@
   display: flex;
   justify-content: space-between;
   padding: 0.5rem 0;
-  font-size: 0.95rem;
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .totaux-row.total {
   border-top: 2px solid #e5e7eb;
-  padding-top: 1rem;
-  margin-top: 0.5rem;
-  font-size: 1.125rem;
+  padding-top: 0.9rem;
+  margin-top: 0.4rem;
+  font-size: 1.2rem;
   color: var(--primary-color);
+  font-weight: 700;
 }
 
 .totaux-row span {
-  color: var(--gray-700);
+  color: var(--gray-600);
 }
 
 .totaux-row strong {
   color: var(--gray-900);
-  font-weight: 700;
-}
-
-/* RESPONSIVE */
-@media (max-width: 1024px) {
-  .ligne-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .btn-remove-ligne {
-    position: absolute;
-    top: 1rem;
-    right: 1rem;
-  }
-}
-
-@media (max-width: 768px) {
-  .view-header {
-    flex-direction: column;
-  }
-
-  .totaux-grid,
-  .view-totaux {
-    max-width: 100%;
-  }
+  font-weight: 600;
 }
 
 /* ============================================================
-   CARTES D'OPTIONS (cachet, TVA) — design professionnel
+   CARTES D'OPTIONS (cachet, etc.) — Affinées
    ============================================================ */
 .options-grid {
   display: grid;
@@ -478,43 +857,74 @@
   align-items: flex-start;
   gap: 0.9rem;
   padding: 1rem 1.1rem;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 12px;
   background: #fff;
   box-shadow: var(--shadow-xs);
-  transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
+  transition: all 0.18s ease;
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.option-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--primary-color);
+  transform: translateX(-100%);
+  transition: transform 0.2s ease;
+}
+
+.option-card:hover {
+  border-color: var(--gray-300, #d1d5db);
+  box-shadow: var(--shadow-sm);
 }
 
 .option-card.is-active {
   border-color: var(--primary-color);
-  background: var(--primary-50);
-  box-shadow: 0 0 0 3px var(--primary-100);
+  background: var(--primary-50, #eff6ff);
+  box-shadow: var(--shadow-sm);
+}
+
+.option-card.is-active::before {
+  transform: translateX(0);
 }
 
 .option-card.is-disabled {
   background: #f9fafb;
-  opacity: 0.85;
+  opacity: 0.75;
+  cursor: not-allowed;
+}
+
+.option-card.is-disabled:hover {
+  border-color: var(--border-color, #e5e7eb);
+  box-shadow: var(--shadow-xs);
 }
 
 .option-card__icon {
   flex-shrink: 0;
   width: 42px;
   height: 42px;
-  border-radius: var(--radius);
+  border-radius: 10px;
   display: grid;
   place-items: center;
-  background: var(--primary-100);
+  background: var(--primary-50, #eff6ff);
   color: var(--primary-color);
-  transition: background var(--transition), color var(--transition);
+  transition: all 0.2s ease;
 }
 
 .option-card.is-active .option-card__icon {
   background: var(--primary-color);
   color: #fff;
+  box-shadow: 0 4px 8px rgba(37, 99, 235, 0.25);
 }
 
 .option-card.is-disabled .option-card__icon {
-  background: var(--gray-100, #f3f4f6);
+  background: #f3f4f6;
   color: var(--gray-400, #9ca3af);
 }
 
@@ -529,14 +939,15 @@
   font-size: 0.95rem;
   color: var(--gray-900, #111827);
   line-height: 1.3;
+  letter-spacing: -0.01em;
 }
 
 .option-card__desc {
   display: block;
-  margin-top: 0.25rem;
+  margin-top: 0.3rem;
   font-size: 0.82rem;
-  color: var(--gray-500);
-  line-height: 1.4;
+  color: var(--gray-500, #6b7280);
+  line-height: 1.45;
 }
 
 .option-card__desc.is-warning {
@@ -544,12 +955,14 @@
   font-weight: 600;
 }
 
-/* Interrupteur (toggle switch) */
+/* ============================================================
+   SWITCH TOGGLE — Animation plus fluide
+   ============================================================ */
 .switch {
   position: relative;
   flex-shrink: 0;
-  width: 46px;
-  height: 26px;
+  width: 44px;
+  height: 24px;
   cursor: pointer;
 }
 
@@ -563,21 +976,22 @@
 .switch__track {
   position: absolute;
   inset: 0;
-  border-radius: var(--radius-full);
+  border-radius: 999px;
   background: var(--gray-300, #d1d5db);
-  transition: background var(--transition);
+  transition: background 0.2s ease;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.1);
 }
 
 .switch__thumb {
   position: absolute;
-  top: 3px;
-  left: 3px;
+  top: 2px;
+  left: 2px;
   width: 20px;
   height: 20px;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
-  transition: transform var(--transition);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.25), 0 1px 2px rgba(15, 23, 42, 0.1);
+  transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .switch input:checked + .switch__track {
@@ -588,59 +1002,284 @@
   transform: translateX(20px);
 }
 
+.switch input:focus-visible + .switch__track {
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.1), var(--ring-primary);
+}
+
 .switch input:disabled + .switch__track {
-  background: var(--gray-200, #e5e7eb);
+  background: #e5e7eb;
   cursor: not-allowed;
 }
 
-/* ===== SECTIONS DE RAPPORT ===== */
+.switch input:disabled + .switch__track .switch__thumb {
+  background: #f3f4f6;
+}
+
+/* ============================================================
+   SECTIONS DE RAPPORT — Le morceau de signature
+   ============================================================
+   Carte avec numéro circulaire en accent. L'ordre n'est pas
+   décoratif, il fait partie du sens (séquence d'un rapport).
+   ============================================================ */
+
 .rapport-section {
-  border: 1px solid var(--gray-200, #e5e7eb);
-  border-radius: var(--radius-md, 12px);
-  padding: 0.9rem 1rem;
+  position: relative;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 1rem 1rem 1rem 1.1rem;
   margin-bottom: 0.85rem;
-  background: var(--gray-50, #f9fafb);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  background: #ffffff;
+  transition: all 0.18s ease;
+}
+
+.rapport-section::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 3px;
+  background: #e5e7eb;
+  border-radius: 0 3px 3px 0;
+  transition: background 0.2s ease;
+}
+
+.rapport-section:hover {
+  border-color: var(--gray-300, #d1d5db);
+  box-shadow: var(--shadow-sm);
 }
 
 .rapport-section:focus-within {
-  border-color: var(--primary-color, #2563eb);
-  box-shadow: 0 0 0 3px var(--primary-100, #dbeafe);
+  border-color: var(--primary-color);
+  box-shadow: var(--ring-primary);
+}
+
+.rapport-section:focus-within::before {
+  background: var(--primary-color);
 }
 
 .rapport-section__head {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  margin-bottom: 0.6rem;
+  gap: 0.7rem;
+  margin-bottom: 0.7rem;
 }
 
 .rapport-section__num {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
-  min-width: 2.4rem;
+  justify-content: center;
+  gap: 0.3rem;
+  min-width: 32px;
+  height: 28px;
+  padding: 0 0.55rem;
   font-weight: 700;
-  color: var(--primary-color, #2563eb);
-  font-size: 0.9rem;
+  font-size: 0.78rem;
+  color: var(--primary-color);
+  background: var(--primary-50, #eff6ff);
+  border: 1px solid var(--primary-100, #dbeafe);
+  border-radius: 8px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.rapport-section__num svg {
+  opacity: 0.55;
 }
 
 .rapport-section__title {
   flex: 1;
   font-weight: 600;
+  font-size: 0.95rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--gray-900);
+  transition: all 0.15s ease;
+}
+
+.rapport-section__title::placeholder {
+  font-weight: 500;
+  color: var(--gray-400, #9ca3af);
+}
+
+.rapport-section__title:hover {
+  background: #fafbfc;
+}
+
+.rapport-section__title:focus {
+  outline: none;
+  background: #fff;
+  border-color: var(--primary-color);
+  box-shadow: var(--ring-primary);
 }
 
 .rapport-section__actions {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
+  gap: 0.3rem;
 }
 
 .rapport-section__body {
   width: 100%;
   resize: vertical;
   font-family: inherit;
-  font-size: 0.92rem;
-  line-height: 1.5;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fafbfc;
+  color: var(--gray-700);
+  transition: all 0.15s ease;
+  min-height: 110px;
 }
 
+.rapport-section__body:hover {
+  background: #fff;
+  border-color: var(--gray-300, #d1d5db);
+}
+
+.rapport-section__body:focus {
+  outline: none;
+  background: #fff;
+  border-color: var(--primary-color);
+  box-shadow: var(--ring-primary);
+}
+
+.rapport-section__body::placeholder {
+  color: var(--gray-400, #9ca3af);
+}
+
+/* ============================================================
+   FORM ÉLÉMENTS — Inputs cohérents
+   ============================================================ */
+
+.form-group label {
+  display: block;
+  font-size: 0.825rem;
+  font-weight: 600;
+  color: var(--gray-700);
+  margin-bottom: 0.4rem;
+  letter-spacing: 0.01em;
+}
+
+.form-group input[type='text'],
+.form-group input[type='date'],
+.form-group input[type='number'],
+.form-group input[type='email'],
+.form-group select,
+.form-group textarea {
+  width: 100%;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  font-size: 0.92rem;
+  font-family: inherit;
+  background: #fff;
+  color: var(--gray-900);
+  transition: all 0.15s ease;
+}
+
+.form-group input:hover,
+.form-group select:hover,
+.form-group textarea:hover {
+  border-color: var(--gray-300, #d1d5db);
+}
+
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: var(--ring-primary);
+}
+
+/* ============================================================
+   READONLY
+   ============================================================ */
+.readonly {
+  background-color: #f3f4f6 !important;
+  cursor: not-allowed;
+  color: var(--gray-500);
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 1024px) {
+  .ligne-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .btn-remove-ligne {
+    position: absolute;
+    top: 0.75rem;
+    right: 0.75rem;
+  }
+
+  .ligne-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .view-header {
+    flex-direction: column;
+  }
+
+  .totaux-grid,
+  .view-totaux {
+    max-width: 100%;
+  }
+
+  .action-buttons {
+    flex-wrap: wrap;
+  }
+
+  .rapport-section__head {
+    flex-wrap: wrap;
+  }
+
+  .rapport-section__title {
+    order: 3;
+    flex-basis: 100%;
+  }
+}
+
+/* ============================================================
+   ANIMATION D'APPARITION DES LIGNES
+   ============================================================ */
+.data-table tbody tr {
+  animation: rowFadeIn 0.25s ease backwards;
+}
+
+.data-table tbody tr:nth-child(1) { animation-delay: 0.02s; }
+.data-table tbody tr:nth-child(2) { animation-delay: 0.04s; }
+.data-table tbody tr:nth-child(3) { animation-delay: 0.06s; }
+.data-table tbody tr:nth-child(4) { animation-delay: 0.08s; }
+.data-table tbody tr:nth-child(5) { animation-delay: 0.1s; }
+.data-table tbody tr:nth-child(6) { animation-delay: 0.12s; }
+.data-table tbody tr:nth-child(n + 7) { animation-delay: 0.14s; }
+
+@keyframes rowFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
