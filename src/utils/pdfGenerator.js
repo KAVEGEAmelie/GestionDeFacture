@@ -437,7 +437,7 @@ const drawSignature = (doc, centerX, y, parametres = {}, withCachet = false) => 
   const nom = parametres.signataire_nom || 'Koffi KAVEGE';
   const img = parametres.signature_image;
 
-  const nomY = withCachet && img ? y + 6 : y + 13;
+  const nomY = y + 13;
 
   // 1) Cachet/signature dessiné EN PREMIER (en dessous) pour que le texte
   //    reste lisible par-dessus, même si le scan a un fond blanc opaque.
