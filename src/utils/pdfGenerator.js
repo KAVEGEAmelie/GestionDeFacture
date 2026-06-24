@@ -452,8 +452,8 @@ const drawSignature = (doc, centerX, y, parametres = {}, withCachet = false) => 
         h = maxH;
         w = (props.width / props.height) * h;
       }
-      const cx = centerX + 4;
-      const cyCenter = (y + nomY) / 2;
+      const cx = centerX + 10;
+      const cyCenter = (y + nomY) / 2 - 2;
       doc.addImage(img, cx - w / 2, cyCenter - h / 2, w, h);
     } catch (e) {
       // image invalide : on garde uniquement le texte ci-dessous
