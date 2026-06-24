@@ -1119,35 +1119,27 @@ export const generateRapportPDF = async (rapport, parametres = {}) => {
   const contentWidth = pageWidth - MARGIN * 2;
   const bottomLimit = pageHeight - 30; // réserve l'espace du pied de page
 
+  // --- PAGE 1 : Entête seulement sur la première page ---
   drawPageFrame(doc);
   const header = await drawHeader(doc, parametres);
   drawFooter(doc, parametres);
 
   let yPos = header.headerBottom + 12;
-
-  // Référence (numéro) à droite, sous le filet
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
-  doc.setTextColor(...COLORS.grey);
-  doc.text(`Réf : ${rapport.numero || ''}`, header.rightX, yPos, { align: 'right' });
-  yPos += 7;
+  let isFirstPage = true;
 
   // Titre (peut être long) : police réduite, multi-lignes, centré
   const titre = (rapport.titre || 'RAPPORT TECHNIQUE').toUpperCase();
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(15);
+  doc.setFontSize(16);
   doc.setTextColor(...COLORS.navy);
   const titleLines = doc.splitTextToSize(titre, contentWidth - 16);
   titleLines.forEach((line) => {
     doc.text(line, pageWidth / 2, yPos, { align: 'center' });
-    yPos += 7;
+    yPos += 8;
   });
-  doc.setDrawColor(...COLORS.navy);
-  doc.setLineWidth(0.6);
-  doc.line(pageWidth / 2 - 32, yPos - 2, pageWidth / 2 + 32, yPos - 2);
-  yPos += 7;
+  yPos += 4;
 
-  // --- Bloc « Informations générales » dans un encadré léger ---
+  // --- Bloc « Informations générales » dans un encadré léger en bas de première page ---
   const infos = [];
   if (rapport.client_nom) infos.push(['Client', rapport.client_nom]);
   infos.push(['Prestataire', parametres.entreprise_nom || 'IN-TEL SERVICES']);
@@ -1155,9 +1147,9 @@ export const generateRapportPDF = async (rapport, parametres = {}) => {
   infos.push(['Date', formatDateLong(rapport.date)]);
   if (rapport.objet) infos.push(['Objet', rapport.objet]);
 
-  const infoPad = 4;
-  const labelW = 28;
-  const infoLineH = 5.6;
+  const infoPad = 5;
+  const labelW = 32;
+  const infoLineH = 6;
   doc.setFontSize(10);
   doc.setFont('helvetica', 'normal');
   const valueW = contentWidth - labelW - infoPad * 2;
@@ -1167,12 +1159,18 @@ export const generateRapportPDF = async (rapport, parametres = {}) => {
     measured += lines.length * infoLineH;
     return { label, lines };
   });
-  const boxH = measured + infoPad * 2 + 1;
+  const boxH = measured + infoPad * 2 + 2;
+  
+  // Positionner le rectangle en bas de la première page
+  const infoBoxY = bottomLimit - boxH - 4;
+  yPos = Math.min(yPos, infoBoxY - 10);
+  
+  // Dessiner le rectangle en bas
   doc.setFillColor(...COLORS.boxBg);
   doc.setDrawColor(...COLORS.line);
   doc.setLineWidth(0.4);
-  doc.roundedRect(MARGIN, yPos, contentWidth, boxH, 2, 2, 'FD');
-  let infoY = yPos + infoPad + 3.5;
+  doc.roundedRect(MARGIN, infoBoxY, contentWidth, boxH, 2, 2, 'FD');
+  let infoY = infoBoxY + infoPad + 3.5;
   infoRendered.forEach(({ label, lines }) => {
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(...COLORS.navy);
@@ -1184,16 +1182,18 @@ export const generateRapportPDF = async (rapport, parametres = {}) => {
     });
     infoY += lines.length * infoLineH;
   });
-  yPos += boxH + 9;
 
-  // --- Helper : saut de page avec en-tête + pied + cadre redessinés ---
+  // Réinitialiser yPos pour le contenu après la première page
+  yPos = infoBoxY - 8;
+
+  // --- Helper : saut de page SANS en-tête (seulement cadre et pied) ---
   const ensureSpace = async (needed) => {
     if (yPos + needed > bottomLimit) {
       doc.addPage();
       drawPageFrame(doc);
-      const h = await drawHeader(doc, parametres);
       drawFooter(doc, parametres);
-      yPos = h.headerBottom + 12;
+      yPos = MARGIN + 12;
+      isFirstPage = false;
     }
   };
 
