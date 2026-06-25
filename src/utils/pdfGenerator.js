@@ -778,12 +778,12 @@ export const generateProformaPDF = async (proforma, parametres, options = {}) =>
       fillColor: COLORS.boxBg, textColor: COLORS.navy, fontStyle: 'bold', fontSize: 9.5
     },
     columnStyles: {
-      0: { cellWidth: 12, halign: 'center' },
-      1: { cellWidth: 70 },
-      2: { cellWidth: 22, halign: 'center' },
-      3: { cellWidth: 16, halign: 'center' },
-      4: { cellWidth: 33, halign: 'right' },
-      5: { cellWidth: 33, halign: 'right' }
+      0: { cellWidth: 10, halign: 'center' },
+      1: { cellWidth: 82 },
+      2: { cellWidth: 18, halign: 'center' },
+      3: { cellWidth: 12, halign: 'center' },
+      4: { cellWidth: 28, halign: 'right' },
+      5: { cellWidth: 28, halign: 'right' }
     },
     styles: { lineColor: COLORS.line, lineWidth: 0.15 },
     margin: { left: MARGIN, right: MARGIN, bottom: 40 }
@@ -888,12 +888,12 @@ export const generateFacturePDF = async (facture, parametres) => {
       fillColor: COLORS.boxBg, textColor: COLORS.navy, fontStyle: 'bold', fontSize: 9.5
     },
     columnStyles: {
-      0: { cellWidth: 12, halign: 'center' },
-      1: { cellWidth: 70 },
-      2: { cellWidth: 22, halign: 'center' },
-      3: { cellWidth: 16, halign: 'center' },
-      4: { cellWidth: 33, halign: 'right' },
-      5: { cellWidth: 33, halign: 'right' }
+      0: { cellWidth: 10, halign: 'center' },
+      1: { cellWidth: 82 },
+      2: { cellWidth: 18, halign: 'center' },
+      3: { cellWidth: 12, halign: 'center' },
+      4: { cellWidth: 28, halign: 'right' },
+      5: { cellWidth: 28, halign: 'right' }
     },
     styles: { lineColor: COLORS.line, lineWidth: 0.15 },
     margin: { left: MARGIN, right: MARGIN, top: 18, bottom: 40 },
@@ -1005,19 +1005,19 @@ export const generateBordereauPDF = async (bordereau, parametres) => {
 
   yPos = doc.lastAutoTable.finalY + 8;
 
-  // Bloc bas (observations + certification) ancré au-dessus du pied de page,
-  // tout en restant après le tableau. Passe à la page suivante si nécessaire.
+  // Bloc bas (observations + certification) en flux normal:
+  // s'il ne tient pas, il va en page suivante en haut de la zone utile.
   const obsH = 17;     // hauteur "Observations :" + encadré
   const certH = 50;    // hauteur du bloc "Certification de livraison"
   const gap = 6;
   const blocBasH = obsH + gap + certH;
   const footerTop = pageHeight - 24;
-  let blocTop = Math.max(yPos, footerTop - 3 - blocBasH);
+  let blocTop = yPos;
   if (blocTop + blocBasH > footerTop - 2) {
     doc.addPage();
     drawPageFrame(doc);
     drawFooter(doc, parametres);
-    blocTop = Math.max(30, footerTop - 3 - blocBasH);
+    blocTop = 30;
   }
 
   // Encadré Observations
@@ -1029,6 +1029,299 @@ export const generateBordereauPDF = async (bordereau, parametres) => {
   drawCertification(doc, contentLeft, rightX, obsBottom + gap, annee);
 
   // (Le pied de page est dessiné sur chaque page via didDrawPage / la page de débordement)
+
+  return doc;
+};
+
+// =====================================================================
+//  ATTESTATION DE SERVICE FAIT
+// =====================================================================
+const drawWrappedParagraph = (doc, text, x, y, width, options = {}) => {
+  const {
+    fontSize = 10.5,
+    fontStyle = 'normal',
+    color = COLORS.ink,
+    lineHeight = 6,
+    align = 'left',
+    bold = false,
+  } = options;
+
+  const normalizeAlign = (value) => {
+    const allowed = new Set(['left', 'center', 'right', 'justify']);
+    return allowed.has(value) ? value : 'left';
+  };
+
+  const splitWordsByWidth = (source, maxWidth) => {
+    const words = String(source || '').trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return [];
+
+    const lines = [];
+    let lineWords = [];
+    words.forEach((word) => {
+      const candidate = lineWords.length ? `${lineWords.join(' ')} ${word}` : word;
+      if (doc.getTextWidth(candidate) <= maxWidth) {
+        lineWords.push(word);
+      } else {
+        if (lineWords.length) lines.push(lineWords);
+        lineWords = [word];
+      }
+    });
+    if (lineWords.length) lines.push(lineWords);
+    return lines;
+  };
+
+  const lines = doc.splitTextToSize(String(text || '').trim(), width);
+  doc.setFont('helvetica', bold ? 'bold' : fontStyle);
+  doc.setFontSize(fontSize);
+  doc.setTextColor(...color);
+
+  const safeAlign = normalizeAlign(align);
+
+  if (safeAlign === 'justify') {
+    const justifiedLines = splitWordsByWidth(text, width);
+    const baseSpace = doc.getTextWidth(' ');
+
+    justifiedLines.forEach((lineWords, index) => {
+      const isLast = index === justifiedLines.length - 1;
+      if (isLast || lineWords.length === 1) {
+        doc.text(lineWords.join(' '), x, y);
+        y += lineHeight;
+        return;
+      }
+
+      const wordsW = lineWords.reduce((sum, w) => sum + doc.getTextWidth(w), 0);
+      const gaps = lineWords.length - 1;
+      const extra = Math.max(0, (width - wordsW - gaps * baseSpace) / gaps);
+      let cursorX = x;
+
+      lineWords.forEach((word, wi) => {
+        doc.text(word, cursorX, y);
+        if (wi < gaps) cursorX += doc.getTextWidth(word) + baseSpace + extra;
+      });
+
+      y += lineHeight;
+    });
+
+    return y;
+  }
+
+  const anchorX = safeAlign === 'center' ? x + width / 2 : safeAlign === 'right' ? x + width : x;
+
+  lines.forEach((line) => {
+    doc.text(line, anchorX, y, { align: safeAlign });
+    y += lineHeight;
+  });
+
+  return y;
+};
+
+const countWrappedLines = (doc, text, width, align = 'left') => {
+  const safeAlign = ['left', 'center', 'right', 'justify'].includes(align) ? align : 'left';
+  const source = String(text || '').trim();
+  if (!source) return 0;
+
+  if (safeAlign !== 'justify') {
+    const lines = doc.splitTextToSize(source, width);
+    return lines.length;
+  }
+
+  const words = source.split(/\s+/).filter(Boolean);
+  if (!words.length) return 0;
+
+  const lines = [];
+  let lineWords = [];
+  words.forEach((word) => {
+    const candidate = lineWords.length ? `${lineWords.join(' ')} ${word}` : word;
+    if (doc.getTextWidth(candidate) <= width) {
+      lineWords.push(word);
+    } else {
+      if (lineWords.length) lines.push(lineWords);
+      lineWords = [word];
+    }
+  });
+  if (lineWords.length) lines.push(lineWords);
+
+  return lines.length;
+};
+
+const drawBulletedParagraphs = async (doc, items, x, y, width, parametres = {}, options = {}) => {
+  const safeAlign = ['left', 'center', 'right', 'justify'].includes(options.align) ? options.align : 'left';
+  const bulletOffset = 3.2;
+  const textOffset = 6.2;
+
+  for (const raw of items) {
+    const text = String(raw || '').replace(/^[-•*]\s*/, '').trim();
+    if (!text) continue;
+
+    const lineCount = countWrappedLines(doc, text, width - textOffset, safeAlign);
+    const needed = lineCount * 6.1 + 2;
+    if (y + needed > doc.internal.pageSize.getHeight() - 30) {
+      doc.addPage();
+      drawPageFrame(doc);
+      drawFooter(doc, parametres);
+      y = MARGIN + 12;
+    }
+
+    doc.setFillColor(...COLORS.navySoft);
+    doc.circle(x + bulletOffset, y - 1.2, 0.7, 'F');
+    y = drawWrappedParagraph(doc, text, x + textOffset, y, width - textOffset, {
+      fontSize: 10.2,
+      bold: true,
+      color: COLORS.ink,
+      lineHeight: 6.1,
+      align: safeAlign,
+    });
+    y += 1.5;
+  }
+  return y;
+};
+
+const normalizeTravauxItems = (value) => {
+  const rawItems = Array.isArray(value) ? value : [String(value || '')];
+  return rawItems
+    .flatMap((entry) => String(entry || '').replace(/\r/g, '').split('\n'))
+    .flatMap((line) =>
+      line
+        .replace(/[;,]\s*[•]\s*/g, '\n• ')
+        .replace(/\s+[•]\s*/g, '\n• ')
+        .split('\n')
+    )
+    .map((line) => line.replace(/^[-•*]\s*/, '').replace(/^[,;]+/, '').trim())
+    .filter(Boolean);
+};
+
+export const generateAttestationPDF = async (attestation, parametres = {}) => {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const contentLeft = MARGIN;
+  const rightX = pageWidth - MARGIN;
+  const bottomLimit = pageHeight - 30;
+
+  drawPageFrame(doc);
+  const header = await drawHeader(doc, parametres);
+  drawFooter(doc, parametres);
+
+  let yPos = header.headerBottom + 10;
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.setTextColor(...COLORS.grey);
+  doc.text(`Réf : ${attestation.reference || ''}`, rightX, yPos - 2, { align: 'right' });
+
+  const titre = (attestation.title || attestation.titre || 'ATTESTION DE SERVICE FAIT').toUpperCase();
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(20);
+  doc.setTextColor(...COLORS.navy);
+  const titleLines = doc.splitTextToSize(titre, pageWidth - MARGIN * 2 - 8);
+  let titleY = yPos + 10;
+  titleLines.forEach((line) => {
+    doc.text(line, pageWidth / 2, titleY, { align: 'center' });
+    titleY += 8;
+  });
+  doc.setLineWidth(0.7);
+  doc.setDrawColor(...COLORS.navy);
+  doc.line(pageWidth / 2 - 40, titleY - 1, pageWidth / 2 + 40, titleY - 1);
+  yPos = titleY + 6;
+
+  const intro = attestation.intro || '';
+  const introAlign = ['left', 'center', 'right', 'justify'].includes(attestation.intro_align)
+    ? attestation.intro_align
+    : 'justify';
+  if (intro.trim()) {
+    yPos = drawWrappedParagraph(doc, intro, contentLeft, yPos, pageWidth - MARGIN * 2, {
+      fontSize: 10.5,
+      bold: true,
+      lineHeight: 6.2,
+      align: introAlign,
+    });
+    yPos += 4;
+  }
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11.5);
+  doc.setTextColor(...COLORS.ink);
+  doc.text('NATURE DES TRAVAUX RÉALISÉS', contentLeft, yPos);
+  yPos += 7;
+
+  const travaux = normalizeTravauxItems(attestation.travaux);
+  const travauxAlign = ['left', 'center', 'right', 'justify'].includes(attestation.travaux_align)
+    ? attestation.travaux_align
+    : 'left';
+  const travauxListMode = ['bullets', 'plain'].includes(attestation.travaux_list_mode)
+    ? attestation.travaux_list_mode
+    : 'bullets';
+  if (travaux.length) {
+    if (travauxListMode === 'bullets') {
+      yPos = await drawBulletedParagraphs(doc, travaux, contentLeft, yPos, pageWidth - MARGIN * 2, parametres, {
+        align: travauxAlign,
+      });
+    } else {
+      for (const line of travaux) {
+        const lineCount = countWrappedLines(doc, line, pageWidth - MARGIN * 2, travauxAlign);
+        const needed = lineCount * 6.1 + 2;
+        if (yPos + needed > bottomLimit) {
+          doc.addPage();
+          drawPageFrame(doc);
+          drawFooter(doc, parametres);
+          yPos = MARGIN + 12;
+        }
+        yPos = drawWrappedParagraph(doc, line, contentLeft, yPos, pageWidth - MARGIN * 2, {
+          fontSize: 10.2,
+          bold: true,
+          color: COLORS.ink,
+          lineHeight: 6.1,
+          align: travauxAlign,
+        });
+        yPos += 1.5;
+      }
+    }
+  }
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11.5);
+  doc.setTextColor(...COLORS.ink);
+  doc.text('CONFORMITÉ DES TRAVAUX', contentLeft, yPos);
+  yPos += 8;
+
+  const conformiteAlign = ['left', 'center', 'right', 'justify'].includes(attestation.conformite_align)
+    ? attestation.conformite_align
+    : 'justify';
+  yPos = drawWrappedParagraph(doc, attestation.conformite || '', contentLeft, yPos, pageWidth - MARGIN * 2, {
+    fontSize: 10.5,
+    bold: true,
+    lineHeight: 6.2,
+    align: conformiteAlign,
+  });
+
+  if (yPos + 38 > bottomLimit) {
+    doc.addPage();
+    drawPageFrame(doc);
+    drawFooter(doc, parametres);
+    yPos = MARGIN + 18;
+  }
+
+  yPos += 8;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(...COLORS.ink);
+  doc.text(`Fait à ${attestation.lieu || 'Lomé'}, le ${formatDateLong(attestation.date)}.`, rightX, yPos, { align: 'right' });
+  yPos += 10;
+  doc.text('Ont signé', pageWidth / 2, yPos, { align: 'center' });
+  yPos += 16;
+
+  doc.setFontSize(10.5);
+  doc.text(attestation.signataire_gauche || `Pour ${parametres.entreprise_nom || 'IN-TEL SERVICES'}`, contentLeft + 22, yPos, { align: 'center' });
+  doc.text(attestation.signataire_droite || `Pour ${attestation.client_nom || 'Le Client'}`, rightX - 22, yPos, { align: 'center' });
+
+  const totalPages = doc.internal.getNumberOfPages();
+  for (let p = 1; p <= totalPages; p++) {
+    doc.setPage(p);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(...COLORS.grey);
+    doc.text(`Page ${p} / ${totalPages}`, pageWidth / 2, pageHeight - 8, { align: 'center' });
+  }
 
   return doc;
 };
@@ -1217,6 +1510,58 @@ export const generateRapportPDF = async (rapport, parametres = {}) => {
     }
   };
 
+  // Rendu justifie pour eviter les paragraphes visuellement decales.
+  const drawJustifiedParagraph = async (text, x, width, lineHeight, options = {}) => {
+    const { drawBullet = false, bulletX = x - 4 } = options;
+    const words = String(text || '').trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return;
+
+    const lines = [];
+    let lineWords = [];
+
+    words.forEach((word) => {
+      const candidate = lineWords.length ? `${lineWords.join(' ')} ${word}` : word;
+      if (doc.getTextWidth(candidate) <= width) {
+        lineWords.push(word);
+      } else {
+        if (lineWords.length) lines.push(lineWords);
+        lineWords = [word];
+      }
+    });
+    if (lineWords.length) lines.push(lineWords);
+
+    const spaceW = doc.getTextWidth(' ');
+
+    for (let i = 0; i < lines.length; i++) {
+      await ensureSpace(lineHeight + 1);
+      const current = lines[i];
+      const isLast = i === lines.length - 1;
+
+      if (drawBullet && i === 0) {
+        doc.setFillColor(...COLORS.navySoft);
+        doc.circle(bulletX, yPos - 1.4, 0.7, 'F');
+      }
+
+      if (isLast || current.length === 1) {
+        doc.text(current.join(' '), x, yPos);
+        yPos += lineHeight;
+        continue;
+      }
+
+      const wordsW = current.reduce((sum, w) => sum + doc.getTextWidth(w), 0);
+      const gaps = current.length - 1;
+      const extra = Math.max(0, (width - wordsW - gaps * spaceW) / gaps);
+      let cursorX = x;
+
+      current.forEach((w, wi) => {
+        doc.text(w, cursorX, yPos);
+        if (wi < gaps) cursorX += doc.getTextWidth(w) + spaceW + extra;
+      });
+
+      yPos += lineHeight;
+    }
+  };
+
   // --- Sections numérotées ---
   const sections = Array.isArray(rapport.sections) ? rapport.sections : [];
   let idx = 1;
@@ -1265,15 +1610,20 @@ export const generateRapportPDF = async (rapport, parametres = {}) => {
         doc.setTextColor(...COLORS.ink);
       }
 
-      const wrapped = doc.splitTextToSize(text, contentWidth - indent);
-      for (let i = 0; i < wrapped.length; i++) {
-        await ensureSpace(6);
-        if (isBullet && i === 0) {
-          doc.setFillColor(...COLORS.navySoft);
-          doc.circle(MARGIN + 2, yPos - 1.4, 0.7, 'F');
+      if (isSubHeading) {
+        const wrapped = doc.splitTextToSize(text, contentWidth - indent);
+        for (let i = 0; i < wrapped.length; i++) {
+          await ensureSpace(6);
+          doc.text(wrapped[i], MARGIN + indent, yPos);
+          yPos += 5.4;
         }
-        doc.text(wrapped[i], MARGIN + indent, yPos);
-        yPos += 5.4;
+      } else if (isBullet) {
+        await drawJustifiedParagraph(text, MARGIN + indent, contentWidth - indent, 5.4, {
+          drawBullet: true,
+          bulletX: MARGIN + 2
+        });
+      } else {
+        await drawJustifiedParagraph(text, MARGIN + indent, contentWidth - indent, 5.4);
       }
       if (isSubHeading) yPos += 1;
     }

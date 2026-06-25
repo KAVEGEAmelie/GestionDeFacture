@@ -9,6 +9,7 @@ import Factures from './pages/Factures';
 import Bordereaux from './pages/Bordereaux';
 import Tva from './pages/Tva';
 import Rapports from './pages/Rapports';
+import AttestationServiceFait from './pages/AttestationServiceFait';
 import Parametres from './pages/Parametres';
 import LockScreen from './components/LockScreen/LockScreen';
 import { ToastProvider } from './components/Toast/ToastProvider';
@@ -60,6 +61,7 @@ function App() {
               <Route path="bordereaux" element={<Bordereaux />} />
               <Route path="tva" element={<Tva />} />
               <Route path="rapports" element={<Rapports />} />
+              <Route path="attestation-service-fait" element={<AttestationServiceFait />} />
               <Route path="parametres" element={<Parametres />} />
             </Route>
           </Routes>

@@ -24,6 +24,7 @@ const Layout = () => {
     { path: '/bordereaux', icon: Truck, label: 'Bordereaux' },
     { path: '/tva', icon: Landmark, label: 'TVA / OTR' },
     { path: '/rapports', icon: ClipboardList, label: 'Rapports' },
+    { path: '/attestation-service-fait', icon: FileText, label: 'Attestation service fait' },
     { path: '/parametres', icon: Settings, label: 'Paramètres' }
   ];
 

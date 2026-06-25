@@ -1,8 +1,8 @@
 version: 1.0.0
 files:
   - url: Gestion-Facturation-Setup-1.0.0.exe
-    sha512: fiPgoEgoCfLhJk8lVyRisx88a5xBnOx75ZaQUH+yCtMVMDU8058jjW19JilnepQt3H+jeu6fMMN4Si4GB97uDA==
-    size: 90583216
+    sha512: bNJnKtZuO8kfLL7Fn2qLuSCYHQtcAFOgYGAC1drekGHwmRs8OCmIctpzXhcFpellNBGikXJHz5qLgUwT+MN9qA==
+    size: 90560411
 path: Gestion-Facturation-Setup-1.0.0.exe
-sha512: fiPgoEgoCfLhJk8lVyRisx88a5xBnOx75ZaQUH+yCtMVMDU8058jjW19JilnepQt3H+jeu6fMMN4Si4GB97uDA==
-releaseDate: '2026-06-23T19:12:19.486Z'
+sha512: bNJnKtZuO8kfLL7Fn2qLuSCYHQtcAFOgYGAC1drekGHwmRs8OCmIctpzXhcFpellNBGikXJHz5qLgUwT+MN9qA==
+releaseDate: '2026-06-25T18:15:28.253Z'
