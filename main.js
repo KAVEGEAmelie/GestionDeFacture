@@ -261,6 +261,8 @@ function initDatabase() {
     insertParam.run('entreprise_utb', '010350245170210119');
     insertParam.run('entreprise_slogan_pied1', 'Votre partenaire en réseaux informatiques,');
     insertParam.run('entreprise_slogan_pied2', 'télécommunications et sécurité électronique.');
+    insertParam.run('application_sous_titre', 'Gestion Facturation');
+    insertParam.run('entreprise_logo', '');
     insertParam.run('signataire_titre', 'Le Directeur,');
     insertParam.run('signataire_nom', 'Koffi KAVEGE');
     insertParam.run('tva_taux', '18');
@@ -276,6 +278,8 @@ function initDatabase() {
   ensureParam.run('entreprise_slogan2', 'Sécurité Électronique • Énergie');
   ensureParam.run('entreprise_slogan_pied1', 'Votre partenaire en réseaux informatiques,');
   ensureParam.run('entreprise_slogan_pied2', 'télécommunications et sécurité électronique.');
+  ensureParam.run('application_sous_titre', 'Gestion Facturation');
+  ensureParam.run('entreprise_logo', '');
   ensureParam.run('signataire_titre', 'Le Directeur,');
   ensureParam.run('signataire_nom', 'Koffi KAVEGE');
   // Compteur des rapports techniques (créé pour les bases existantes aussi)

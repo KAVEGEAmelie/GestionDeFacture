@@ -108,7 +108,7 @@ const Parametres = () => {
     });
   };
 
-  const handleSignatureUpload = (e) => {
+  const handleImageUpload = (key, successMessage) => (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
     if (!file.type.startsWith('image/')) {
@@ -121,16 +121,30 @@ const Parametres = () => {
     }
     const reader = new FileReader();
     reader.onload = () => {
-      handleChange('signature_image', reader.result);
-      toast.success('Image chargée. Cliquez sur « Enregistrer » pour la conserver.');
+      handleChange(key, reader.result);
+      toast.success(successMessage);
     };
     reader.onerror = () => toast.error('Impossible de lire le fichier image.');
     reader.readAsDataURL(file);
     e.target.value = '';
   };
 
+  const handleSignatureUpload = handleImageUpload(
+    'signature_image',
+    'Image du cachet chargée. Cliquez sur « Enregistrer » pour la conserver.'
+  );
+
+  const handleLogoUpload = handleImageUpload(
+    'entreprise_logo',
+    'Logo chargé. Cliquez sur « Enregistrer » pour la conserver.'
+  );
+
   const handleRemoveSignature = () => {
     handleChange('signature_image', '');
+  };
+
+  const handleRemoveLogo = () => {
+    handleChange('entreprise_logo', '');
   };
 
   const handleSubmit = async (e) => {
@@ -142,6 +156,8 @@ const Parametres = () => {
       for (const [key, value] of Object.entries(parametres)) {
         await window.electronAPI.parametres.update(key, value);
       }
+
+      window.dispatchEvent(new Event('app:settings-updated'));
       
       toast.success('Paramètres enregistrés avec succès.');
     } catch (error) {
@@ -196,6 +212,60 @@ const Parametres = () => {
         <form onSubmit={handleSubmit} className="form" style={{ padding: '2rem' }}>
           <div className="form-section">
             <h3 className="form-section-title">Informations de l'entreprise</h3>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>Logo de l'entreprise</label>
+                <small style={{ color: '#6b7280', fontSize: '0.875rem', marginBottom: '0.5rem', display: 'block' }}>
+                  Ce logo sera utilisé dans la barre latérale et dans les PDF.
+                </small>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                  <label className="btn btn-secondary" style={{ cursor: 'pointer', marginBottom: 0 }}>
+                    <Upload size={18} />
+                    Choisir un logo
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleLogoUpload}
+                      style={{ display: 'none' }}
+                    />
+                  </label>
+                  {parametres.entreprise_logo ? (
+                    <button type="button" className="btn btn-danger" onClick={handleRemoveLogo}>
+                      Retirer le logo
+                    </button>
+                  ) : null}
+                </div>
+                {parametres.entreprise_logo ? (
+                  <div
+                    style={{
+                      marginTop: '1rem',
+                      padding: '0.75rem',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: '8px',
+                      display: 'inline-block',
+                      background: '#f9fafb',
+                    }}
+                  >
+                    <img
+                      src={parametres.entreprise_logo}
+                      alt="Logo de l'entreprise"
+                      style={{ maxWidth: '220px', maxHeight: '120px', display: 'block' }}
+                    />
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="form-group">
+                <label>Sous-titre de l'application</label>
+                <input
+                  type="text"
+                  value={parametres.application_sous_titre || ''}
+                  onChange={(e) => handleChange('application_sous_titre', e.target.value)}
+                  placeholder="Gestion Facturation"
+                />
+              </div>
+            </div>
             
             <div className="form-group">
               <label>Nom de l'entreprise</label>

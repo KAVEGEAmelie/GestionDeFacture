@@ -189,7 +189,7 @@ const drawHeader = async (doc, parametres, options = {}) => {
   const rightX = pageWidth - MARGIN;
 
   // LOGO
-  const logo = await getLogoDataURL();
+  const logo = await getLogoDataURL(parametres?.entreprise_logo || '');
   let textX = contentLeft;
   if (logo) {
     const logoW = 30;
