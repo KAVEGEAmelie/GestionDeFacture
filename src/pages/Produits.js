@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Plus, Edit2, Trash2 } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
@@ -7,6 +7,7 @@ import { inDateRange, inNumberRange } from '../utils/dateFilters';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import { matchesWordPrefix } from '../utils/search';
 import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
 import './Clients.css';
 
@@ -18,6 +19,7 @@ const Produits = () => {
   const [uniteFilter, setUniteFilter] = useState('toutes');
   const [prixMin, setPrixMin] = useState('');
   const [prixMax, setPrixMax] = useState('');
+  const [sortConfig, setSortConfig] = useState({ key: 'designation', direction: 'asc' });
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -127,13 +129,38 @@ const Produits = () => {
     const term = searchTerm.toLowerCase().trim();
     const matchSearch =
       !term ||
-      (produit.designation || '').toLowerCase().includes(term) ||
-      (produit.description || '').toLowerCase().includes(term);
+      matchesWordPrefix(produit.designation, term) ||
+      matchesWordPrefix(produit.description, term);
     const matchUnite = uniteFilter === 'toutes' || produit.unite === uniteFilter;
     const matchPrix = inNumberRange(produit.prix_unitaire, prixMin, prixMax);
     const matchDate = inDateRange(produit.created_at, dateFrom, dateTo);
     return matchSearch && matchUnite && matchPrix && matchDate;
   });
+
+  const sortedFilteredProduits = useMemo(() => {
+    const items = [...filteredProduits];
+    const { key, direction } = sortConfig;
+    const factor = direction === 'asc' ? 1 : -1;
+    return items.sort((a, b) => {
+      if (key === 'prix_unitaire') {
+        return ((Number(a.prix_unitaire) || 0) - (Number(b.prix_unitaire) || 0)) * factor;
+      }
+      return String(a[key] || '').localeCompare(String(b[key] || ''), 'fr', { sensitivity: 'base' }) * factor;
+    });
+  }, [filteredProduits, sortConfig]);
+
+  const toggleSort = (key) => {
+    setSortConfig((prev) =>
+      prev.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: 'asc' }
+    );
+  };
+
+  const sortMark = (key) => {
+    if (sortConfig.key !== key) return ' ↕';
+    return sortConfig.direction === 'asc' ? ' ↑' : ' ↓';
+  };
 
   const activeCount =
     (uniteFilter !== 'toutes' ? 1 : 0) +
@@ -152,7 +179,7 @@ const Produits = () => {
     return new Intl.NumberFormat('fr-FR').format(price);
   };
 
-  const selection = useBulkSelection(filteredProduits);
+  const selection = useBulkSelection(sortedFilteredProduits);
   const handleBulkDelete = () =>
     bulkDelete({
       ids: selection.selectedIds,
@@ -253,22 +280,22 @@ const Produits = () => {
                     title="Tout sélectionner"
                   />
                 </th>
-                <th>Désignation</th>
-                <th>Prix unitaire</th>
-                <th>Unité</th>
-                <th>Description</th>
+                <th onClick={() => toggleSort('designation')} style={{ cursor: 'pointer' }}>Désignation{sortMark('designation')}</th>
+                <th onClick={() => toggleSort('prix_unitaire')} style={{ cursor: 'pointer' }}>Prix unitaire{sortMark('prix_unitaire')}</th>
+                <th onClick={() => toggleSort('unite')} style={{ cursor: 'pointer' }}>Unité{sortMark('unite')}</th>
+                <th onClick={() => toggleSort('description')} style={{ cursor: 'pointer' }}>Description{sortMark('description')}</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredProduits.length === 0 ? (
+              {sortedFilteredProduits.length === 0 ? (
                 <tr>
                   <td colSpan="6" className="empty-state">
                     {searchTerm || activeCount > 0 ? 'Aucun produit trouvé' : 'Aucun produit enregistré'}
                   </td>
                 </tr>
               ) : (
-                filteredProduits.map((produit) => (
+                sortedFilteredProduits.map((produit) => (
                   <tr key={produit.id}>
                     <td className="select-col">
                       <input

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Landmark, Wallet, CheckCircle, Send, FileDown, FileSpreadsheet, Printer } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import FilterBar from '../components/Filters/FilterBar';
@@ -7,6 +7,7 @@ import { inDateRange, inNumberRange } from '../utils/dateFilters';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import { matchesWordPrefix } from '../utils/search';
 import { generateTvaPDF } from '../utils/pdfGenerator';
 import './Clients.css';
 import './Proformas.css';
@@ -34,6 +35,8 @@ const Tva = () => {
   const [dateTo, setDateTo] = useState('');
   const [montantMin, setMontantMin] = useState('');
   const [montantMax, setMontantMax] = useState('');
+  const [sortAVerser, setSortAVerser] = useState({ key: 'date_paiement', direction: 'desc' });
+  const [sortVersees, setSortVersees] = useState({ key: 'date_versement_tva', direction: 'desc' });
   const [parametres, setParametres] = useState({});
 
   useEffect(() => {
@@ -64,8 +67,8 @@ const Tva = () => {
     const term = searchTerm.toLowerCase().trim();
     const matchSearch =
       !term ||
-      (f.numero && f.numero.toLowerCase().includes(term)) ||
-      (f.client_nom && f.client_nom.toLowerCase().includes(term));
+      matchesWordPrefix(f.numero, term) ||
+      matchesWordPrefix(f.client_nom, term);
     const matchMontant = inNumberRange(f.tva, montantMin, montantMax);
     return matchSearch && matchMontant;
   };
@@ -76,6 +79,49 @@ const Tva = () => {
   const filteredVersees = stats.versees.filter(
     (f) => matchCommon(f) && inDateRange(f.date_versement_tva, dateFrom, dateTo)
   );
+
+  const sortRows = (rows, config) => {
+    const items = [...rows];
+    const factor = config.direction === 'asc' ? 1 : -1;
+    return items.sort((a, b) => {
+      if (config.key === 'date_paiement' || config.key === 'date_versement_tva') {
+        return ((new Date(a[config.key]).getTime() || 0) - (new Date(b[config.key]).getTime() || 0)) * factor;
+      }
+      if (config.key === 'total_ttc' || config.key === 'tva') {
+        return ((Number(a[config.key]) || 0) - (Number(b[config.key]) || 0)) * factor;
+      }
+      return String(a[config.key] || '').localeCompare(String(b[config.key] || ''), 'fr', { sensitivity: 'base' }) * factor;
+    });
+  };
+
+  const sortedAVerser = useMemo(() => sortRows(filteredAVerser, sortAVerser), [filteredAVerser, sortAVerser]);
+  const sortedVersees = useMemo(() => sortRows(filteredVersees, sortVersees), [filteredVersees, sortVersees]);
+
+  const toggleSortAVerser = (key) => {
+    setSortAVerser((prev) =>
+      prev.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: key === 'date_paiement' ? 'desc' : 'asc' }
+    );
+  };
+
+  const toggleSortVersees = (key) => {
+    setSortVersees((prev) =>
+      prev.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: key === 'date_versement_tva' ? 'desc' : 'asc' }
+    );
+  };
+
+  const sortMarkAVerser = (key) => {
+    if (sortAVerser.key !== key) return ' ↕';
+    return sortAVerser.direction === 'asc' ? ' ↑' : ' ↓';
+  };
+
+  const sortMarkVersees = (key) => {
+    if (sortVersees.key !== key) return ' ↕';
+    return sortVersees.direction === 'asc' ? ' ↑' : ' ↓';
+  };
 
   const activeCount =
     (dateFrom || dateTo ? 1 : 0) +
@@ -95,10 +141,10 @@ const Tva = () => {
   };
 
   const toggleSelectAll = () => {
-    if (selected.length === filteredAVerser.length) {
+    if (selected.length === sortedAVerser.length) {
       setSelected([]);
     } else {
-      setSelected(filteredAVerser.map((f) => f.id));
+      setSelected(sortedAVerser.map((f) => f.id));
     }
   };
 
@@ -326,7 +372,7 @@ const Tva = () => {
 
         {activeTab === 'a_verser' ? (
           <>
-            {filteredAVerser.length > 0 && (
+            {sortedAVerser.length > 0 && (
               <div className="tva-actions-bar">
                 <span>
                   {selected.length} sélectionnée(s) — TVA : <strong>{formatFCFA(totalSelectionne)}</strong>
@@ -344,26 +390,26 @@ const Tva = () => {
                     <th style={{ width: '40px' }}>
                       <input
                         type="checkbox"
-                        checked={filteredAVerser.length > 0 && selected.length === filteredAVerser.length}
+                        checked={sortedAVerser.length > 0 && selected.length === sortedAVerser.length}
                         onChange={toggleSelectAll}
                       />
                     </th>
-                    <th>N° Facture</th>
-                    <th>Client</th>
-                    <th>Date paiement</th>
-                    <th>Montant TTC</th>
-                    <th>TVA</th>
+                    <th onClick={() => toggleSortAVerser('numero')} style={{ cursor: 'pointer' }}>N° Facture{sortMarkAVerser('numero')}</th>
+                    <th onClick={() => toggleSortAVerser('client_nom')} style={{ cursor: 'pointer' }}>Client{sortMarkAVerser('client_nom')}</th>
+                    <th onClick={() => toggleSortAVerser('date_paiement')} style={{ cursor: 'pointer' }}>Date paiement{sortMarkAVerser('date_paiement')}</th>
+                    <th onClick={() => toggleSortAVerser('total_ttc')} style={{ cursor: 'pointer' }}>Montant TTC{sortMarkAVerser('total_ttc')}</th>
+                    <th onClick={() => toggleSortAVerser('tva')} style={{ cursor: 'pointer' }}>TVA{sortMarkAVerser('tva')}</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredAVerser.length === 0 ? (
+                  {sortedAVerser.length === 0 ? (
                     <tr>
                       <td colSpan="6" className="empty-state">
                         Aucune TVA en attente de versement
                       </td>
                     </tr>
                   ) : (
-                    filteredAVerser.map((f) => (
+                    sortedAVerser.map((f) => (
                       <tr key={f.id}>
                         <td>
                           <input
@@ -389,22 +435,22 @@ const Tva = () => {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>N° Facture</th>
-                  <th>Client</th>
-                  <th>Date versement</th>
-                  <th>Montant TTC</th>
-                  <th>TVA versée</th>
+                  <th onClick={() => toggleSortVersees('numero')} style={{ cursor: 'pointer' }}>N° Facture{sortMarkVersees('numero')}</th>
+                  <th onClick={() => toggleSortVersees('client_nom')} style={{ cursor: 'pointer' }}>Client{sortMarkVersees('client_nom')}</th>
+                  <th onClick={() => toggleSortVersees('date_versement_tva')} style={{ cursor: 'pointer' }}>Date versement{sortMarkVersees('date_versement_tva')}</th>
+                  <th onClick={() => toggleSortVersees('total_ttc')} style={{ cursor: 'pointer' }}>Montant TTC{sortMarkVersees('total_ttc')}</th>
+                  <th onClick={() => toggleSortVersees('tva')} style={{ cursor: 'pointer' }}>TVA versée{sortMarkVersees('tva')}</th>
                 </tr>
               </thead>
               <tbody>
-                {stats.versees.length === 0 ? (
+                {sortedVersees.length === 0 ? (
                   <tr>
                     <td colSpan="5" className="empty-state">
                       Aucune TVA versée pour le moment
                     </td>
                   </tr>
                 ) : (
-                  filteredVersees.map((f) => (
+                  sortedVersees.map((f) => (
                     <tr key={f.id}>
                       <td className="font-semibold">{f.numero}</td>
                       <td>{f.client_nom}</td>

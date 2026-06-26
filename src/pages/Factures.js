@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Eye, Trash2, FileCheck, Truck, Printer, Download, CheckCircle, RotateCcw } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
@@ -8,6 +8,7 @@ import { generateFacturePDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import { matchesWordPrefix } from '../utils/search';
 import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
 import './Clients.css';
 import './Proformas.css';
@@ -24,6 +25,7 @@ const Factures = () => {
   const [dateTo, setDateTo] = useState('');
   const [montantMin, setMontantMin] = useState('');
   const [montantMax, setMontantMax] = useState('');
+  const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
   const [proformas, setProformas] = useState([]);
   const [parametres, setParametres] = useState({});
   const [viewModalOpen, setViewModalOpen] = useState(false);
@@ -165,9 +167,9 @@ const Factures = () => {
     const term = searchTerm.toLowerCase();
     const matchSearch =
       !term ||
-      (f.numero && f.numero.toLowerCase().includes(term)) ||
-      (f.client_nom && f.client_nom.toLowerCase().includes(term)) ||
-      (f.objet && f.objet.toLowerCase().includes(term));
+      matchesWordPrefix(f.numero, term) ||
+      matchesWordPrefix(f.client_nom, term) ||
+      matchesWordPrefix(f.objet, term);
     const matchPaiement =
       paiementFilter === 'tous' ||
       (paiementFilter === 'payee' && f.statut_paiement === 'payee') ||
@@ -176,6 +178,34 @@ const Factures = () => {
     const matchMontant = inNumberRange(f.total_ttc, montantMin, montantMax);
     return matchSearch && matchPaiement && matchDate && matchMontant;
   });
+
+  const sortedFilteredFactures = useMemo(() => {
+    const items = [...filteredFactures];
+    const { key, direction } = sortConfig;
+    const factor = direction === 'asc' ? 1 : -1;
+    return items.sort((a, b) => {
+      if (key === 'date') {
+        return ((new Date(a.date).getTime() || 0) - (new Date(b.date).getTime() || 0)) * factor;
+      }
+      if (key === 'total_ttc') {
+        return ((Number(a.total_ttc) || 0) - (Number(b.total_ttc) || 0)) * factor;
+      }
+      return String(a[key] || '').localeCompare(String(b[key] || ''), 'fr', { sensitivity: 'base' }) * factor;
+    });
+  }, [filteredFactures, sortConfig]);
+
+  const toggleSort = (key) => {
+    setSortConfig((prev) =>
+      prev.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: key === 'date' ? 'desc' : 'asc' }
+    );
+  };
+
+  const sortMark = (key) => {
+    if (sortConfig.key !== key) return ' ↕';
+    return sortConfig.direction === 'asc' ? ' ↑' : ' ↓';
+  };
 
   const activeCount =
     (paiementFilter !== 'tous' ? 1 : 0) +
@@ -190,7 +220,7 @@ const Factures = () => {
     setMontantMax('');
   };
 
-  const selection = useBulkSelection(filteredFactures);
+  const selection = useBulkSelection(sortedFilteredFactures);
   const handleBulkDelete = () =>
     bulkDelete({
       ids: selection.selectedIds,
@@ -287,24 +317,24 @@ const Factures = () => {
                     title="Tout sélectionner"
                   />
                 </th>
-                <th>N°</th>
-                <th>Date</th>
-                <th>Client</th>
-                <th>Objet</th>
-                <th>Montant TTC</th>
-                <th>Paiement</th>
+                <th onClick={() => toggleSort('numero')} style={{ cursor: 'pointer' }}>N°{sortMark('numero')}</th>
+                <th onClick={() => toggleSort('date')} style={{ cursor: 'pointer' }}>Date{sortMark('date')}</th>
+                <th onClick={() => toggleSort('client_nom')} style={{ cursor: 'pointer' }}>Client{sortMark('client_nom')}</th>
+                <th onClick={() => toggleSort('objet')} style={{ cursor: 'pointer' }}>Objet{sortMark('objet')}</th>
+                <th onClick={() => toggleSort('total_ttc')} style={{ cursor: 'pointer' }}>Montant TTC{sortMark('total_ttc')}</th>
+                <th onClick={() => toggleSort('statut_paiement')} style={{ cursor: 'pointer' }}>Paiement{sortMark('statut_paiement')}</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredFactures.length === 0 ? (
+              {sortedFilteredFactures.length === 0 ? (
                 <tr>
                   <td colSpan="8" className="empty-state">
                     {searchTerm || activeCount > 0 ? 'Aucune facture trouvée' : 'Aucune facture enregistrée'}
                   </td>
                 </tr>
               ) : (
-                filteredFactures.map((facture) => (
+                sortedFilteredFactures.map((facture) => (
                   <tr key={facture.id}>
                     <td className="select-col">
                       <input

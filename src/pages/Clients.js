@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Plus, Edit2, Trash2 } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import { matchesWordPrefix } from '../utils/search';
 import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
 import './Clients.css';
 
@@ -14,6 +15,7 @@ const Clients = () => {
   const [clients, setClients] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [searchField, setSearchField] = useState('tous');
+  const [sortConfig, setSortConfig] = useState({ key: 'nom', direction: 'asc' });
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingClient, setEditingClient] = useState(null);
   const [formData, setFormData] = useState({
@@ -112,22 +114,22 @@ const Clients = () => {
   const matchField = (client, field, term) => {
     switch (field) {
       case 'nom':
-        return (client.nom || '').toLowerCase().includes(term);
+        return matchesWordPrefix(client.nom, term);
       case 'email':
-        return (client.email || '').toLowerCase().includes(term);
+        return matchesWordPrefix(client.email, term);
       case 'telephone':
-        return (client.telephone || '').toLowerCase().includes(term);
+        return matchesWordPrefix(client.telephone, term);
       case 'nif':
-        return (client.nif || '').toLowerCase().includes(term);
+        return matchesWordPrefix(client.nif, term);
       case 'adresse':
-        return (client.adresse || '').toLowerCase().includes(term);
+        return matchesWordPrefix(client.adresse, term);
       default:
         return (
-          (client.nom || '').toLowerCase().includes(term) ||
-          (client.email || '').toLowerCase().includes(term) ||
-          (client.telephone || '').toLowerCase().includes(term) ||
-          (client.nif || '').toLowerCase().includes(term) ||
-          (client.adresse || '').toLowerCase().includes(term)
+          matchesWordPrefix(client.nom, term) ||
+          matchesWordPrefix(client.email, term) ||
+          matchesWordPrefix(client.telephone, term) ||
+          matchesWordPrefix(client.nif, term) ||
+          matchesWordPrefix(client.adresse, term)
         );
     }
   };
@@ -138,13 +140,35 @@ const Clients = () => {
     return matchField(client, searchField, term);
   });
 
+  const sortedClients = useMemo(() => {
+    const items = [...filteredClients];
+    const { key, direction } = sortConfig;
+    const factor = direction === 'asc' ? 1 : -1;
+    return items.sort((a, b) =>
+      String(a[key] || '').localeCompare(String(b[key] || ''), 'fr', { sensitivity: 'base' }) * factor
+    );
+  }, [filteredClients, sortConfig]);
+
+  const toggleSort = (key) => {
+    setSortConfig((prev) =>
+      prev.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: 'asc' }
+    );
+  };
+
+  const sortMark = (key) => {
+    if (sortConfig.key !== key) return ' ↕';
+    return sortConfig.direction === 'asc' ? ' ↑' : ' ↓';
+  };
+
   const activeCount = searchField !== 'tous' ? 1 : 0;
 
   const resetFilters = () => {
     setSearchField('tous');
   };
 
-  const selection = useBulkSelection(filteredClients);
+  const selection = useBulkSelection(sortedClients);
   const handleBulkDelete = () =>
     bulkDelete({
       ids: selection.selectedIds,
@@ -214,23 +238,23 @@ const Clients = () => {
                     title="Tout sélectionner"
                   />
                 </th>
-                <th>Nom</th>
-                <th>Téléphone</th>
-                <th>Email</th>
-                <th>Adresse</th>
-                <th>NIF</th>
+                <th onClick={() => toggleSort('nom')} style={{ cursor: 'pointer' }}>Nom{sortMark('nom')}</th>
+                <th onClick={() => toggleSort('telephone')} style={{ cursor: 'pointer' }}>Téléphone{sortMark('telephone')}</th>
+                <th onClick={() => toggleSort('email')} style={{ cursor: 'pointer' }}>Email{sortMark('email')}</th>
+                <th onClick={() => toggleSort('adresse')} style={{ cursor: 'pointer' }}>Adresse{sortMark('adresse')}</th>
+                <th onClick={() => toggleSort('nif')} style={{ cursor: 'pointer' }}>NIF{sortMark('nif')}</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredClients.length === 0 ? (
+              {sortedClients.length === 0 ? (
                 <tr>
                   <td colSpan="7" className="empty-state">
                     {searchTerm ? 'Aucun client trouvé' : 'Aucun client enregistré'}
                   </td>
                 </tr>
               ) : (
-                filteredClients.map((client) => (
+                sortedClients.map((client) => (
                   <tr key={client.id}>
                     <td className="select-col">
                       <input

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Plus,
   Trash2,
@@ -26,6 +26,7 @@ import { generateRapportPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import { matchesWordPrefix } from '../utils/search';
 import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
 import './Clients.css';
 import './Proformas.css';
@@ -41,6 +42,7 @@ const Rapports = () => {
   const [parametres, setParametres] = useState({});
   const [clients, setClients] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -414,13 +416,38 @@ const Rapports = () => {
     const term = searchTerm.toLowerCase();
     const matchSearch =
       term === '' ||
-      (r.numero && r.numero.toLowerCase().includes(term)) ||
-      (r.titre && r.titre.toLowerCase().includes(term)) ||
-      (r.client_nom && r.client_nom.toLowerCase().includes(term)) ||
-      (r.objet && r.objet.toLowerCase().includes(term));
+      matchesWordPrefix(r.numero, term) ||
+      matchesWordPrefix(r.titre, term) ||
+      matchesWordPrefix(r.client_nom, term) ||
+      matchesWordPrefix(r.objet, term);
     const matchDate = inDateRange(r.date, dateFrom, dateTo);
     return matchSearch && matchDate;
   });
+
+  const sortedFilteredRapports = useMemo(() => {
+    const items = [...filteredRapports];
+    const { key, direction } = sortConfig;
+    const factor = direction === 'asc' ? 1 : -1;
+    return items.sort((a, b) => {
+      if (key === 'date') {
+        return ((new Date(a.date).getTime() || 0) - (new Date(b.date).getTime() || 0)) * factor;
+      }
+      return String(a[key] || '').localeCompare(String(b[key] || ''), 'fr', { sensitivity: 'base' }) * factor;
+    });
+  }, [filteredRapports, sortConfig]);
+
+  const toggleSort = (key) => {
+    setSortConfig((prev) =>
+      prev.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: key === 'date' ? 'desc' : 'asc' }
+    );
+  };
+
+  const sortMark = (key) => {
+    if (sortConfig.key !== key) return ' ↕';
+    return sortConfig.direction === 'asc' ? ' ↑' : ' ↓';
+  };
 
   const activeCount = dateFrom || dateTo ? 1 : 0;
 
@@ -429,7 +456,7 @@ const Rapports = () => {
     setDateTo('');
   };
 
-  const selection = useBulkSelection(filteredRapports);
+  const selection = useBulkSelection(sortedFilteredRapports);
   const handleBulkDelete = () =>
     bulkDelete({
       ids: selection.selectedIds,
@@ -493,15 +520,15 @@ const Rapports = () => {
                     title="Tout sélectionner"
                   />
                 </th>
-                <th>N°</th>
-                <th>Date</th>
-                <th>Titre</th>
-                <th>Client</th>
+                <th onClick={() => toggleSort('numero')} style={{ cursor: 'pointer' }}>N°{sortMark('numero')}</th>
+                <th onClick={() => toggleSort('date')} style={{ cursor: 'pointer' }}>Date{sortMark('date')}</th>
+                <th onClick={() => toggleSort('titre')} style={{ cursor: 'pointer' }}>Titre{sortMark('titre')}</th>
+                <th onClick={() => toggleSort('client_nom')} style={{ cursor: 'pointer' }}>Client{sortMark('client_nom')}</th>
                 <th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredRapports.length === 0 ? (
+              {sortedFilteredRapports.length === 0 ? (
                 <tr>
                   <td colSpan="6" className="empty-state">
                     {searchTerm
@@ -510,7 +537,7 @@ const Rapports = () => {
                   </td>
                 </tr>
               ) : (
-                filteredRapports.map((rapport) => (
+                sortedFilteredRapports.map((rapport) => (
                   <tr key={rapport.id}>
                     <td className="select-col">
                       <input

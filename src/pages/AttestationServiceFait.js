@@ -8,6 +8,7 @@ import { generateAttestationPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import { matchesWordPrefix } from '../utils/search';
 import './Clients.css';
 import './Proformas.css';
 import './RapportsModal.css';
@@ -131,6 +132,7 @@ const AttestationServiceFait = () => {
   const [attestations, setAttestations] = useState([]);
 
   const [searchTerm, setSearchTerm] = useState('');
+  const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 
@@ -163,14 +165,39 @@ const AttestationServiceFait = () => {
     return attestations.filter((a) => {
       const matchSearch =
         !term ||
-        String(a.numero || '').toLowerCase().includes(term) ||
-        String(a.reference || '').toLowerCase().includes(term) ||
-        String(a.client_nom || '').toLowerCase().includes(term) ||
-        String(a.objet || '').toLowerCase().includes(term);
+        matchesWordPrefix(a.numero, term) ||
+        matchesWordPrefix(a.reference, term) ||
+        matchesWordPrefix(a.client_nom, term) ||
+        matchesWordPrefix(a.objet, term);
       const matchDate = inDateRange(a.date, dateFrom, dateTo);
       return matchSearch && matchDate;
     });
   }, [attestations, searchTerm, dateFrom, dateTo]);
+
+  const sortedFilteredAttestations = useMemo(() => {
+    const items = [...filteredAttestations];
+    const { key, direction } = sortConfig;
+    const factor = direction === 'asc' ? 1 : -1;
+    return items.sort((a, b) => {
+      if (key === 'date') {
+        return ((new Date(a.date).getTime() || 0) - (new Date(b.date).getTime() || 0)) * factor;
+      }
+      return String(a[key] || '').localeCompare(String(b[key] || ''), 'fr', { sensitivity: 'base' }) * factor;
+    });
+  }, [filteredAttestations, sortConfig]);
+
+  const toggleSort = (key) => {
+    setSortConfig((prev) =>
+      prev.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: key === 'date' ? 'desc' : 'asc' }
+    );
+  };
+
+  const sortMark = (key) => {
+    if (sortConfig.key !== key) return ' ↕';
+    return sortConfig.direction === 'asc' ? ' ↑' : ' ↓';
+  };
 
   const activeCount = dateFrom || dateTo ? 1 : 0;
 
@@ -345,23 +372,23 @@ const AttestationServiceFait = () => {
           <table className="data-table">
             <thead>
               <tr>
-                <th>N°</th>
-                <th>Référence</th>
-                <th>Date</th>
-                <th>Client</th>
-                <th>Objet</th>
+                <th onClick={() => toggleSort('numero')} style={{ cursor: 'pointer' }}>N°{sortMark('numero')}</th>
+                <th onClick={() => toggleSort('reference')} style={{ cursor: 'pointer' }}>Référence{sortMark('reference')}</th>
+                <th onClick={() => toggleSort('date')} style={{ cursor: 'pointer' }}>Date{sortMark('date')}</th>
+                <th onClick={() => toggleSort('client_nom')} style={{ cursor: 'pointer' }}>Client{sortMark('client_nom')}</th>
+                <th onClick={() => toggleSort('objet')} style={{ cursor: 'pointer' }}>Objet{sortMark('objet')}</th>
                 <th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredAttestations.length === 0 ? (
+              {sortedFilteredAttestations.length === 0 ? (
                 <tr>
                   <td colSpan="6" className="empty-state">
                     Aucune attestation enregistrée pour le moment.
                   </td>
                 </tr>
               ) : (
-                filteredAttestations.map((item) => (
+                sortedFilteredAttestations.map((item) => (
                   <tr key={item.id}>
                     <td className="font-semibold">{item.numero || '-'}</td>
                     <td>{item.reference || '-'}</td>

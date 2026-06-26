@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Eye, Trash2, Printer, Download } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
@@ -8,6 +8,7 @@ import { generateBordereauPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import { matchesWordPrefix } from '../utils/search';
 import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
 import './Clients.css';
 import './Proformas.css';
@@ -17,6 +18,7 @@ const Bordereaux = () => {
   const confirm = useConfirm();
   const [bordereaux, setBordereaux] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [parametres, setParametres] = useState({});
@@ -80,11 +82,36 @@ const Bordereaux = () => {
     const term = searchTerm.toLowerCase();
     const matchSearch =
       !term ||
-      (b.numero && b.numero.toLowerCase().includes(term)) ||
-      (b.client_nom && b.client_nom.toLowerCase().includes(term));
+      matchesWordPrefix(b.numero, term) ||
+      matchesWordPrefix(b.client_nom, term);
     const matchDate = inDateRange(b.date, dateFrom, dateTo);
     return matchSearch && matchDate;
   });
+
+  const sortedFilteredBordereaux = useMemo(() => {
+    const items = [...filteredBordereaux];
+    const { key, direction } = sortConfig;
+    const factor = direction === 'asc' ? 1 : -1;
+    return items.sort((a, b) => {
+      if (key === 'date') {
+        return ((new Date(a.date).getTime() || 0) - (new Date(b.date).getTime() || 0)) * factor;
+      }
+      return String(a[key] || '').localeCompare(String(b[key] || ''), 'fr', { sensitivity: 'base' }) * factor;
+    });
+  }, [filteredBordereaux, sortConfig]);
+
+  const toggleSort = (key) => {
+    setSortConfig((prev) =>
+      prev.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: key === 'date' ? 'desc' : 'asc' }
+    );
+  };
+
+  const sortMark = (key) => {
+    if (sortConfig.key !== key) return ' ↕';
+    return sortConfig.direction === 'asc' ? ' ↑' : ' ↓';
+  };
 
   const activeCount = dateFrom || dateTo ? 1 : 0;
 
@@ -93,7 +120,7 @@ const Bordereaux = () => {
     setDateTo('');
   };
 
-  const selection = useBulkSelection(filteredBordereaux);
+  const selection = useBulkSelection(sortedFilteredBordereaux);
   const handleBulkDelete = () =>
     bulkDelete({
       ids: selection.selectedIds,
@@ -152,21 +179,21 @@ const Bordereaux = () => {
                     title="Tout sélectionner"
                   />
                 </th>
-                <th>N°</th>
-                <th>Date</th>
-                <th>Client</th>
+                <th onClick={() => toggleSort('numero')} style={{ cursor: 'pointer' }}>N°{sortMark('numero')}</th>
+                <th onClick={() => toggleSort('date')} style={{ cursor: 'pointer' }}>Date{sortMark('date')}</th>
+                <th onClick={() => toggleSort('client_nom')} style={{ cursor: 'pointer' }}>Client{sortMark('client_nom')}</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredBordereaux.length === 0 ? (
+              {sortedFilteredBordereaux.length === 0 ? (
                 <tr>
                   <td colSpan="5" className="empty-state">
                     {searchTerm || activeCount > 0 ? 'Aucun bordereau trouvé' : 'Aucun bordereau enregistré'}
                   </td>
                 </tr>
               ) : (
-                filteredBordereaux.map((bordereau) => (
+                sortedFilteredBordereaux.map((bordereau) => (
                   <tr key={bordereau.id}>
                     <td className="select-col">
                       <input

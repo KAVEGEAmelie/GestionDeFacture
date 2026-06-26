@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Plus, Eye, Trash2, FileText, DollarSign, Printer, Download, PackagePlus, Edit2, X, Truck, Stamp, Percent } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
@@ -8,6 +8,7 @@ import { generateProformaPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import { matchesWordPrefix } from '../utils/search';
 import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
 import './Clients.css';
 import './Proformas.css';
@@ -22,6 +23,7 @@ const Proformas = () => {
   const [dateTo, setDateTo] = useState('');
   const [montantMin, setMontantMin] = useState('');
   const [montantMax, setMontantMax] = useState('');
+  const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
   const [clients, setClients] = useState([]);
   const [produits, setProduits] = useState([]);
   const [parametres, setParametres] = useState({});
@@ -56,6 +58,12 @@ const Proformas = () => {
     tva_applicable: true,
     lignes: []
   });
+
+  const sortedProduits = useMemo(() => {
+    return [...produits].sort((a, b) =>
+      String(a.designation || '').localeCompare(String(b.designation || ''), 'fr', { sensitivity: 'base' })
+    );
+  }, [produits]);
 
   useEffect(() => {
     loadData();
@@ -382,14 +390,42 @@ const Proformas = () => {
     const term = searchTerm.toLowerCase();
     const matchSearch =
       !term ||
-      (p.numero && p.numero.toLowerCase().includes(term)) ||
-      (p.client_nom && p.client_nom.toLowerCase().includes(term)) ||
-      (p.objet && p.objet.toLowerCase().includes(term));
+      matchesWordPrefix(p.numero, term) ||
+      matchesWordPrefix(p.client_nom, term) ||
+      matchesWordPrefix(p.objet, term);
     const matchStatut = statutFilter === 'tous' || p.statut === statutFilter;
     const matchDate = inDateRange(p.date, dateFrom, dateTo);
     const matchMontant = inNumberRange(p.total_ttc, montantMin, montantMax);
     return matchSearch && matchStatut && matchDate && matchMontant;
   });
+
+  const sortedFilteredProformas = useMemo(() => {
+    const items = [...filteredProformas];
+    const { key, direction } = sortConfig;
+    const factor = direction === 'asc' ? 1 : -1;
+    return items.sort((a, b) => {
+      if (key === 'date') {
+        return ((new Date(a.date).getTime() || 0) - (new Date(b.date).getTime() || 0)) * factor;
+      }
+      if (key === 'total_ttc') {
+        return ((Number(a.total_ttc) || 0) - (Number(b.total_ttc) || 0)) * factor;
+      }
+      return String(a[key] || '').localeCompare(String(b[key] || ''), 'fr', { sensitivity: 'base' }) * factor;
+    });
+  }, [filteredProformas, sortConfig]);
+
+  const toggleSort = (key) => {
+    setSortConfig((prev) =>
+      prev.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: key === 'date' ? 'desc' : 'asc' }
+    );
+  };
+
+  const sortMark = (key) => {
+    if (sortConfig.key !== key) return ' ↕';
+    return sortConfig.direction === 'asc' ? ' ↑' : ' ↓';
+  };
 
   const activeCount =
     (statutFilter !== 'tous' ? 1 : 0) +
@@ -404,7 +440,7 @@ const Proformas = () => {
     setMontantMax('');
   };
 
-  const selection = useBulkSelection(filteredProformas);
+  const selection = useBulkSelection(sortedFilteredProformas);
   const handleBulkDelete = () =>
     bulkDelete({
       ids: selection.selectedIds,
@@ -502,24 +538,24 @@ const Proformas = () => {
                     title="Tout sélectionner"
                   />
                 </th>
-                <th>N°</th>
-                <th>Date</th>
-                <th>Client</th>
-                <th>Objet</th>
-                <th>Montant TTC</th>
-                <th>Statut</th>
+                <th onClick={() => toggleSort('numero')} style={{ cursor: 'pointer' }}>N°{sortMark('numero')}</th>
+                <th onClick={() => toggleSort('date')} style={{ cursor: 'pointer' }}>Date{sortMark('date')}</th>
+                <th onClick={() => toggleSort('client_nom')} style={{ cursor: 'pointer' }}>Client{sortMark('client_nom')}</th>
+                <th onClick={() => toggleSort('objet')} style={{ cursor: 'pointer' }}>Objet{sortMark('objet')}</th>
+                <th onClick={() => toggleSort('total_ttc')} style={{ cursor: 'pointer' }}>Montant TTC{sortMark('total_ttc')}</th>
+                <th onClick={() => toggleSort('statut')} style={{ cursor: 'pointer' }}>Statut{sortMark('statut')}</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredProformas.length === 0 ? (
+              {sortedFilteredProformas.length === 0 ? (
                 <tr>
                   <td colSpan="8" className="empty-state">
                     {searchTerm || statutFilter !== 'tous' ? 'Aucune proforma trouvée' : 'Aucune proforma enregistrée'}
                   </td>
                 </tr>
               ) : (
-                filteredProformas.map((proforma) => (
+                sortedFilteredProformas.map((proforma) => (
                   <tr key={proforma.id}>
                     <td className="select-col">
                       <input
@@ -751,7 +787,7 @@ const Proformas = () => {
                       onChange={(e) => handleLigneFormChange('produit_id', e.target.value)}
                     >
                       <option value="">Sélectionner</option>
-                      {produits.map(produit => (
+                      {sortedProduits.map(produit => (
                         <option key={produit.id} value={produit.id}>{produit.designation}</option>
                       ))}
                     </select>
@@ -856,7 +892,7 @@ const Proformas = () => {
                             onChange={(e) => handleLigneChange(index, 'produit_id', e.target.value)}
                           >
                             <option value="">Sélectionner</option>
-                            {produits.map(produit => (
+                            {sortedProduits.map(produit => (
                               <option key={produit.id} value={produit.id}>{produit.designation}</option>
                             ))}
                           </select>
