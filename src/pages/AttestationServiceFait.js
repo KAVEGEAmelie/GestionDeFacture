@@ -9,6 +9,7 @@ import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
 import { matchesWordPrefix } from '../utils/search';
+import SearchableSelect from '../components/Inputs/SearchableSelect';
 import './Clients.css';
 import './Proformas.css';
 import './RapportsModal.css';
@@ -140,6 +141,12 @@ const AttestationServiceFait = () => {
   const [editingId, setEditingId] = useState(null);
   const [formData, setFormData] = useState(() => buildDefaultForm());
   const initialFormRef = useRef(null);
+
+  const sortedClients = useMemo(() => {
+    return [...clients].sort((a, b) =>
+      String(a.nom || '').localeCompare(String(b.nom || ''), 'fr', { sensitivity: 'base' })
+    );
+  }, [clients]);
 
   useEffect(() => {
     (async () => {
@@ -456,18 +463,13 @@ const AttestationServiceFait = () => {
             <div className="form-row">
               <div className="form-group">
                 <label>Client bénéficiaire</label>
-                <input
-                  type="text"
-                  list="attestation-clients-list"
+                <SearchableSelect
+                  options={sortedClients.map((client) => ({ value: client.nom, label: client.nom }))}
                   value={formData.client_nom}
-                  onChange={(e) => handleChange('client_nom', e.target.value)}
-                  placeholder="Ex : Hôpital de Bè"
+                  onChange={(clientNom, option) => handleChange('client_nom', option?.label || clientNom)}
+                  placeholder="Rechercher un client"
+                  noOptionsText="Aucun client correspondant"
                 />
-                <datalist id="attestation-clients-list">
-                  {clients.map((client) => (
-                    <option key={client.id} value={client.nom} />
-                  ))}
-                </datalist>
               </div>
               <div className="form-group">
                 <label>Objet</label>
@@ -481,7 +483,7 @@ const AttestationServiceFait = () => {
             <div className="form-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
                 <label>Introduction</label>
-                <select value={formData.intro_align} onChange={(e) => handleChange('intro_align', e.target.value)} style={{ maxWidth: 180 }}>
+                <select className="filter-select" value={formData.intro_align} onChange={(e) => handleChange('intro_align', e.target.value)} style={{ maxWidth: 180 }}>
                   {ALIGN_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
@@ -494,12 +496,12 @@ const AttestationServiceFait = () => {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
                 <label>Travaux réalisés (une ligne = une puce)</label>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                  <select value={formData.travaux_align} onChange={(e) => handleChange('travaux_align', e.target.value)} style={{ maxWidth: 180 }}>
+                  <select className="filter-select" value={formData.travaux_align} onChange={(e) => handleChange('travaux_align', e.target.value)} style={{ maxWidth: 180 }}>
                     {ALIGN_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>{option.label}</option>
                     ))}
                   </select>
-                  <select value={formData.travaux_list_mode} onChange={(e) => handleChange('travaux_list_mode', e.target.value)} style={{ maxWidth: 180 }}>
+                  <select className="filter-select" value={formData.travaux_list_mode} onChange={(e) => handleChange('travaux_list_mode', e.target.value)} style={{ maxWidth: 180 }}>
                     {LIST_MODE_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>{option.label}</option>
                     ))}
@@ -512,7 +514,7 @@ const AttestationServiceFait = () => {
             <div className="form-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
                 <label>Conformité des travaux</label>
-                <select value={formData.conformite_align} onChange={(e) => handleChange('conformite_align', e.target.value)} style={{ maxWidth: 180 }}>
+                <select className="filter-select" value={formData.conformite_align} onChange={(e) => handleChange('conformite_align', e.target.value)} style={{ maxWidth: 180 }}>
                   {ALIGN_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>{option.label}</option>
                   ))}

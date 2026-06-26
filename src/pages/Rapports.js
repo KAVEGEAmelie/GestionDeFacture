@@ -28,6 +28,7 @@ import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
 import { matchesWordPrefix } from '../utils/search';
 import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
+import SearchableSelect from '../components/Inputs/SearchableSelect';
 import './Clients.css';
 import './Proformas.css';
 import './RapportsModal.css';
@@ -73,6 +74,12 @@ const Rapports = () => {
     setParametres(parametresData);
     setClients(clientsData);
   };
+
+  const sortedClients = useMemo(() => {
+    return [...clients].sort((a, b) =>
+      String(a.nom || '').localeCompare(String(b.nom || ''), 'fr', { sensitivity: 'base' })
+    );
+  }, [clients]);
 
   const formatDate = (dateStr) => {
     if (!dateStr) return '-';
@@ -661,15 +668,13 @@ const Rapports = () => {
             <div className="form-row">
               <div className="form-group">
                 <label>Client / Destinataire</label>
-                <select
+                <SearchableSelect
+                  options={sortedClients.map((client) => ({ value: String(client.id), label: client.nom }))}
                   value={formData.client_id}
-                  onChange={(e) => setFormData({ ...formData, client_id: e.target.value })}
-                >
-                  <option value="">Sélectionner un client…</option>
-                  {clients.map((client) => (
-                    <option key={client.id} value={client.id}>{client.nom}</option>
-                  ))}
-                </select>
+                  onChange={(clientId) => setFormData((prev) => ({ ...prev, client_id: clientId }))}
+                  placeholder="Rechercher un client"
+                  noOptionsText="Aucun client correspondant"
+                />
               </div>
               <div className="form-group">
                 <label>Objet</label>

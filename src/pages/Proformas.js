@@ -10,6 +10,7 @@ import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
 import { matchesWordPrefix } from '../utils/search';
 import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
+import SearchableSelect from '../components/Inputs/SearchableSelect';
 import './Clients.css';
 import './Proformas.css';
 
@@ -35,6 +36,7 @@ const Proformas = () => {
   const [showLigneForm, setShowLigneForm] = useState(false);
   const [ligneFormData, setLigneFormData] = useState({
     produit_id: '',
+    produit_search: '',
     designation: '',
     unite: 'Unité',
     quantite: 1,
@@ -65,6 +67,12 @@ const Proformas = () => {
     );
   }, [produits]);
 
+  const sortedClients = useMemo(() => {
+    return [...clients].sort((a, b) =>
+      String(a.nom || '').localeCompare(String(b.nom || ''), 'fr', { sensitivity: 'base' })
+    );
+  }, [clients]);
+
   useEffect(() => {
     loadData();
   }, []);
@@ -85,6 +93,7 @@ const Proformas = () => {
   const resetLigneForm = () => {
     setLigneFormData({
       produit_id: '',
+      produit_search: '',
       designation: '',
       unite: 'Unité',
       quantite: 1,
@@ -109,9 +118,24 @@ const Proformas = () => {
     if (field === 'produit_id' && value) {
       const produit = produits.find(p => p.id === parseInt(value));
       if (produit) {
+        updated.produit_search = produit.designation;
         updated.designation = produit.designation;
         updated.unite = produit.unite;
         updated.prix_unitaire = produit.prix_unitaire || '';
+      }
+    }
+
+    if (field === 'produit_search') {
+      const searchValue = String(value || '').trim().toLowerCase();
+      const produit = sortedProduits.find((p) => String(p.designation || '').trim().toLowerCase() === searchValue);
+      if (produit) {
+        updated.produit_id = String(produit.id);
+        updated.produit_search = produit.designation;
+        updated.designation = produit.designation;
+        updated.unite = produit.unite;
+        updated.prix_unitaire = produit.prix_unitaire || '';
+      } else {
+        updated.produit_id = '';
       }
     }
 
@@ -131,6 +155,7 @@ const Proformas = () => {
       ...formData,
       lignes: [...formData.lignes, {
         produit_id: ligneFormData.produit_id ? parseInt(ligneFormData.produit_id) : '',
+        produit_search: ligneFormData.produit_search || '',
         designation: ligneFormData.designation,
         unite: ligneFormData.unite,
         quantite,
@@ -154,9 +179,24 @@ const Proformas = () => {
     if (field === 'produit_id' && value) {
       const produit = produits.find(p => p.id === parseInt(value));
       if (produit) {
+        newLignes[index].produit_search = produit.designation;
         newLignes[index].designation = produit.designation;
         newLignes[index].unite = produit.unite;
         newLignes[index].prix_unitaire = produit.prix_unitaire;
+      }
+    }
+
+    if (field === 'produit_search') {
+      const searchValue = String(value || '').trim().toLowerCase();
+      const produit = sortedProduits.find((p) => String(p.designation || '').trim().toLowerCase() === searchValue);
+      if (produit) {
+        newLignes[index].produit_id = String(produit.id);
+        newLignes[index].produit_search = produit.designation;
+        newLignes[index].designation = produit.designation;
+        newLignes[index].unite = produit.unite;
+        newLignes[index].prix_unitaire = produit.prix_unitaire;
+      } else {
+        newLignes[index].produit_id = '';
       }
     }
 
@@ -182,6 +222,11 @@ const Proformas = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (!formData.client_id) {
+      toast.error('Veuillez sélectionner un client valide dans la liste.');
+      return;
+    }
     
     if (formData.lignes.length === 0) {
       toast.error('Veuillez ajouter au moins une ligne.');
@@ -283,6 +328,10 @@ const Proformas = () => {
       tva_applicable: full.tva_applicable !== 0,
       lignes: (full.lignes || []).map(l => ({
         produit_id: String(l.produit_id),
+        produit_search: (() => {
+          const produit = produits.find((p) => p.id === l.produit_id);
+          return produit ? produit.designation : (l.designation || '');
+        })(),
         designation: l.designation,
         unite: l.unite,
         quantite: l.quantite,
@@ -651,16 +700,13 @@ const Proformas = () => {
 
             <div className="form-group">
               <label>Client *</label>
-              <select
+              <SearchableSelect
+                options={sortedClients.map((client) => ({ value: String(client.id), label: client.nom }))}
                 value={formData.client_id}
-                onChange={(e) => setFormData({ ...formData, client_id: e.target.value })}
-                required
-              >
-                <option value="">Sélectionner un client</option>
-                {clients.map(client => (
-                  <option key={client.id} value={client.id}>{client.nom}</option>
-                ))}
-              </select>
+                onChange={(clientId) => setFormData((prev) => ({ ...prev, client_id: clientId }))}
+                placeholder="Rechercher un client"
+                noOptionsText="Aucun client correspondant"
+              />
             </div>
           </div>
 
@@ -781,16 +827,14 @@ const Proformas = () => {
 
                 <div className="ligne-form-grid">
                   <div className="form-group">
-                    <label>Produit</label>
-                    <select
+                    <label>Produit (recherche)</label>
+                    <SearchableSelect
+                      options={sortedProduits.map((produit) => ({ value: String(produit.id), label: produit.designation }))}
                       value={ligneFormData.produit_id}
-                      onChange={(e) => handleLigneFormChange('produit_id', e.target.value)}
-                    >
-                      <option value="">Sélectionner</option>
-                      {sortedProduits.map(produit => (
-                        <option key={produit.id} value={produit.id}>{produit.designation}</option>
-                      ))}
-                    </select>
+                      onChange={(produitId) => handleLigneFormChange('produit_id', produitId)}
+                      placeholder="Rechercher un produit"
+                      noOptionsText="Aucun produit correspondant"
+                    />
                   </div>
 
                   <div className="form-group">
@@ -887,15 +931,13 @@ const Proformas = () => {
                     {formData.lignes.map((ligne, index) => (
                       <tr key={index}>
                         <td>
-                          <select
+                          <SearchableSelect
+                            options={sortedProduits.map((produit) => ({ value: String(produit.id), label: produit.designation }))}
                             value={ligne.produit_id}
-                            onChange={(e) => handleLigneChange(index, 'produit_id', e.target.value)}
-                          >
-                            <option value="">Sélectionner</option>
-                            {sortedProduits.map(produit => (
-                              <option key={produit.id} value={produit.id}>{produit.designation}</option>
-                            ))}
-                          </select>
+                            onChange={(produitId) => handleLigneChange(index, 'produit_id', produitId)}
+                            placeholder="Rechercher un produit"
+                            noOptionsText="Aucun produit"
+                          />
                         </td>
                         <td>
                           <input

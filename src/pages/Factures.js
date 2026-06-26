@@ -31,6 +31,7 @@ const Factures = () => {
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [convertModalOpen, setConvertModalOpen] = useState(false);
   const [convertDate, setConvertDate] = useState(new Date().toISOString().split('T')[0]);
+  const [convertSearchTerm, setConvertSearchTerm] = useState('');
   const [selectedFacture, setSelectedFacture] = useState(null);
 
   useEffect(() => {
@@ -206,6 +207,16 @@ const Factures = () => {
     if (sortConfig.key !== key) return ' ↕';
     return sortConfig.direction === 'asc' ? ' ↑' : ' ↓';
   };
+
+  const filteredProformasForConvert = useMemo(() => {
+    const term = convertSearchTerm.toLowerCase();
+    if (!term) return proformas;
+    return proformas.filter((p) =>
+      matchesWordPrefix(p.numero, term) ||
+      matchesWordPrefix(p.client_nom, term) ||
+      matchesWordPrefix(p.objet, term)
+    );
+  }, [proformas, convertSearchTerm]);
 
   const activeCount =
     (paiementFilter !== 'tous' ? 1 : 0) +
@@ -439,6 +450,17 @@ const Factures = () => {
                   onChange={(e) => setConvertDate(e.target.value)}
                 />
               </div>
+              <div className="form-group" style={{ marginBottom: '1rem', maxWidth: '420px' }}>
+                <label htmlFor="convert-search">Rechercher une proforma</label>
+                <input
+                  id="convert-search"
+                  type="text"
+                  className="form-control"
+                  value={convertSearchTerm}
+                  onChange={(e) => setConvertSearchTerm(e.target.value)}
+                  placeholder="Tapez numéro, client ou objet"
+                />
+              </div>
               <table className="data-table">
               <thead>
                 <tr>
@@ -450,7 +472,7 @@ const Factures = () => {
                 </tr>
               </thead>
               <tbody>
-                {proformas.map((proforma) => (
+                {filteredProformasForConvert.map((proforma) => (
                   <tr key={proforma.id}>
                     <td>{proforma.numero}</td>
                     <td>{formatDate(proforma.date)}</td>
@@ -466,6 +488,11 @@ const Factures = () => {
                     </td>
                   </tr>
                 ))}
+                {filteredProformasForConvert.length === 0 && (
+                  <tr>
+                    <td colSpan="5" className="empty-state">Aucune proforma ne correspond à la recherche.</td>
+                  </tr>
+                )}
               </tbody>
             </table>
             </>
