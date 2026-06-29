@@ -53,6 +53,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getStats: () => ipcRenderer.invoke('tva:getStats'),
     verser: (ids) => ipcRenderer.invoke('tva:verser', ids)
   },
+  // ATTESTATIONS DE SERVICE FAIT
+  attestations: {
+    getAll: () => ipcRenderer.invoke('attestations:getAll'),
+    getById: (id) => ipcRenderer.invoke('attestations:getById', id),
+    create: (data) => ipcRenderer.invoke('attestations:create', data),
+    update: (id, data) => ipcRenderer.invoke('attestations:update', id, data),
+    delete: (id) => ipcRenderer.invoke('attestations:delete', id)
+  },
   // RAPPORTS TECHNIQUES
   rapports: {
     getAll: () => ipcRenderer.invoke('rapports:getAll'),

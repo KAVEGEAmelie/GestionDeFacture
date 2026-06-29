@@ -154,7 +154,57 @@ function initDatabase() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS attestations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      numero TEXT UNIQUE NOT NULL,
+      reference TEXT,
+      title TEXT,
+      date DATE,
+      lieu TEXT,
+      client_nom TEXT,
+      objet TEXT,
+      intro TEXT,
+      intro_align TEXT DEFAULT 'justify',
+      travaux TEXT,
+      travaux_align TEXT DEFAULT 'left',
+      travaux_list_mode TEXT DEFAULT 'bullets',
+      conformite TEXT,
+      conformite_align TEXT DEFAULT 'justify',
+      signataire_gauche TEXT,
+      signataire_droite TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
+
+  // Migration : table attestations pour les bases existantes
+  const attestationCols = db.prepare("PRAGMA table_info(attestations)").all().map((c) => c.name);
+  if (!attestationCols.includes('id')) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS attestations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        numero TEXT UNIQUE NOT NULL,
+        reference TEXT,
+        title TEXT,
+        date DATE,
+        lieu TEXT,
+        client_nom TEXT,
+        objet TEXT,
+        intro TEXT,
+        intro_align TEXT DEFAULT 'justify',
+        travaux TEXT,
+        travaux_align TEXT DEFAULT 'left',
+        travaux_list_mode TEXT DEFAULT 'bullets',
+        conformite TEXT,
+        conformite_align TEXT DEFAULT 'justify',
+        signataire_gauche TEXT,
+        signataire_droite TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+  }
 
   // Migration : ajout des colonnes de suivi du paiement et de la TVA
   // sur les factures existantes (sans perdre les données).
@@ -518,6 +568,85 @@ ipcMain.handle('produits:delete', (event, id) => {
 });
 
 // RAPPORTS TECHNIQUES
+// ===== ATTESTATIONS DE SERVICE FAIT =====
+
+ipcMain.handle('attestations:getAll', () => {
+  const rows = db.prepare('SELECT * FROM attestations ORDER BY created_at DESC').all();
+  return rows.map((row) => ({
+    ...row,
+    travaux: row.travaux ? JSON.parse(row.travaux) : [],
+  }));
+});
+
+ipcMain.handle('attestations:getById', (event, id) => {
+  const row = db.prepare('SELECT * FROM attestations WHERE id = ?').get(id);
+  if (!row) return null;
+  return { ...row, travaux: row.travaux ? JSON.parse(row.travaux) : [] };
+});
+
+ipcMain.handle('attestations:create', (event, data) => {
+  const existing = db.prepare('SELECT COUNT(*) as count FROM attestations').get();
+  const numero = `ASF-${String((existing.count || 0) + 1).padStart(4, '0')}`;
+  const result = db.prepare(`
+    INSERT INTO attestations (numero, reference, title, date, lieu, client_nom, objet,
+      intro, intro_align, travaux, travaux_align, travaux_list_mode,
+      conformite, conformite_align, signataire_gauche, signataire_droite)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    numero,
+    data.reference || '',
+    data.title || 'ATTESTATION DE SERVICE FAIT',
+    data.date || '',
+    data.lieu || '',
+    data.client_nom || '',
+    data.objet || '',
+    data.intro || '',
+    data.intro_align || 'justify',
+    JSON.stringify(Array.isArray(data.travaux) ? data.travaux : []),
+    data.travaux_align || 'left',
+    data.travaux_list_mode || 'bullets',
+    data.conformite || '',
+    data.conformite_align || 'justify',
+    data.signataire_gauche || '',
+    data.signataire_droite || ''
+  );
+  return { id: result.lastInsertRowid, numero };
+});
+
+ipcMain.handle('attestations:update', (event, id, data) => {
+  db.prepare(`
+    UPDATE attestations SET
+      reference = ?, title = ?, date = ?, lieu = ?, client_nom = ?, objet = ?,
+      intro = ?, intro_align = ?, travaux = ?, travaux_align = ?, travaux_list_mode = ?,
+      conformite = ?, conformite_align = ?, signataire_gauche = ?, signataire_droite = ?,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(
+    data.reference || '',
+    data.title || 'ATTESTATION DE SERVICE FAIT',
+    data.date || '',
+    data.lieu || '',
+    data.client_nom || '',
+    data.objet || '',
+    data.intro || '',
+    data.intro_align || 'justify',
+    JSON.stringify(Array.isArray(data.travaux) ? data.travaux : []),
+    data.travaux_align || 'left',
+    data.travaux_list_mode || 'bullets',
+    data.conformite || '',
+    data.conformite_align || 'justify',
+    data.signataire_gauche || '',
+    data.signataire_droite || '',
+    id
+  );
+  return { success: true };
+});
+
+ipcMain.handle('attestations:delete', (event, id) => {
+  db.prepare('DELETE FROM attestations WHERE id = ?').run(id);
+  return { success: true };
+});
+
 ipcMain.handle('rapports:getAll', () => {
   return db.prepare('SELECT * FROM rapports ORDER BY created_at DESC').all();
 });

@@ -788,7 +788,8 @@ export const generateProformaPDF = async (proforma, parametres, options = {}) =>
       5: { cellWidth: 28, halign: 'right' }
     },
     styles: { lineColor: COLORS.line, lineWidth: 0.15 },
-    margin: { left: MARGIN, right: MARGIN, bottom: 40 }
+    margin: { left: MARGIN, right: MARGIN, bottom: 26 },
+    didDrawPage: () => { drawPageFrame(doc); drawFooter(doc, parametres); }
   });
 
   yPos = doc.lastAutoTable.finalY + 8;
@@ -802,6 +803,7 @@ export const generateProformaPDF = async (proforma, parametres, options = {}) =>
   if (yPos + wordsH + 28 > pageHeight - 24) {
     doc.addPage();
     drawPageFrame(doc);
+    drawFooter(doc, parametres);
     yPos = 30;
   }
 
@@ -899,7 +901,7 @@ export const generateFacturePDF = async (facture, parametres) => {
       5: { cellWidth: 28, halign: 'right' }
     },
     styles: { lineColor: COLORS.line, lineWidth: 0.15 },
-    margin: { left: MARGIN, right: MARGIN, top: 18, bottom: 40 },
+    margin: { left: MARGIN, right: MARGIN, top: 18, bottom: 26 },
     // Sur chaque page (y compris les pages de continuation) : bordure + pied de page
     didDrawPage: () => { drawPageFrame(doc); drawFooter(doc, parametres); }
   });
@@ -1002,7 +1004,7 @@ export const generateBordereauPDF = async (bordereau, parametres) => {
       3: { cellWidth: 48 }
     },
     styles: { lineColor: COLORS.line, lineWidth: 0.15 },
-    margin: { left: MARGIN, right: MARGIN, top: 18, bottom: 40 },
+    margin: { left: MARGIN, right: MARGIN, top: 18, bottom: 26 },
     // Sur chaque page (y compris les pages de continuation) : bordure + pied de page
     didDrawPage: () => { drawPageFrame(doc); drawFooter(doc, parametres); }
   });
@@ -1190,6 +1192,13 @@ const drawBulletedParagraphs = async (doc, items, x, y, width, parametres = {}, 
   const safeAlign = ['left', 'center', 'right', 'justify'].includes(options.align) ? options.align : 'left';
   const bulletOffset = 3.2;
   const textOffset = 6.2;
+  const onPageBreak = typeof options.onPageBreak === 'function'
+    ? options.onPageBreak
+    : async () => {
+        drawPageFrame(doc);
+        drawFooter(doc, parametres);
+        return MARGIN + 12;
+      };
 
   for (const raw of items) {
     const text = String(raw || '').replace(/^[-•*]\s*/, '').trim();
@@ -1199,9 +1208,7 @@ const drawBulletedParagraphs = async (doc, items, x, y, width, parametres = {}, 
     const needed = lineCount * 6.1 + 2;
     if (y + needed > doc.internal.pageSize.getHeight() - 30) {
       doc.addPage();
-      drawPageFrame(doc);
-      drawFooter(doc, parametres);
-      y = MARGIN + 12;
+      y = await onPageBreak();
     }
 
     doc.setFillColor(...COLORS.navySoft);
@@ -1243,6 +1250,12 @@ export const generateAttestationPDF = async (attestation, parametres = {}) => {
   drawPageFrame(doc);
   const header = await drawHeader(doc, parametres);
   drawFooter(doc, parametres);
+
+  const addAttestationContinuationPage = async () => {
+    drawPageFrame(doc);
+    drawFooter(doc, parametres);
+    return MARGIN + 12;
+  };
 
   let yPos = header.headerBottom + 10;
 
@@ -1297,6 +1310,7 @@ export const generateAttestationPDF = async (attestation, parametres = {}) => {
     if (travauxListMode === 'bullets') {
       yPos = await drawBulletedParagraphs(doc, travaux, contentLeft, yPos, pageWidth - MARGIN * 2, parametres, {
         align: travauxAlign,
+        onPageBreak: addAttestationContinuationPage,
       });
     } else {
       for (const line of travaux) {
@@ -1304,9 +1318,7 @@ export const generateAttestationPDF = async (attestation, parametres = {}) => {
         const needed = lineCount * 6.1 + 2;
         if (yPos + needed > bottomLimit) {
           doc.addPage();
-          drawPageFrame(doc);
-          drawFooter(doc, parametres);
-          yPos = MARGIN + 12;
+          yPos = await addAttestationContinuationPage();
         }
         yPos = drawWrappedParagraph(doc, line, contentLeft, yPos, pageWidth - MARGIN * 2, {
           fontSize: 10.2,
@@ -1338,9 +1350,7 @@ export const generateAttestationPDF = async (attestation, parametres = {}) => {
 
   if (yPos + 38 > bottomLimit) {
     doc.addPage();
-    drawPageFrame(doc);
-    drawFooter(doc, parametres);
-    yPos = MARGIN + 18;
+    yPos = await addAttestationContinuationPage();
   }
 
   yPos += 8;
@@ -1437,7 +1447,7 @@ export const generateTvaPDF = async (rapport, parametres) => {
       5: { cellWidth: 24, halign: 'right' }
     },
     styles: { lineColor: COLORS.line, lineWidth: 0.15 },
-    margin: { left: MARGIN, right: MARGIN, bottom: 30 },
+    margin: { left: MARGIN, right: MARGIN, bottom: 26 },
     didDrawPage: () => { drawPageFrame(doc); }
   });
 

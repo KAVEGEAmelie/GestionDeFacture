@@ -14,7 +14,6 @@ import './Clients.css';
 import './Proformas.css';
 import './RapportsModal.css';
 
-const STORAGE_KEY = 'attestations_service_fait_v1';
 const todayISO = () => new Date().toISOString().split('T')[0];
 const makeRef = () => `ASF-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now().toString().slice(-4)}`;
 const ALIGN_OPTIONS = [
@@ -52,21 +51,6 @@ const splitTravauxInput = (value) => {
     )
     .map((line) => line.replace(/^[-•*]\s*/, '').replace(/^[,;]+/, '').trim())
     .filter(Boolean);
-};
-
-const loadStored = () => {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-};
-
-const saveStored = (items) => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
 };
 
 const buildDefaultForm = (params = {}) => ({
@@ -151,13 +135,14 @@ const AttestationServiceFait = () => {
   useEffect(() => {
     (async () => {
       try {
-        const [params, clientsData] = await Promise.all([
+        const [params, clientsData, attestationsData] = await Promise.all([
           window.electronAPI.parametres.getAll(),
           window.electronAPI.clients.getAll(),
+          window.electronAPI.attestations.getAll(),
         ]);
         setParametres(params || {});
         setClients(clientsData || []);
-        setAttestations(loadStored());
+        setAttestations(attestationsData || []);
         setFormData(buildDefaultForm(params || {}));
       } catch (error) {
         toast.error(getErrorMessage(error, 'Impossible de charger les données.'));
@@ -277,33 +262,24 @@ const AttestationServiceFait = () => {
   const handleSave = async (e) => {
     e.preventDefault();
 
-    const now = new Date().toISOString();
     const payload = toStoredRecord(formData);
     if (!validateRecord(payload)) return;
 
-    let updated;
-    if (editingId) {
-      updated = attestations.map((item) =>
-        item.id === editingId ? { ...item, ...payload, updated_at: now } : item
-      );
-      toast.success('Attestation mise à jour.');
-    } else {
-      const numero = `ASF-${String(attestations.length + 1).padStart(4, '0')}`;
-      updated = [
-        {
-          id: Date.now(),
-          numero,
-          created_at: now,
-          updated_at: now,
-          ...payload,
-        },
-        ...attestations,
-      ];
-      toast.success('Attestation créée.');
+    try {
+      if (editingId) {
+        await window.electronAPI.attestations.update(editingId, payload);
+        toast.success('Attestation mise à jour.');
+      } else {
+        await window.electronAPI.attestations.create(payload);
+        toast.success('Attestation créée.');
+      }
+      const updated = await window.electronAPI.attestations.getAll();
+      setAttestations(updated || []);
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de l\'enregistrement.'));
+      return;
     }
 
-    setAttestations(updated);
-    saveStored(updated);
     setIsModalOpen(false);
     setEditingId(null);
     initialFormRef.current = null;
@@ -318,10 +294,14 @@ const AttestationServiceFait = () => {
     });
     if (!ok) return;
 
-    const updated = attestations.filter((item) => item.id !== id);
-    setAttestations(updated);
-    saveStored(updated);
-    toast.success('Attestation supprimée.');
+    try {
+      await window.electronAPI.attestations.delete(id);
+      const updated = await window.electronAPI.attestations.getAll();
+      setAttestations(updated || []);
+      toast.success('Attestation supprimée.');
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la suppression.'));
+    }
   };
 
   const exportPdf = async (item, print = false, preview = false) => {

@@ -10,11 +10,15 @@
   },
   "scripts": {
     "start": "electron .",
+    "rebuild:native": "electron-rebuild -f -w better-sqlite3 -v 28.3.3",
+    "predev": "npm run rebuild:native",
     "dev": "concurrently \"npm run dev:react\" \"wait-on http://localhost:3000 && cross-env ELECTRON_START_URL=http://localhost:3000 electron .\"",
     "dev:react": "react-scripts start",
     "build": "react-scripts build",
     "postinstall": "electron-builder install-app-deps",
-    "package": "npm run build && electron-builder"
+    "package": "npm run build && electron-builder",
+    "postpackage": "npm run rebuild:native",
+    "license:generate": "node scripts/generate-license.js"
   },
   "build": {
     "appId": "com.intelservices.facturation",
