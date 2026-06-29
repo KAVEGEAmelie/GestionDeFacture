@@ -483,11 +483,15 @@ const AttestationServiceFait = () => {
             <div className="form-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
                 <label>Introduction</label>
-                <select className="filter-select" value={formData.intro_align} onChange={(e) => handleChange('intro_align', e.target.value)} style={{ maxWidth: 180 }}>
-                  {ALIGN_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
+                <div style={{ minWidth: 180, maxWidth: 220 }}>
+                  <SearchableSelect
+                    options={ALIGN_OPTIONS}
+                    value={formData.intro_align}
+                    onChange={(value) => handleChange('intro_align', value)}
+                    placeholder="Alignement"
+                    noOptionsText="Aucun alignement"
+                  />
+                </div>
               </div>
               <textarea rows={4} value={formData.intro} onChange={(e) => handleChange('intro', e.target.value)} placeholder="Ex : Nous soussignés, ... attestons par la présente que ..." />
             </div>
@@ -496,16 +500,24 @@ const AttestationServiceFait = () => {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
                 <label>Travaux réalisés (une ligne = une puce)</label>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                  <select className="filter-select" value={formData.travaux_align} onChange={(e) => handleChange('travaux_align', e.target.value)} style={{ maxWidth: 180 }}>
-                    {ALIGN_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
-                  <select className="filter-select" value={formData.travaux_list_mode} onChange={(e) => handleChange('travaux_list_mode', e.target.value)} style={{ maxWidth: 180 }}>
-                    {LIST_MODE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
+                  <div style={{ minWidth: 180, maxWidth: 220 }}>
+                    <SearchableSelect
+                      options={ALIGN_OPTIONS}
+                      value={formData.travaux_align}
+                      onChange={(value) => handleChange('travaux_align', value)}
+                      placeholder="Alignement"
+                      noOptionsText="Aucun alignement"
+                    />
+                  </div>
+                  <div style={{ minWidth: 180, maxWidth: 260 }}>
+                    <SearchableSelect
+                      options={LIST_MODE_OPTIONS}
+                      value={formData.travaux_list_mode}
+                      onChange={(value) => handleChange('travaux_list_mode', value)}
+                      placeholder="Style de liste"
+                      noOptionsText="Aucun style"
+                    />
+                  </div>
                 </div>
               </div>
               <textarea rows={8} value={formData.travaux} onChange={(e) => handleChange('travaux', e.target.value)} placeholder="Ex :\nRéalisation d'un massif en béton armé\nMise en place de poteaux et longrines\nTraitement anticorrosion" />
@@ -514,11 +526,15 @@ const AttestationServiceFait = () => {
             <div className="form-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
                 <label>Conformité des travaux</label>
-                <select className="filter-select" value={formData.conformite_align} onChange={(e) => handleChange('conformite_align', e.target.value)} style={{ maxWidth: 180 }}>
-                  {ALIGN_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
+                <div style={{ minWidth: 180, maxWidth: 220 }}>
+                  <SearchableSelect
+                    options={ALIGN_OPTIONS}
+                    value={formData.conformite_align}
+                    onChange={(value) => handleChange('conformite_align', value)}
+                    placeholder="Alignement"
+                    noOptionsText="Aucun alignement"
+                  />
+                </div>
               </div>
               <textarea rows={4} value={formData.conformite} onChange={(e) => handleChange('conformite', e.target.value)} placeholder="Ex : Les interventions ont été réalisées dans le respect des règles de l'art..." />
             </div>

@@ -266,9 +266,9 @@ function initDatabase() {
     insertParam.run('signataire_titre', 'Le Directeur,');
     insertParam.run('signataire_nom', 'Koffi KAVEGE');
     insertParam.run('tva_taux', '18');
-    insertParam.run('proforma_compteur', '5');
-    insertParam.run('facture_compteur', '17');
-    insertParam.run('bordereau_compteur', '4');
+    insertParam.run('proforma_compteur', '0');
+    insertParam.run('facture_compteur', '0');
+    insertParam.run('bordereau_compteur', '0');
   }
 
   // Ajoute les paramètres manquants pour les bases déjà existantes

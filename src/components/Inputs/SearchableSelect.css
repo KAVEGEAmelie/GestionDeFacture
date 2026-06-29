@@ -94,6 +94,14 @@
   color: #1d4ed8;
 }
 
+.searchable-select__option--create {
+  margin-top: 0.25rem;
+  border-top: 1px solid #e5e7eb;
+  padding-top: 0.7rem;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
 .searchable-select__empty {
   color: #6b7280;
   font-size: 0.9rem;

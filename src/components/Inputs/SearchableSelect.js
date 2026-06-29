@@ -11,6 +11,7 @@ const SearchableSelect = ({
   onChange,
   placeholder = 'Rechercher...',
   noOptionsText = 'Aucun resultat',
+  allowCustomValue = false,
   disabled = false,
   className = '',
 }) => {
@@ -59,6 +60,14 @@ const SearchableSelect = ({
     return [...starts, ...includes];
   }, [options, query]);
 
+  const normalizedQuery = normalize(query);
+  const hasExactMatch = useMemo(
+    () => options.some((opt) => normalize(opt.label) === normalizedQuery),
+    [options, normalizedQuery]
+  );
+
+  const canUseCustomValue = allowCustomValue && !!normalizedQuery && !hasExactMatch;
+
   const commitSelection = (option) => {
     if (!option) return;
     onChange?.(String(option.value), option);
@@ -92,6 +101,9 @@ const SearchableSelect = ({
       const option = filteredOptions[highlightIndex];
       if (option) {
         commitSelection(option);
+      } else if (canUseCustomValue) {
+        const customValue = String(query).trim();
+        commitSelection({ value: customValue, label: customValue, custom: true });
       }
       return;
     }
@@ -102,7 +114,7 @@ const SearchableSelect = ({
     }
   };
 
-  const inputValue = isOpen ? query : (selectedOption?.label || query);
+  const inputValue = isOpen ? query : (selectedOption?.label || String(value || '') || query);
 
   return (
     <div ref={rootRef} className={`searchable-select ${className}`.trim()}>
@@ -159,6 +171,20 @@ const SearchableSelect = ({
                 {opt.label}
               </button>
             ))
+          )}
+
+          {canUseCustomValue && (
+            <button
+              type="button"
+              className="searchable-select__option searchable-select__option--create"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                const customValue = String(query).trim();
+                commitSelection({ value: customValue, label: customValue, custom: true });
+              }}
+            >
+              Utiliser "{String(query).trim()}"
+            </button>
           )}
         </div>
       )}

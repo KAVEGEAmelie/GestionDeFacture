@@ -768,6 +768,8 @@ export const generateProformaPDF = async (proforma, parametres, options = {}) =>
       { content: formatNumber(qteTotal), styles: { halign: 'center' } },
       '', ''
     ]],
+    showHead: 'firstPage',
+    showFoot: 'lastPage',
     theme: 'grid',
     headStyles: {
       fillColor: COLORS.navy, textColor: COLORS.white, fontStyle: 'bold',
@@ -877,6 +879,7 @@ export const generateFacturePDF = async (facture, parametres) => {
       { content: formatNumber(qteTotal), styles: { halign: 'center' } },
       '', ''
     ]],
+    showHead: 'firstPage',
     showFoot: 'lastPage',
     theme: 'grid',
     headStyles: {
@@ -981,6 +984,7 @@ export const generateBordereauPDF = async (bordereau, parametres) => {
       { content: formatNumber(qteTotal), styles: { halign: 'center' } },
       ''
     ]],
+    showHead: 'firstPage',
     showFoot: 'lastPage',
     theme: 'grid',
     headStyles: {
@@ -1070,78 +1074,116 @@ const drawWrappedParagraph = (doc, text, x, y, width, options = {}) => {
     return lines;
   };
 
-  const lines = doc.splitTextToSize(String(text || '').trim(), width);
+  const rawText = String(text || '').replace(/\r/g, '');
+  const manualLines = rawText.split('\n');
   doc.setFont('helvetica', bold ? 'bold' : fontStyle);
   doc.setFontSize(fontSize);
   doc.setTextColor(...color);
 
   const safeAlign = normalizeAlign(align);
 
-  if (safeAlign === 'justify') {
-    const justifiedLines = splitWordsByWidth(text, width);
-    const baseSpace = doc.getTextWidth(' ');
-
-    justifiedLines.forEach((lineWords, index) => {
-      const isLast = index === justifiedLines.length - 1;
-      if (isLast || lineWords.length === 1) {
-        doc.text(lineWords.join(' '), x, y);
-        y += lineHeight;
-        return;
-      }
-
-      const wordsW = lineWords.reduce((sum, w) => sum + doc.getTextWidth(w), 0);
-      const gaps = lineWords.length - 1;
-      const extra = Math.max(0, (width - wordsW - gaps * baseSpace) / gaps);
-      let cursorX = x;
-
-      lineWords.forEach((word, wi) => {
-        doc.text(word, cursorX, y);
-        if (wi < gaps) cursorX += doc.getTextWidth(word) + baseSpace + extra;
-      });
-
+  const drawSingleLine = (lineText) => {
+    const wrapped = doc.splitTextToSize(String(lineText || '').trim(), width);
+    wrapped.forEach((line) => {
+      const anchorX = safeAlign === 'center' ? x + width / 2 : safeAlign === 'right' ? x + width : x;
+      doc.text(line, anchorX, y, { align: safeAlign });
       y += lineHeight;
     });
+  };
+
+  if (safeAlign === 'justify') {
+    for (let i = 0; i < manualLines.length; i++) {
+      const paragraph = manualLines[i];
+      if (!paragraph.trim()) {
+        y += lineHeight * 0.7;
+        continue;
+      }
+
+      const justifiedLines = splitWordsByWidth(paragraph, width);
+      const baseSpace = doc.getTextWidth(' ');
+
+      justifiedLines.forEach((lineWords, index) => {
+        const isLast = index === justifiedLines.length - 1;
+        if (isLast || lineWords.length === 1) {
+          doc.text(lineWords.join(' '), x, y);
+          y += lineHeight;
+          return;
+        }
+
+        const wordsW = lineWords.reduce((sum, w) => sum + doc.getTextWidth(w), 0);
+        const gaps = lineWords.length - 1;
+        const extra = Math.max(0, (width - wordsW - gaps * baseSpace) / gaps);
+        let cursorX = x;
+
+        lineWords.forEach((word, wi) => {
+          doc.text(word, cursorX, y);
+          if (wi < gaps) cursorX += doc.getTextWidth(word) + baseSpace + extra;
+        });
+
+        y += lineHeight;
+      });
+    }
 
     return y;
   }
 
-  const anchorX = safeAlign === 'center' ? x + width / 2 : safeAlign === 'right' ? x + width : x;
-
-  lines.forEach((line) => {
-    doc.text(line, anchorX, y, { align: safeAlign });
-    y += lineHeight;
-  });
+  for (let i = 0; i < manualLines.length; i++) {
+    const paragraph = manualLines[i];
+    if (!paragraph.trim()) {
+      y += lineHeight * 0.7;
+      continue;
+    }
+    drawSingleLine(paragraph);
+  }
 
   return y;
 };
 
 const countWrappedLines = (doc, text, width, align = 'left') => {
   const safeAlign = ['left', 'center', 'right', 'justify'].includes(align) ? align : 'left';
-  const source = String(text || '').trim();
-  if (!source) return 0;
+  const source = String(text || '').replace(/\r/g, '');
+  if (!source.trim()) return 0;
+  const manualLines = source.split('\n');
 
-  if (safeAlign !== 'justify') {
-    const lines = doc.splitTextToSize(source, width);
-    return lines.length;
-  }
+  let total = 0;
 
-  const words = source.split(/\s+/).filter(Boolean);
-  if (!words.length) return 0;
-
-  const lines = [];
-  let lineWords = [];
-  words.forEach((word) => {
-    const candidate = lineWords.length ? `${lineWords.join(' ')} ${word}` : word;
-    if (doc.getTextWidth(candidate) <= width) {
-      lineWords.push(word);
-    } else {
-      if (lineWords.length) lines.push(lineWords);
-      lineWords = [word];
+  const countLine = (lineText) => {
+    const trimmed = String(lineText || '').trim();
+    if (!trimmed) {
+      total += 1;
+      return;
     }
-  });
-  if (lineWords.length) lines.push(lineWords);
 
-  return lines.length;
+    if (safeAlign !== 'justify') {
+      const lines = doc.splitTextToSize(trimmed, width);
+      total += lines.length;
+      return;
+    }
+
+    const words = trimmed.split(/\s+/).filter(Boolean);
+    if (!words.length) {
+      total += 1;
+      return;
+    }
+
+    const lines = [];
+    let lineWords = [];
+    words.forEach((word) => {
+      const candidate = lineWords.length ? `${lineWords.join(' ')} ${word}` : word;
+      if (doc.getTextWidth(candidate) <= width) {
+        lineWords.push(word);
+      } else {
+        if (lineWords.length) lines.push(lineWords);
+        lineWords = [word];
+      }
+    });
+    if (lineWords.length) lines.push(lineWords);
+
+    total += lines.length;
+  };
+
+  manualLines.forEach(countLine);
+  return total;
 };
 
 const drawBulletedParagraphs = async (doc, items, x, y, width, parametres = {}, options = {}) => {
@@ -1375,6 +1417,8 @@ export const generateTvaPDF = async (rapport, parametres) => {
       { content: formatNumber(rapport.totalTtc), styles: { halign: 'right' } },
       { content: formatNumber(rapport.totalTva), styles: { halign: 'right' } }
     ]],
+    showHead: 'firstPage',
+    showFoot: 'lastPage',
     theme: 'grid',
     headStyles: {
       fillColor: COLORS.navy, textColor: COLORS.white, fontStyle: 'bold',

@@ -9,7 +9,10 @@ import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
 import { matchesWordPrefix } from '../utils/search';
 import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
+import SearchableSelect from '../components/Inputs/SearchableSelect';
 import './Clients.css';
+
+const UNIT_PRESETS = ['Unité', 'Pièce', 'Lot', 'Gros', 'Kilogramme', 'Mètre', 'Litre', 'Heure', 'Jour'];
 
 const Produits = () => {
   const toast = useToast();
@@ -122,8 +125,11 @@ const Produits = () => {
   };
 
   const unitesDisponibles = Array.from(
-    new Set(produits.map((p) => p.unite).filter(Boolean))
-  ).sort();
+    new Set([
+      ...UNIT_PRESETS,
+      ...produits.map((p) => String(p.unite || '').trim()).filter(Boolean),
+    ])
+  ).sort((a, b) => a.localeCompare(b, 'fr', { sensitivity: 'base' }));
 
   const filteredProduits = produits.filter((produit) => {
     const term = searchTerm.toLowerCase().trim();
@@ -222,18 +228,18 @@ const Produits = () => {
         >
           <div className="filter-group">
             <label>Unité</label>
-            <select
+            <input
               className="filter-select"
-              value={uniteFilter}
-              onChange={(e) => setUniteFilter(e.target.value)}
-            >
-              <option value="toutes">Toutes les unités</option>
+              list="produits-unites-filter-list"
+              placeholder="Toutes les unités"
+              value={uniteFilter === 'toutes' ? '' : uniteFilter}
+              onChange={(e) => setUniteFilter(e.target.value.trim() || 'toutes')}
+            />
+            <datalist id="produits-unites-filter-list">
               {unitesDisponibles.map((u) => (
-                <option key={u} value={u}>
-                  {u}
-                </option>
+                <option key={u} value={u} />
               ))}
-            </select>
+            </datalist>
           </div>
 
           <div className="filter-group">
@@ -376,20 +382,16 @@ const Produits = () => {
 
             <div className="form-group">
               <label>Unité</label>
-              <select
-                name="unite"
+              <SearchableSelect
+                options={unitesDisponibles.map((unite) => ({ value: unite, label: unite }))}
                 value={formData.unite}
-                onChange={handleInputChange}
-              >
-                <option value="Unité">Unité</option>
-                <option value="Pièce">Pièce</option>
-                <option value="Lot">Lot</option>
-                <option value="Kg">Kilogramme</option>
-                <option value="Mètre">Mètre</option>
-                <option value="Litre">Litre</option>
-                <option value="Heure">Heure</option>
-                <option value="Jour">Jour</option>
-              </select>
+                onChange={(uniteValue, option) =>
+                  setFormData((prev) => ({ ...prev, unite: option?.label || uniteValue }))
+                }
+                placeholder="Rechercher une unité"
+                noOptionsText="Aucune unité"
+                allowCustomValue
+              />
             </div>
           </div>
 
