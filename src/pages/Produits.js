@@ -58,6 +58,18 @@ const Produits = () => {
       prix_unitaire: parseFloat(formData.prix_unitaire) || 0
     };
 
+    // Empêcher les doublons (même désignation, insensible à la casse/espaces)
+    const designationNorm = (data.designation || '').trim().toLowerCase();
+    const doublon = produits.find(
+      (p) =>
+        (p.designation || '').trim().toLowerCase() === designationNorm &&
+        (!editingProduit || p.id !== editingProduit.id)
+    );
+    if (doublon) {
+      toast.error('Un produit avec cette désignation existe déjà.');
+      return;
+    }
+
     if (editingProduit) {
       try {
         await window.electronAPI.produits.update(editingProduit.id, data);

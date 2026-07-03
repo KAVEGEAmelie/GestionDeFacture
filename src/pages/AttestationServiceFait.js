@@ -14,6 +14,8 @@ import './Clients.css';
 import './Proformas.css';
 import './RapportsModal.css';
 
+const LEGACY_STORAGE_KEY = 'attestations_service_fait_v1';
+
 const todayISO = () => new Date().toISOString().split('T')[0];
 const makeRef = () => `ASF-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now().toString().slice(-4)}`;
 const ALIGN_OPTIONS = [
@@ -51,6 +53,17 @@ const splitTravauxInput = (value) => {
     )
     .map((line) => line.replace(/^[-•*]\s*/, '').replace(/^[,;]+/, '').trim())
     .filter(Boolean);
+};
+
+const loadLegacyStoredAttestations = () => {
+  try {
+    const raw = window.localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 };
 
 const buildDefaultForm = (params = {}) => ({
@@ -140,9 +153,40 @@ const AttestationServiceFait = () => {
           window.electronAPI.clients.getAll(),
           window.electronAPI.attestations.getAll(),
         ]);
+
+        let finalAttestations = attestationsData || [];
+        if (finalAttestations.length === 0) {
+          const legacyAttestations = loadLegacyStoredAttestations();
+          if (legacyAttestations.length > 0) {
+            for (const legacyItem of legacyAttestations) {
+              await window.electronAPI.attestations.create({
+                reference: legacyItem.reference || '',
+                title: legacyItem.title || legacyItem.titre || 'ATTESTATION DE SERVICE FAIT',
+                date: legacyItem.date || '',
+                lieu: legacyItem.lieu || '',
+                client_nom: legacyItem.client_nom || '',
+                objet: legacyItem.objet || '',
+                intro: legacyItem.intro || '',
+                intro_align: normalizeAlign(legacyItem.intro_align, 'justify'),
+                travaux: Array.isArray(legacyItem.travaux)
+                  ? legacyItem.travaux
+                  : splitTravauxInput(legacyItem.travaux || ''),
+                travaux_align: normalizeAlign(legacyItem.travaux_align, 'left'),
+                travaux_list_mode: normalizeListMode(legacyItem.travaux_list_mode, 'bullets'),
+                conformite: legacyItem.conformite || '',
+                conformite_align: normalizeAlign(legacyItem.conformite_align, 'justify'),
+                signataire_gauche: legacyItem.signataire_gauche || '',
+                signataire_droite: legacyItem.signataire_droite || '',
+              });
+            }
+            finalAttestations = await window.electronAPI.attestations.getAll();
+            toast.success(`${legacyAttestations.length} attestation(s) récupérée(s) depuis l'ancienne version.`);
+          }
+        }
+
         setParametres(params || {});
         setClients(clientsData || []);
-        setAttestations(attestationsData || []);
+        setAttestations(finalAttestations);
         setFormData(buildDefaultForm(params || {}));
       } catch (error) {
         toast.error(getErrorMessage(error, 'Impossible de charger les données.'));

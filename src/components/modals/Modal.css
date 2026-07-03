@@ -44,6 +44,25 @@
   max-width: 1200px;
 }
 
+/* Modal agrandi : occupe presque tout l'écran */
+.modal-maximized {
+  width: 100% !important;
+  max-width: none !important;
+  height: calc(100vh - 2rem);
+  max-height: calc(100vh - 2rem) !important;
+}
+
+/* Modal réduit : seul l'en-tête reste visible */
+.modal-collapsed {
+  max-height: none;
+  height: auto;
+  overflow: hidden;
+}
+
+.modal-collapsed .modal-body {
+  display: none;
+}
+
 .modal-header {
   display: flex;
   align-items: center;
@@ -65,6 +84,30 @@
   letter-spacing: -0.02em;
 }
 
+.modal-window-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.modal-win-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--gray-500);
+  padding: 0.4rem;
+  border-radius: var(--radius-sm);
+  transition: all var(--transition);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-win-btn:hover {
+  background-color: var(--gray-200);
+  color: var(--gray-900);
+}
+
 .modal-close {
   background: none;
   border: none;
@@ -79,8 +122,8 @@
 }
 
 .modal-close:hover {
-  background-color: var(--gray-200);
-  color: var(--gray-900);
+  background-color: #fee2e2;
+  color: #dc2626;
   transform: rotate(90deg);
 }
 

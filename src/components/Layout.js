@@ -9,6 +9,7 @@ import {
   Truck,
   Landmark,
   ClipboardList,
+  Megaphone,
   Settings 
 } from 'lucide-react';
 import './Layout.css';
@@ -49,6 +50,7 @@ const Layout = () => {
     { path: '/dashboard', icon: LayoutDashboard, label: 'Tableau de bord' },
     { path: '/clients', icon: Users, label: 'Clients' },
     { path: '/produits', icon: Package, label: 'Produits' },
+    { path: '/appels-offres', icon: Megaphone, label: "Appels d'offre" },
     { path: '/proformas', icon: FileText, label: 'Proformas' },
     { path: '/factures', icon: Receipt, label: 'Factures' },
     { path: '/bordereaux', icon: Truck, label: 'Bordereaux' },

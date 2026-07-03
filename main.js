@@ -75,6 +75,46 @@ function initDatabase() {
       FOREIGN KEY (produit_id) REFERENCES produits(id)
     );
 
+    CREATE TABLE IF NOT EXISTS appels_offres (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      numero TEXT UNIQUE NOT NULL,
+      date DATE NOT NULL,
+      client_id INTEGER NOT NULL,
+      objet TEXT,
+      total_materiel_ht REAL DEFAULT 0,
+      prestations REAL DEFAULT 0,
+      remise REAL DEFAULT 0,
+      total_ht REAL NOT NULL,
+      tva REAL NOT NULL,
+      total_ttc REAL NOT NULL,
+      statut TEXT DEFAULT 'en_attente',
+      proforma_id INTEGER,
+      avec_cachet INTEGER DEFAULT 0,
+      tva_applicable INTEGER DEFAULT 1,
+      reference_externe TEXT,
+      autorite TEXT,
+      autorite_adresse TEXT,
+      validite_offre INTEGER DEFAULT 90,
+      delai_execution TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (client_id) REFERENCES clients(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS appel_offre_lignes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      appel_offre_id INTEGER NOT NULL,
+      produit_id INTEGER,
+      designation TEXT NOT NULL,
+      unite TEXT NOT NULL,
+      quantite REAL NOT NULL,
+      prix_unitaire REAL NOT NULL,
+      montant REAL NOT NULL,
+      ordre INTEGER DEFAULT 0,
+      FOREIGN KEY (appel_offre_id) REFERENCES appels_offres(id) ON DELETE CASCADE,
+      FOREIGN KEY (produit_id) REFERENCES produits(id)
+    );
+
     CREATE TABLE IF NOT EXISTS factures (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       numero TEXT UNIQUE NOT NULL,
@@ -232,6 +272,27 @@ function initDatabase() {
     db.exec("ALTER TABLE proformas ADD COLUMN tva_applicable INTEGER DEFAULT 1");
   }
 
+  // Migration : champs de soumission des appels d'offre (bordereau de prix,
+  // lettre de soumission, enveloppes).
+  const aoCols = db.prepare("PRAGMA table_info(appels_offres)").all().map((c) => c.name);
+  if (aoCols.length > 0) {
+    if (!aoCols.includes('reference_externe')) {
+      db.exec("ALTER TABLE appels_offres ADD COLUMN reference_externe TEXT");
+    }
+    if (!aoCols.includes('autorite')) {
+      db.exec("ALTER TABLE appels_offres ADD COLUMN autorite TEXT");
+    }
+    if (!aoCols.includes('autorite_adresse')) {
+      db.exec("ALTER TABLE appels_offres ADD COLUMN autorite_adresse TEXT");
+    }
+    if (!aoCols.includes('validite_offre')) {
+      db.exec("ALTER TABLE appels_offres ADD COLUMN validite_offre INTEGER DEFAULT 90");
+    }
+    if (!aoCols.includes('delai_execution')) {
+      db.exec("ALTER TABLE appels_offres ADD COLUMN delai_execution TEXT");
+    }
+  }
+
   // Migration : rendre produit_id nullable sur les lignes (permet la saisie
   // libre d'une désignation sans produit du catalogue). SQLite ne permet pas
   // de retirer une contrainte NOT NULL via ALTER : on reconstruit la table.
@@ -319,6 +380,7 @@ function initDatabase() {
     insertParam.run('proforma_compteur', '0');
     insertParam.run('facture_compteur', '0');
     insertParam.run('bordereau_compteur', '0');
+    insertParam.run('appel_offre_compteur', '0');
   }
 
   // Ajoute les paramètres manquants pour les bases déjà existantes
@@ -328,6 +390,7 @@ function initDatabase() {
   ensureParam.run('entreprise_slogan2', 'Sécurité Électronique • Énergie');
   ensureParam.run('entreprise_slogan_pied1', 'Votre partenaire en réseaux informatiques,');
   ensureParam.run('entreprise_slogan_pied2', 'télécommunications et sécurité électronique.');
+  ensureParam.run('appel_offre_compteur', '0');
   ensureParam.run('application_sous_titre', 'Gestion Facturation');
   ensureParam.run('entreprise_logo', '');
   ensureParam.run('signataire_titre', 'Le Directeur,');
@@ -456,7 +519,7 @@ function setSecurite(cle, valeur) {
 // et saute automatiquement tout numéro déjà utilisé dans la table donnée,
 // afin d'éviter les conflits (ex. compteur remis à 0 alors que des numéros
 // existent déjà). Renvoie le numéro formaté ET le compteur retenu.
-function genererNumero(table, compteurCle, annee) {
+function genererNumero(table, compteurCle, annee, prefixe = '') {
   const row = db.prepare('SELECT valeur FROM parametres WHERE cle = ?').get(compteurCle);
   let compteur = parseInt(row && row.valeur, 10);
   if (Number.isNaN(compteur)) compteur = 0;
@@ -466,7 +529,7 @@ function genererNumero(table, compteurCle, annee) {
   let numero;
   do {
     compteur += 1;
-    numero = `${annee}/${compteur.toString().padStart(5, '0')}-ITS`;
+    numero = `${prefixe}${annee}/${compteur.toString().padStart(5, '0')}-ITS`;
   } while (existeStmt.get(numero));
 
   return { numero, compteur };
@@ -1093,6 +1156,229 @@ ipcMain.handle('tva:verser', (event, ids) => {
   return { success: true, count };
 });
 
+ipcMain.handle('tva:annuler', (event, ids) => {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw new Error('Aucune facture sélectionnée.');
+  }
+  const transaction = db.transaction((factureIds) => {
+    const stmt = db.prepare(
+      "UPDATE factures SET tva_versee = 0, date_versement_tva = NULL WHERE id = ? AND tva_versee = 1"
+    );
+    let count = 0;
+    factureIds.forEach((id) => {
+      const res = stmt.run(id);
+      count += res.changes;
+    });
+    return count;
+  });
+  const count = transaction(ids);
+  return { success: true, count };
+});
+
+// APPELS D'OFFRE
+ipcMain.handle('appelsOffres:getAll', () => {
+  return db.prepare(`
+    SELECT a.*, c.nom as client_nom 
+    FROM appels_offres a
+    LEFT JOIN clients c ON a.client_id = c.id
+    ORDER BY a.created_at DESC
+  `).all();
+});
+
+ipcMain.handle('appelsOffres:getById', (event, id) => {
+  const ao = db.prepare(`
+    SELECT a.*, c.nom as client_nom, c.adresse as client_adresse,
+           c.telephone as client_telephone, c.email as client_email, c.nif as client_nif
+    FROM appels_offres a
+    LEFT JOIN clients c ON a.client_id = c.id
+    WHERE a.id = ?
+  `).get(id);
+  if (ao) {
+    ao.lignes = db.prepare(
+      'SELECT * FROM appel_offre_lignes WHERE appel_offre_id = ? ORDER BY ordre'
+    ).all(id);
+  }
+  return ao;
+});
+
+ipcMain.handle('appelsOffres:create', (event, appelOffre) => {
+  const transaction = db.transaction((data) => {
+    const annee = new Date(data.date).getFullYear() || new Date().getFullYear();
+    const { numero, compteur } = genererNumero('appels_offres', 'appel_offre_compteur', annee, 'AO-');
+
+    const stmt = db.prepare(`
+      INSERT INTO appels_offres (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut, avec_cachet, tva_applicable, reference_externe, autorite, autorite_adresse, validite_offre, delai_execution)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const result = stmt.run(
+      numero,
+      data.date,
+      data.client_id,
+      data.objet,
+      data.total_materiel_ht || 0,
+      data.prestations || 0,
+      data.remise || 0,
+      data.total_ht,
+      data.tva,
+      data.total_ttc,
+      'en_attente',
+      data.avec_cachet ? 1 : 0,
+      data.tva_applicable === false ? 0 : 1,
+      data.reference_externe || '',
+      data.autorite || '',
+      data.autorite_adresse || '',
+      parseInt(data.validite_offre, 10) || 90,
+      data.delai_execution || ''
+    );
+    const appelOffreId = result.lastInsertRowid;
+
+    const stmtLigne = db.prepare(`
+      INSERT INTO appel_offre_lignes (appel_offre_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    data.lignes.forEach((ligne, index) => {
+      stmtLigne.run(
+        appelOffreId,
+        Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
+        ligne.designation,
+        ligne.unite,
+        ligne.quantite,
+        ligne.prix_unitaire,
+        ligne.montant,
+        index
+      );
+    });
+
+    db.prepare('UPDATE parametres SET valeur = ? WHERE cle = ?').run(compteur.toString(), 'appel_offre_compteur');
+
+    return { id: appelOffreId, numero };
+  });
+  return transaction(appelOffre);
+});
+
+ipcMain.handle('appelsOffres:update', (event, id, data) => {
+  const existing = db.prepare('SELECT statut FROM appels_offres WHERE id = ?').get(id);
+  if (!existing) {
+    throw new Error("Appel d'offre introuvable.");
+  }
+  if (existing.statut === 'transformee') {
+    throw new Error("Cet appel d'offre a déjà été transformé en proforma et ne peut plus être modifié.");
+  }
+  const transaction = db.transaction(() => {
+    db.prepare(`
+      UPDATE appels_offres
+      SET date = ?, client_id = ?, objet = ?, total_materiel_ht = ?, prestations = ?, remise = ?,
+          total_ht = ?, tva = ?, total_ttc = ?, avec_cachet = ?, tva_applicable = ?,
+          reference_externe = ?, autorite = ?, autorite_adresse = ?, validite_offre = ?, delai_execution = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      data.date,
+      data.client_id,
+      data.objet,
+      data.total_materiel_ht || 0,
+      data.prestations || 0,
+      data.remise || 0,
+      data.total_ht,
+      data.tva,
+      data.total_ttc,
+      data.avec_cachet ? 1 : 0,
+      data.tva_applicable === false ? 0 : 1,
+      data.reference_externe || '',
+      data.autorite || '',
+      data.autorite_adresse || '',
+      parseInt(data.validite_offre, 10) || 90,
+      data.delai_execution || '',
+      id
+    );
+
+    db.prepare('DELETE FROM appel_offre_lignes WHERE appel_offre_id = ?').run(id);
+    const stmtLigne = db.prepare(`
+      INSERT INTO appel_offre_lignes (appel_offre_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    data.lignes.forEach((ligne, index) => {
+      stmtLigne.run(
+        id,
+        Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
+        ligne.designation,
+        ligne.unite,
+        ligne.quantite,
+        ligne.prix_unitaire,
+        ligne.montant,
+        index
+      );
+    });
+    return { success: true };
+  });
+  return transaction();
+});
+
+ipcMain.handle('appelsOffres:delete', (event, id) => {
+  db.prepare('DELETE FROM appels_offres WHERE id = ?').run(id);
+  return { success: true };
+});
+
+// Transformer un appel d'offre en proforma
+ipcMain.handle('appelsOffres:transformerEnProforma', (event, id) => {
+  const transaction = db.transaction((aoId) => {
+    const ao = db.prepare('SELECT * FROM appels_offres WHERE id = ?').get(aoId);
+    if (!ao) {
+      throw new Error("Appel d'offre introuvable.");
+    }
+    if (ao.statut === 'transformee') {
+      throw new Error("Cet appel d'offre a déjà été transformé en proforma.");
+    }
+
+    const annee = new Date().getFullYear();
+    const { numero, compteur } = genererNumero('proformas', 'proforma_compteur', annee);
+
+    const result = db.prepare(`
+      INSERT INTO proformas (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut, avec_cachet, tva_applicable)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      numero,
+      new Date().toISOString().split('T')[0],
+      ao.client_id,
+      ao.objet,
+      ao.total_materiel_ht || 0,
+      ao.prestations || 0,
+      ao.remise || 0,
+      ao.total_ht,
+      ao.tva,
+      ao.total_ttc,
+      'en_attente',
+      ao.avec_cachet || 0,
+      ao.tva_applicable === 0 ? 0 : 1
+    );
+    const proformaId = result.lastInsertRowid;
+
+    const lignes = db.prepare('SELECT * FROM appel_offre_lignes WHERE appel_offre_id = ? ORDER BY ordre').all(aoId);
+    const stmtLigne = db.prepare(`
+      INSERT INTO proforma_lignes (proforma_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    lignes.forEach((ligne, index) => {
+      stmtLigne.run(
+        proformaId,
+        ligne.produit_id,
+        ligne.designation,
+        ligne.unite,
+        ligne.quantite,
+        ligne.prix_unitaire,
+        ligne.montant,
+        index
+      );
+    });
+
+    db.prepare('UPDATE parametres SET valeur = ? WHERE cle = ?').run(compteur.toString(), 'proforma_compteur');
+    db.prepare("UPDATE appels_offres SET statut = 'transformee', proforma_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(proformaId, aoId);
+
+    return { proformaId, proformaNumero: numero };
+  });
+  return transaction(id);
+});
+
 // BORDEREAUX
 ipcMain.handle('bordereaux:getAll', () => {
   const bordereaux = db.prepare(`
@@ -1102,6 +1388,45 @@ ipcMain.handle('bordereaux:getAll', () => {
     ORDER BY b.created_at DESC
   `).all();
   return bordereaux;
+});
+
+// Création d'un bordereau autonome (sans proforma ni facture)
+ipcMain.handle('bordereaux:create', (event, data) => {
+  const transaction = db.transaction((b) => {
+    if (!b || !b.client_id) {
+      throw new Error('Client requis.');
+    }
+    const lignes = Array.isArray(b.lignes)
+      ? b.lignes.filter((l) => l.designation && String(l.designation).trim())
+      : [];
+    if (lignes.length === 0) {
+      throw new Error('Ajoutez au moins une ligne au bordereau.');
+    }
+
+    const { numero, compteur } = genererNumero('bordereaux', 'bordereau_compteur', new Date().getFullYear());
+    const result = db.prepare(`
+      INSERT INTO bordereaux (numero, date, client_id, facture_id)
+      VALUES (?, ?, ?, NULL)
+    `).run(
+      numero,
+      b.date || new Date().toISOString().split('T')[0],
+      b.client_id
+    );
+    const bordereauId = result.lastInsertRowid;
+
+    const stmtLigne = db.prepare(`
+      INSERT INTO bordereau_lignes (bordereau_id, designation, quantite, ordre)
+      VALUES (?, ?, ?, ?)
+    `);
+    lignes.forEach((ligne, index) => {
+      stmtLigne.run(bordereauId, String(ligne.designation).trim(), Number(ligne.quantite) || 0, index);
+    });
+
+    db.prepare('UPDATE parametres SET valeur = ? WHERE cle = ?').run(compteur.toString(), 'bordereau_compteur');
+
+    return { id: bordereauId, numero };
+  });
+  return transaction(data);
 });
 
 ipcMain.handle('bordereaux:getById', (event, id) => {
@@ -1230,11 +1555,14 @@ ipcMain.handle('bordereaux:createFromProforma', (event, proformaId, createFactur
       INSERT INTO bordereaux (numero, date, client_id, facture_id)
       VALUES (?, ?, ?, ?)
     `);
+    // Lier le bordereau à la facture nouvellement créée, ou à la facture
+    // existante si la proforma a déjà été facturée (bordereaux multiples).
+    const factureLieeId = factureResult ? factureResult.id : (proforma.facture_id || null);
     const bordereauInsert = bordereauStmt.run(
       bordereauNumero,
       new Date().toISOString().split('T')[0],
       proforma.client_id,
-      factureResult ? factureResult.id : null
+      factureLieeId
     );
     const bordereauId = bordereauInsert.lastInsertRowid;
 

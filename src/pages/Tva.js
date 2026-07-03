@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Landmark, Wallet, CheckCircle, Send, FileDown, FileSpreadsheet, Printer } from 'lucide-react';
+import { Landmark, Wallet, CheckCircle, Send, FileDown, FileSpreadsheet, Printer, RotateCcw } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
@@ -169,6 +169,23 @@ const Tva = () => {
       loadStats();
     } catch (error) {
       toast.error(getErrorMessage(error, 'Erreur lors du versement de la TVA.'));
+    }
+  };
+
+  const handleAnnulerVersement = async (facture) => {
+    const ok = await confirm({
+      title: 'Annuler le versement TVA',
+      message: `Annuler le versement de la TVA de la facture ${facture.numero} (${formatFCFA(facture.tva)}) ? Elle repassera dans la liste « TVA à reverser ».`,
+      confirmText: 'Annuler le versement',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await window.electronAPI.tva.annuler([facture.id]);
+      toast.success(`Versement TVA annulé pour la facture ${facture.numero}.`);
+      loadStats();
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Erreur lors de l'annulation du versement."));
     }
   };
 
@@ -440,12 +457,13 @@ const Tva = () => {
                   <th onClick={() => toggleSortVersees('date_versement_tva')} style={{ cursor: 'pointer' }}>Date versement{sortMarkVersees('date_versement_tva')}</th>
                   <th onClick={() => toggleSortVersees('total_ttc')} style={{ cursor: 'pointer' }}>Montant TTC{sortMarkVersees('total_ttc')}</th>
                   <th onClick={() => toggleSortVersees('tva')} style={{ cursor: 'pointer' }}>TVA versée{sortMarkVersees('tva')}</th>
+                  <th style={{ width: '110px' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {sortedVersees.length === 0 ? (
                   <tr>
-                    <td colSpan="5" className="empty-state">
+                    <td colSpan="6" className="empty-state">
                       Aucune TVA versée pour le moment
                     </td>
                   </tr>
@@ -457,6 +475,16 @@ const Tva = () => {
                       <td>{formatDate(f.date_versement_tva)}</td>
                       <td>{formatFCFA(f.total_ttc)}</td>
                       <td className="font-semibold">{formatFCFA(f.tva)}</td>
+                      <td>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => handleAnnulerVersement(f)}
+                          title="Annuler ce versement (la TVA redevient à reverser)"
+                        >
+                          <RotateCcw size={14} />
+                          Annuler
+                        </button>
+                      </td>
                     </tr>
                   ))
                 )}

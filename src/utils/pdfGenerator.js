@@ -390,7 +390,9 @@ const drawTotals = (doc, x, y, w, data, tauxTVA) => {
     ry += lineH;
   };
   row('TOTAL MATÉRIEL HT', formatNumber(data.total_materiel_ht || 0));
-  row('PRESTATIONS', formatNumber(data.prestations || 0));
+  if (data.prestations > 0) {
+    row('PRESTATIONS', formatNumber(data.prestations));
+  }
   if (data.remise > 0) {
     row('REMISE', '- ' + formatNumber(data.remise), { color: COLORS.red });
   }
@@ -438,7 +440,7 @@ const drawSignature = (doc, centerX, y, parametres = {}, withCachet = false) => 
   const img = parametres.signature_image;
 
   const titreY = y + 2;
-  const nomY = y + 13;
+  const nomY = y + 20;
 
   // 1) Cachet/signature dessiné EN PREMIER (en dessous) pour que le texte
   //    reste lisible par-dessus, même si le scan a un fond blanc opaque.
@@ -736,7 +738,7 @@ export const generateProformaPDF = async (proforma, parametres, options = {}) =>
   const { contentLeft, rightX, headerBottom } = await drawHeader(doc, parametres);
 
   // Titre
-  let yPos = drawTitle(doc, 'FACTURE PROFORMA', headerBottom + 11);
+  let yPos = drawTitle(doc, options.titre || 'FACTURE PROFORMA', headerBottom + 11);
 
   // N° (centré sous le titre) / Date (décalée à droite)
   const dateStr = new Date(proforma.date).toLocaleDateString('fr-FR');
@@ -800,7 +802,7 @@ export const generateProformaPDF = async (proforma, parametres, options = {}) =>
   const wordsW = totalsX - contentLeft - 8;
   const wordsH = 34;
 
-  if (yPos + wordsH + 28 > pageHeight - 24) {
+  if (yPos + wordsH + 36 > pageHeight - 24) {
     doc.addPage();
     drawPageFrame(doc);
     drawFooter(doc, parametres);
@@ -808,7 +810,7 @@ export const generateProformaPDF = async (proforma, parametres, options = {}) =>
   }
 
   drawAmountInWords(doc, contentLeft, yPos, wordsW, wordsH,
-    'Arrêtée la présente facture proforma à la somme de :', proforma.total_ttc);
+    options.sommeIntro || 'Arrêtée la présente facture proforma à la somme de :', proforma.total_ttc);
 
   const totalsBottom = drawTotals(doc, totalsX, yPos, totalsW, {
     total_materiel_ht: proforma.total_materiel_ht,
@@ -917,7 +919,7 @@ export const generateFacturePDF = async (facture, parametres) => {
   // Hauteur du bloc bas gauche (somme en lettres + conditions de paiement)
   const condGap = 6;
   const condH = 22;
-  const blocBasH = wordsH + condGap + condH;
+  const blocBasH = wordsH + condGap + condH + 8;
   if (yPos + blocBasH > pageHeight - 24) {
     doc.addPage();
     drawPageFrame(doc);
@@ -1453,6 +1455,215 @@ export const generateTvaPDF = async (rapport, parametres) => {
 
   // Pied de page commun
   drawFooter(doc, parametres);
+
+  return doc;
+};
+
+// =====================================================================
+//  LETTRE DE SOUMISSION (appel d'offre)
+// =====================================================================
+export const generateLettreSoumissionPDF = async (ao, parametres = {}) => {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  drawPageFrame(doc);
+  const { contentLeft, rightX, headerBottom } = await drawHeader(doc, parametres);
+
+  let yPos = headerBottom + 10;
+
+  // Lieu et date (à droite)
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10.5);
+  doc.setTextColor(...COLORS.ink);
+  doc.text(`Lomé, le ${formatDateLong(ao.date)}`, rightX, yPos, { align: 'right' });
+  yPos += 12;
+
+  // Destinataire (autorité contractante)
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(...COLORS.navy);
+  doc.text('À', rightX - 60, yPos);
+  yPos += 6;
+  const autorite = ao.autorite || ao.client_nom || '';
+  const autoriteLines = doc.splitTextToSize(autorite, 70);
+  doc.text(autoriteLines, rightX - 60, yPos);
+  yPos += autoriteLines.length * 5.5;
+  if (ao.autorite_adresse) {
+    doc.setFont('helvetica', 'normal');
+    const adresseLines = doc.splitTextToSize(ao.autorite_adresse, 70);
+    doc.text(adresseLines, rightX - 60, yPos);
+    yPos += adresseLines.length * 5.5;
+  }
+  yPos += 8;
+
+  // Objet
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(...COLORS.ink);
+  const objetTxt = `Objet : Soumission à l'appel d'offres ${ao.reference_externe || ao.numero}`;
+  const objetLines = doc.splitTextToSize(objetTxt, pageWidth - MARGIN * 2 - 10);
+  doc.text(objetLines, contentLeft, yPos);
+  yPos += objetLines.length * 6 + 8;
+
+  // Titre
+  yPos = drawTitle(doc, 'LETTRE DE SOUMISSION', yPos) + 12;
+
+  // Corps de la lettre
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10.5);
+  doc.setTextColor(...COLORS.ink);
+  const entreprise = parametres.entreprise_nom || 'IN-TEL SERVICES';
+  const montantTTC = ao.total_ttc || 0;
+  const validite = ao.validite_offre || 90;
+
+  const paragraphs = [
+    `Madame, Monsieur,`,
+    `Après avoir examiné le dossier d'appel d'offres ${ao.reference_externe || ao.numero} relatif à : ${ao.objet || ''}, dont nous accusons réception, nous soussignés, ${entreprise}, offrons d'exécuter et d'achever lesdits travaux/fournitures conformément aux prescriptions du dossier.`,
+    `Le montant total de notre offre s'élève à la somme de ${nombreEnLettres(montantTTC)} (${formatNumber(montantTTC)}) Francs CFA Toutes Taxes Comprises, tel que détaillé dans le bordereau des prix ci-joint.`,
+    ao.delai_execution
+      ? `Nous nous engageons à exécuter les prestations dans un délai de ${ao.delai_execution}.`
+      : null,
+    `La présente offre demeure valable pendant une période de ${validite} jours à compter de la date limite de dépôt des offres, et peut être acceptée à tout moment avant l'expiration de ce délai.`,
+    `Jusqu'à ce qu'un marché formel soit établi et signé, la présente soumission, complétée par votre acceptation écrite, constituera un engagement contractuel entre nous.`,
+    `Nous vous prions d'agréer, Madame, Monsieur, l'expression de notre considération distinguée.`,
+  ].filter(Boolean);
+
+  const textWidth = pageWidth - MARGIN * 2 - 10;
+  paragraphs.forEach((p) => {
+    const lines = doc.splitTextToSize(p, textWidth);
+    doc.text(lines, contentLeft + 2, yPos, { maxWidth: textWidth, align: 'justify' });
+    yPos += lines.length * 5.8 + 4;
+  });
+
+  // Signature
+  yPos += 6;
+  const sigCenterX = rightX - 40;
+  drawSignature(doc, sigCenterX, yPos, parametres, ao.avec_cachet === 1);
+
+  drawFooter(doc, parametres);
+  return doc;
+};
+
+// =====================================================================
+//  ENVELOPPES DE SOUMISSION (intérieure + extérieure)
+// =====================================================================
+export const generateEnveloppesPDF = async (ao, parametres = {}) => {
+  const doc = new jsPDF({ orientation: 'landscape' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const centerX = pageWidth / 2;
+  const reference = ao.reference_externe || ao.numero;
+  const autorite = ao.autorite || ao.client_nom || '';
+
+  const drawEnvelopeFrame = (label) => {
+    // Cadre décoratif
+    doc.setDrawColor(...COLORS.navy);
+    doc.setLineWidth(0.8);
+    doc.rect(8, 8, pageWidth - 16, pageHeight - 16, 'S');
+    doc.setLineWidth(0.3);
+    doc.rect(11, 11, pageWidth - 22, pageHeight - 22, 'S');
+
+    // Étiquette du type d'enveloppe (coin supérieur gauche)
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.setTextColor(...COLORS.grey);
+    doc.text(label, 16, 20);
+  };
+
+  const drawCommonCenter = (startY) => {
+    let y = startY;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.setTextColor(...COLORS.navy);
+    doc.text(`APPEL D'OFFRES ${reference}`, centerX, y, { align: 'center' });
+    y += 12;
+
+    if (ao.objet) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(12);
+      doc.setTextColor(...COLORS.ink);
+      const objetLines = doc.splitTextToSize(`Objet : ${ao.objet}`, pageWidth - 80);
+      doc.text(objetLines, centerX, y, { align: 'center' });
+      y += objetLines.length * 6.5 + 6;
+    }
+
+    if (autorite) {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(12);
+      doc.setTextColor(...COLORS.ink);
+      const autLines = doc.splitTextToSize(`À l'attention de : ${autorite}`, pageWidth - 80);
+      doc.text(autLines, centerX, y, { align: 'center' });
+      y += autLines.length * 6.5 + 4;
+    }
+    if (ao.autorite_adresse) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(11);
+      const adrLines = doc.splitTextToSize(ao.autorite_adresse, pageWidth - 80);
+      doc.text(adrLines, centerX, y, { align: 'center' });
+      y += adrLines.length * 6 + 4;
+    }
+    return y;
+  };
+
+  // --- Page 1 : ENVELOPPE EXTÉRIEURE (anonyme) ---
+  drawEnvelopeFrame('ENVELOPPE EXTÉRIEURE');
+  let y = drawCommonCenter(58);
+
+  y += 10;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(14);
+  doc.setTextColor(...COLORS.red);
+  doc.text('« À N\'OUVRIR QU\'EN SÉANCE DE DÉPOUILLEMENT »', centerX, y, { align: 'center' });
+  y += 10;
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.grey);
+  doc.text('(Cette enveloppe ne doit comporter aucune indication sur l\'identité du soumissionnaire)', centerX, y, { align: 'center' });
+
+  // --- Page 2 : ENVELOPPE INTÉRIEURE (avec identité) ---
+  doc.addPage('a4', 'landscape');
+  drawEnvelopeFrame('ENVELOPPE INTÉRIEURE');
+  y = drawCommonCenter(48);
+
+  y += 8;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.setTextColor(...COLORS.red);
+  doc.text('« À N\'OUVRIR QU\'EN SÉANCE DE DÉPOUILLEMENT »', centerX, y, { align: 'center' });
+  y += 14;
+
+  // Identité du soumissionnaire
+  doc.setDrawColor(...COLORS.line);
+  doc.setLineWidth(0.4);
+  const boxW = 150;
+  const boxX = centerX - boxW / 2;
+  doc.roundedRect(boxX, y, boxW, 42, 2, 2, 'S');
+  let by = y + 9;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(...COLORS.navy);
+  doc.text('SOUMISSIONNAIRE', centerX, by, { align: 'center' });
+  by += 8;
+  doc.setFontSize(11);
+  doc.setTextColor(...COLORS.ink);
+  doc.text(parametres.entreprise_nom || 'IN-TEL SERVICES', centerX, by, { align: 'center' });
+  by += 6.5;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9.5);
+  if (parametres.entreprise_adresse) {
+    doc.text(parametres.entreprise_adresse, centerX, by, { align: 'center' });
+    by += 5.5;
+  }
+  const contacts = [
+    parametres.entreprise_tel ? `Tél : ${parametres.entreprise_tel}` : null,
+    parametres.entreprise_email ? `Email : ${parametres.entreprise_email}` : null,
+  ].filter(Boolean).join('   •   ');
+  if (contacts) {
+    doc.text(contacts, centerX, by, { align: 'center' });
+    by += 5.5;
+  }
+  if (parametres.entreprise_nif) {
+    doc.text(`NIF : ${parametres.entreprise_nif}`, centerX, by, { align: 'center' });
+  }
 
   return doc;
 };

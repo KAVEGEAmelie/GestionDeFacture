@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Eye, Trash2, Printer, Download } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Eye, Trash2, Printer, Download, Plus, X, FileText } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
@@ -10,13 +11,16 @@ import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
 import { matchesWordPrefix } from '../utils/search';
 import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
+import SearchableSelect from '../components/Inputs/SearchableSelect';
 import './Clients.css';
 import './Proformas.css';
 
 const Bordereaux = () => {
   const toast = useToast();
   const confirm = useConfirm();
+  const navigate = useNavigate();
   const [bordereaux, setBordereaux] = useState([]);
+  const [clients, setClients] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
   const [dateFrom, setDateFrom] = useState('');
@@ -24,18 +28,81 @@ const Bordereaux = () => {
   const [parametres, setParametres] = useState({});
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [selectedBordereau, setSelectedBordereau] = useState(null);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const emptyLigne = { designation: '', quantite: '' };
+  const [createForm, setCreateForm] = useState({
+    date: new Date().toISOString().split('T')[0],
+    client_id: '',
+    lignes: [{ ...emptyLigne }]
+  });
 
   useEffect(() => {
     loadData();
   }, []);
 
   const loadData = async () => {
-    const [bordereauxData, parametresData] = await Promise.all([
+    const [bordereauxData, parametresData, clientsData] = await Promise.all([
       window.electronAPI.bordereaux.getAll(),
-      window.electronAPI.parametres.getAll()
+      window.electronAPI.parametres.getAll(),
+      window.electronAPI.clients.getAll()
     ]);
     setBordereaux(bordereauxData);
     setParametres(parametresData);
+    setClients(clientsData || []);
+  };
+
+  const openCreateModal = () => {
+    setCreateForm({
+      date: new Date().toISOString().split('T')[0],
+      client_id: '',
+      lignes: [{ ...emptyLigne }]
+    });
+    setCreateModalOpen(true);
+  };
+
+  const updateLigne = (index, field, value) => {
+    setCreateForm((prev) => {
+      const lignes = prev.lignes.map((l, i) => (i === index ? { ...l, [field]: value } : l));
+      return { ...prev, lignes };
+    });
+  };
+
+  const addLigne = () => {
+    setCreateForm((prev) => ({ ...prev, lignes: [...prev.lignes, { ...emptyLigne }] }));
+  };
+
+  const removeLigne = (index) => {
+    setCreateForm((prev) => ({
+      ...prev,
+      lignes: prev.lignes.length > 1 ? prev.lignes.filter((_, i) => i !== index) : prev.lignes
+    }));
+  };
+
+  const handleCreateSubmit = async (e) => {
+    e.preventDefault();
+    if (!createForm.client_id) {
+      toast.error('Sélectionnez un client.');
+      return;
+    }
+    const lignes = createForm.lignes
+      .filter((l) => l.designation.trim())
+      .map((l) => ({ designation: l.designation.trim(), quantite: parseFloat(l.quantite) || 0 }));
+    if (lignes.length === 0) {
+      toast.error('Ajoutez au moins une ligne avec une désignation.');
+      return;
+    }
+    try {
+      const res = await window.electronAPI.bordereaux.create({
+        date: createForm.date,
+        client_id: parseInt(createForm.client_id, 10),
+        lignes
+      });
+      toast.success(`Bordereau ${res.numero} créé avec succès.`);
+      setCreateModalOpen(false);
+      loadData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la création du bordereau.'));
+    }
   };
 
   const handleView = async (bordereau) => {
@@ -132,6 +199,63 @@ const Bordereaux = () => {
       labels: { confirmTitle: 'Supprimer les bordereaux', singular: 'bordereau', plural: 'bordereaux' },
     });
 
+  // Fusionner les bordereaux sélectionnés en une proforma (prix à saisir)
+  const handleCreateProformaFromSelection = async () => {
+    if (selection.count === 0) {
+      toast.error('Sélectionnez au moins un bordereau.');
+      return;
+    }
+    try {
+      const fulls = await Promise.all(
+        selection.selectedIds.map((id) => window.electronAPI.bordereaux.getById(id))
+      );
+
+      // Tous les bordereaux doivent appartenir au même client
+      const clientIds = Array.from(new Set(fulls.map((b) => b.client_id)));
+      if (clientIds.length > 1) {
+        toast.error('Les bordereaux sélectionnés doivent appartenir au même client.');
+        return;
+      }
+
+      const ok = await confirm({
+        title: 'Créer une proforma',
+        message: `Créer une proforma à partir de ${fulls.length} bordereau(x) (${fulls.map((b) => b.numero).join(', ')}) ? Les lignes seront regroupées et vous pourrez saisir les prix avant d'enregistrer.`,
+        confirmText: 'Continuer',
+        danger: false,
+      });
+      if (!ok) return;
+
+      // Regrouper les lignes : même désignation => quantités additionnées
+      const merged = new Map();
+      fulls.forEach((b) => {
+        (b.lignes || []).forEach((l) => {
+          const key = String(l.designation || '').trim().toLowerCase();
+          if (merged.has(key)) {
+            merged.get(key).quantite += Number(l.quantite) || 0;
+          } else {
+            merged.set(key, {
+              designation: l.designation,
+              quantite: Number(l.quantite) || 0,
+            });
+          }
+        });
+      });
+
+      selection.clear();
+      navigate('/proformas', {
+        state: {
+          prefill: {
+            client_id: String(clientIds[0]),
+            objet: `Livraisons ${fulls.map((b) => b.numero).join(', ')}`,
+            lignes: Array.from(merged.values()),
+          },
+        },
+      });
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la préparation de la proforma.'));
+    }
+  };
+
   return (
     <div className="page fade-in">
       <div className="page-header">
@@ -139,14 +263,24 @@ const Bordereaux = () => {
           <h1>Bordereaux de Livraison</h1>
           <p className="subtitle">Gérez vos bordereaux de livraison</p>
         </div>
-        {selection.count > 0 && (
-          <div className="header-actions">
-            <button className="btn btn-danger bulk-delete-btn" onClick={handleBulkDelete}>
-              <Trash2 size={18} />
-              Supprimer la sélection ({selection.count})
-            </button>
-          </div>
-        )}
+        <div className="header-actions">
+          {selection.count > 0 && (
+            <>
+              <button className="btn btn-secondary" onClick={handleCreateProformaFromSelection}>
+                <FileText size={18} />
+                Créer une proforma ({selection.count})
+              </button>
+              <button className="btn btn-danger bulk-delete-btn" onClick={handleBulkDelete}>
+                <Trash2 size={18} />
+                Supprimer la sélection ({selection.count})
+              </button>
+            </>
+          )}
+          <button className="btn btn-primary" onClick={openCreateModal}>
+            <Plus size={18} />
+            Nouveau bordereau
+          </button>
+        </div>
       </div>
 
       <div className="content-card">
@@ -245,6 +379,86 @@ const Bordereaux = () => {
           </table>
         </div>
       </div>
+
+      {/* Modal Création bordereau autonome */}
+      <Modal
+        isOpen={createModalOpen}
+        onClose={() => setCreateModalOpen(false)}
+        title="Nouveau bordereau de livraison"
+        size="large"
+      >
+        <form onSubmit={handleCreateSubmit} className="form">
+          <div className="form-row">
+            <div className="form-group">
+              <label>Date *</label>
+              <input
+                type="date"
+                value={createForm.date}
+                onChange={(e) => setCreateForm((prev) => ({ ...prev, date: e.target.value }))}
+                required
+              />
+            </div>
+            <div className="form-group">
+              <label>Client *</label>
+              <SearchableSelect
+                options={clients.map((c) => ({ value: String(c.id), label: c.nom }))}
+                value={createForm.client_id}
+                onChange={(clientId) => setCreateForm((prev) => ({ ...prev, client_id: clientId }))}
+                placeholder="Rechercher un client"
+                noOptionsText="Aucun client correspondant"
+              />
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>Lignes du bordereau *</label>
+            {createForm.lignes.map((ligne, index) => (
+              <div key={index} className="form-row" style={{ alignItems: 'flex-end', marginBottom: '0.5rem' }}>
+                <div className="form-group" style={{ flex: 3, marginBottom: 0 }}>
+                  <input
+                    type="text"
+                    placeholder="Désignation"
+                    value={ligne.designation}
+                    onChange={(e) => updateLigne(index, 'designation', e.target.value)}
+                  />
+                </div>
+                <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    placeholder="Quantité"
+                    value={ligne.quantite}
+                    onChange={(e) => updateLigne(index, 'quantite', e.target.value)}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="btn-icon btn-icon-danger"
+                  onClick={() => removeLigne(index)}
+                  title="Retirer cette ligne"
+                  disabled={createForm.lignes.length === 1}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            ))}
+            <button type="button" className="btn btn-secondary btn-sm" onClick={addLigne}>
+              <Plus size={16} />
+              Ajouter une ligne
+            </button>
+          </div>
+
+          <div className="form-actions">
+            <button type="button" className="btn btn-secondary" onClick={() => setCreateModalOpen(false)}>
+              Annuler
+            </button>
+            <button type="submit" className="btn btn-primary">
+              Créer le bordereau
+            </button>
+          </div>
+        </form>
+      </Modal>
 
       {/* Modal Visualisation */}
       {selectedBordereau && (

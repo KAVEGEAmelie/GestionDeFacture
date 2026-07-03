@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
-import { Plus, Eye, Trash2, FileText, DollarSign, Printer, Download, PackagePlus, Edit2, X, Truck, Stamp, Percent } from 'lucide-react';
+import { Plus, Eye, Trash2, FileText, Printer, Download, PackagePlus, Edit2, X, Stamp, Percent, Mail, Mails, Receipt } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
 import { inDateRange, inNumberRange } from '../utils/dateFilters';
-import { generateProformaPDF } from '../utils/pdfGenerator';
+import { generateProformaPDF, generateLettreSoumissionPDF, generateEnveloppesPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
@@ -17,12 +16,15 @@ import './Proformas.css';
 
 const UNIT_PRESETS = ['Unité', 'Pièce', 'Lot', 'Gros', 'Kilogramme', 'Mètre', 'Litre', 'Heure', 'Jour'];
 
-const Proformas = () => {
+const PDF_OPTIONS = {
+  titre: "APPEL D'OFFRE",
+  sommeIntro: 'Arrêtée la présente offre à la somme de :',
+};
+
+const AppelsOffres = () => {
   const toast = useToast();
   const confirm = useConfirm();
-  const location = useLocation();
-  const navigate = useNavigate();
-  const [proformas, setProformas] = useState([]);
+  const [appelsOffres, setAppelsOffres] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [statutFilter, setStatutFilter] = useState('tous');
   const [dateFrom, setDateFrom] = useState('');
@@ -35,8 +37,8 @@ const Proformas = () => {
   const [parametres, setParametres] = useState({});
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [viewModalOpen, setViewModalOpen] = useState(false);
-  const [selectedProforma, setSelectedProforma] = useState(null);
-  const [editingProforma, setEditingProforma] = useState(null);
+  const [selectedAppelOffre, setSelectedAppelOffre] = useState(null);
+  const [editingAppelOffre, setEditingAppelOffre] = useState(null);
   const [addProductModalOpen, setAddProductModalOpen] = useState(false);
   const [showLigneForm, setShowLigneForm] = useState(false);
   const [ligneFormData, setLigneFormData] = useState({
@@ -54,7 +56,7 @@ const Proformas = () => {
     unite: 'Unité',
     description: ''
   });
-  
+
   const [formData, setFormData] = useState({
     date: new Date().toISOString().split('T')[0],
     client_id: '',
@@ -63,6 +65,11 @@ const Proformas = () => {
     remise: 0,
     avec_cachet: false,
     tva_applicable: true,
+    reference_externe: '',
+    autorite: '',
+    autorite_adresse: '',
+    validite_offre: 90,
+    delai_execution: '',
     lignes: []
   });
 
@@ -91,44 +98,14 @@ const Proformas = () => {
     loadData();
   }, []);
 
-  // Pré-remplissage depuis la page Bordereaux (fusion de bordereaux en proforma)
-  useEffect(() => {
-    const prefill = location.state?.prefill;
-    if (!prefill) return;
-    // Nettoyer l'état de navigation pour éviter une réouverture au refresh
-    navigate(location.pathname, { replace: true, state: null });
-
-    setEditingProforma(null);
-    setFormData({
-      date: new Date().toISOString().split('T')[0],
-      client_id: prefill.client_id || '',
-      objet: prefill.objet || '',
-      prestations: 0,
-      remise: 0,
-      avec_cachet: false,
-      tva_applicable: true,
-      lignes: (prefill.lignes || []).map((l) => ({
-        produit_id: '',
-        produit_search: l.designation || '',
-        designation: l.designation || '',
-        unite: l.unite || 'Unité',
-        quantite: Number(l.quantite) || 0,
-        prix_unitaire: '',
-        montant: 0
-      }))
-    });
-    setIsModalOpen(true);
-    toast.success('Lignes des bordereaux importées — saisissez les prix unitaires puis enregistrez.');
-  }, [location.state]);
-
   const loadData = async () => {
-    const [proformasData, clientsData, produitsData, parametresData] = await Promise.all([
-      window.electronAPI.proformas.getAll(),
+    const [appelsOffresData, clientsData, produitsData, parametresData] = await Promise.all([
+      window.electronAPI.appelsOffres.getAll(),
       window.electronAPI.clients.getAll(),
       window.electronAPI.produits.getAll(),
       window.electronAPI.parametres.getAll()
     ]);
-    setProformas(proformasData);
+    setAppelsOffres(appelsOffresData);
     setClients(clientsData);
     setProduits(produitsData);
     setParametres(parametresData);
@@ -219,7 +196,6 @@ const Proformas = () => {
     const newLignes = [...formData.lignes];
     newLignes[index][field] = value;
 
-    // Si on sélectionne un produit, remplir automatiquement
     if (field === 'produit_id' && value) {
       const produit = produits.find(p => p.id === parseInt(value));
       if (produit) {
@@ -244,7 +220,6 @@ const Proformas = () => {
       }
     }
 
-    // Recalculer le montant systématiquement (produit, quantité ou prix)
     const quantite = parseFloat(newLignes[index].quantite) || 0;
     const prixUnitaire = parseFloat(newLignes[index].prix_unitaire) || 0;
     newLignes[index].montant = quantite * prixUnitaire;
@@ -271,14 +246,14 @@ const Proformas = () => {
       toast.error('Veuillez sélectionner un client valide dans la liste.');
       return;
     }
-    
+
     if (formData.lignes.length === 0) {
       toast.error('Veuillez ajouter au moins une ligne.');
       return;
     }
 
     const { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc } = calculateTotals();
-    
+
     const data = {
       date: formData.date,
       client_id: parseInt(formData.client_id),
@@ -291,6 +266,11 @@ const Proformas = () => {
       total_ttc,
       avec_cachet: formData.avec_cachet,
       tva_applicable: formData.tva_applicable,
+      reference_externe: formData.reference_externe,
+      autorite: formData.autorite,
+      autorite_adresse: formData.autorite_adresse,
+      validite_offre: formData.validite_offre,
+      delai_execution: formData.delai_execution,
       lignes: formData.lignes.map(l => ({
         produit_id: parseInt(l.produit_id),
         designation: l.designation,
@@ -302,72 +282,50 @@ const Proformas = () => {
     };
 
     try {
-      let proformaResult;
-      if (editingProforma) {
-        await window.electronAPI.proformas.update(editingProforma.id, data);
-        toast.success('Proforma modifiée avec succès !');
+      if (editingAppelOffre) {
+        await window.electronAPI.appelsOffres.update(editingAppelOffre.id, data);
+        toast.success("Appel d'offre modifié avec succès !");
       } else {
-        await window.electronAPI.proformas.create(data);
-        toast.success('Proforma créée avec succès !');
+        await window.electronAPI.appelsOffres.create(data);
+        toast.success("Appel d'offre créé avec succès !");
       }
-
       loadData();
       closeModal();
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Erreur lors de l\'enregistrement de la proforma.'));
+      toast.error(getErrorMessage(error, "Erreur lors de l'enregistrement de l'appel d'offre."));
     }
   };
 
-  const handleCreateBordereau = async (proforma) => {
-    const dejaFacturee = proforma.statut === 'facturee';
-    const createBordereau = await confirm({
-      title: 'Créer un bordereau',
-      message: dejaFacturee
-        ? 'Voulez-vous créer un nouveau bordereau à partir de cette proforma ? (Elle est déjà facturée — vous pouvez créer autant de bordereaux que nécessaire.)'
-        : 'Voulez-vous créer un bordereau à partir de cette proforma ? Vous pouvez également créer une facture en même temps.',
-      confirmText: 'Créer le bordereau',
+  const handleTransformer = async (appelOffre) => {
+    const ok = await confirm({
+      title: 'Transformer en proforma',
+      message: `Voulez-vous transformer l'appel d'offre ${appelOffre.numero} en facture proforma ? Une nouvelle proforma sera créée avec les mêmes lignes.`,
+      confirmText: 'Transformer',
       danger: false,
     });
-    if (!createBordereau) return;
-
-    // Si la proforma est déjà facturée, on ne propose pas de recréer une facture
-    const createInvoice = dejaFacturee
-      ? false
-      : await confirm({
-          title: 'Créer la facture maintenant ?',
-          message: 'Voulez-vous créer une facture en même temps que le bordereau ?',
-          confirmText: 'Créer la facture',
-          danger: false,
-        });
-
+    if (!ok) return;
     try {
-      const res = await window.electronAPI.bordereaux.createFromProforma(proforma.id, createInvoice);
-      if (res.bordereauNumero) {
-        toast.success(`Bordereau ${res.bordereauNumero} créé avec succès.`);
-      }
-      if (res.factureNumero) {
-        toast.success(`Facture ${res.factureNumero} créée avec succès.`);
-      }
+      const res = await window.electronAPI.appelsOffres.transformerEnProforma(appelOffre.id);
+      toast.success(`Proforma ${res.proformaNumero} créée avec succès.`);
       loadData();
     } catch (error) {
-      console.error('Erreur bordereau:', error);
-      toast.error(getErrorMessage(error, 'Erreur lors de la création du bordereau.'));
+      toast.error(getErrorMessage(error, 'Erreur lors de la transformation en proforma.'));
     }
   };
 
-  const handleView = async (proforma) => {
-    const fullProforma = await window.electronAPI.proformas.getById(proforma.id);
-    setSelectedProforma(fullProforma);
+  const handleView = async (appelOffre) => {
+    const full = await window.electronAPI.appelsOffres.getById(appelOffre.id);
+    setSelectedAppelOffre(full);
     setViewModalOpen(true);
   };
 
-  const handleEdit = async (proforma) => {
-    if (proforma.statut === 'facturee') {
-      toast.error('Cette proforma est déjà facturée et ne peut plus être modifiée.');
+  const handleEdit = async (appelOffre) => {
+    if (appelOffre.statut === 'transformee') {
+      toast.error("Cet appel d'offre a déjà été transformé en proforma et ne peut plus être modifié.");
       return;
     }
-    const full = await window.electronAPI.proformas.getById(proforma.id);
-    setEditingProforma(full);
+    const full = await window.electronAPI.appelsOffres.getById(appelOffre.id);
+    setEditingAppelOffre(full);
     setFormData({
       date: full.date,
       client_id: String(full.client_id),
@@ -376,6 +334,11 @@ const Proformas = () => {
       remise: full.remise || 0,
       avec_cachet: full.avec_cachet === 1,
       tva_applicable: full.tva_applicable !== 0,
+      reference_externe: full.reference_externe || '',
+      autorite: full.autorite || '',
+      autorite_adresse: full.autorite_adresse || '',
+      validite_offre: full.validite_offre || 90,
+      delai_execution: full.delai_execution || '',
       lignes: (full.lignes || []).map(l => ({
         produit_id: String(l.produit_id),
         produit_search: (() => {
@@ -394,18 +357,18 @@ const Proformas = () => {
 
   const handleDelete = async (id) => {
     const ok = await confirm({
-      title: 'Supprimer la proforma',
-      message: 'Êtes-vous sûr de vouloir supprimer cette proforma ? Cette action est irréversible.',
+      title: "Supprimer l'appel d'offre",
+      message: "Êtes-vous sûr de vouloir supprimer cet appel d'offre ? Cette action est irréversible.",
       confirmText: 'Supprimer',
       danger: true,
     });
     if (!ok) return;
     try {
-      await window.electronAPI.proformas.delete(id);
-      toast.success('Proforma supprimée avec succès.');
+      await window.electronAPI.appelsOffres.delete(id);
+      toast.success("Appel d'offre supprimé avec succès.");
       loadData();
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Erreur lors de la suppression de la proforma.'));
+      toast.error(getErrorMessage(error, "Erreur lors de la suppression de l'appel d'offre."));
     }
   };
 
@@ -431,23 +394,46 @@ const Proformas = () => {
     setAddProductModalOpen(false);
   };
 
-  const handlePrint = async (proforma) => {
-    const fullProforma = await window.electronAPI.proformas.getById(proforma.id);
-    const withCachet = fullProforma.avec_cachet === 1;
-    const doc = await generateProformaPDF(fullProforma, parametres, { withCachet });
+  const handlePrint = async (appelOffre) => {
+    const full = await window.electronAPI.appelsOffres.getById(appelOffre.id);
+    const withCachet = full.avec_cachet === 1;
+    const doc = await generateProformaPDF(full, parametres, { ...PDF_OPTIONS, withCachet });
     doc.autoPrint();
     window.open(doc.output('bloburl'), '_blank');
   };
 
-  const handleExport = async (proforma) => {
-    const fullProforma = await window.electronAPI.proformas.getById(proforma.id);
-    const withCachet = fullProforma.avec_cachet === 1;
-    const doc = await generateProformaPDF(fullProforma, parametres, { withCachet });
-    doc.save(`Proforma_${fullProforma.numero.replace(/\//g, '-')}.pdf`);
+  const handleExport = async (appelOffre) => {
+    const full = await window.electronAPI.appelsOffres.getById(appelOffre.id);
+    const withCachet = full.avec_cachet === 1;
+    const doc = await generateProformaPDF(full, parametres, { ...PDF_OPTIONS, withCachet });
+    doc.save(`AppelOffre_${full.numero.replace(/\//g, '-')}.pdf`);
+  };
+
+  const handleBordereauPrix = async (appelOffre) => {
+    const full = await window.electronAPI.appelsOffres.getById(appelOffre.id);
+    const withCachet = full.avec_cachet === 1;
+    const doc = await generateProformaPDF(full, parametres, {
+      titre: 'BORDEREAU DES PRIX',
+      sommeIntro: 'Arrêté le présent bordereau des prix à la somme de :',
+      withCachet,
+    });
+    doc.save(`BordereauPrix_${full.numero.replace(/\//g, '-')}.pdf`);
+  };
+
+  const handleLettreSoumission = async (appelOffre) => {
+    const full = await window.electronAPI.appelsOffres.getById(appelOffre.id);
+    const doc = await generateLettreSoumissionPDF(full, parametres);
+    doc.save(`LettreSoumission_${full.numero.replace(/\//g, '-')}.pdf`);
+  };
+
+  const handleEnveloppes = async (appelOffre) => {
+    const full = await window.electronAPI.appelsOffres.getById(appelOffre.id);
+    const doc = await generateEnveloppesPDF(full, parametres);
+    doc.save(`Enveloppes_${full.numero.replace(/\//g, '-')}.pdf`);
   };
 
   const openModal = () => {
-    setEditingProforma(null);
+    setEditingAppelOffre(null);
     setFormData({
       date: new Date().toISOString().split('T')[0],
       client_id: '',
@@ -456,6 +442,11 @@ const Proformas = () => {
       remise: 0,
       avec_cachet: false,
       tva_applicable: true,
+      reference_externe: '',
+      autorite: '',
+      autorite_adresse: '',
+      validite_offre: 90,
+      delai_execution: '',
       lignes: []
     });
     setIsModalOpen(true);
@@ -463,7 +454,7 @@ const Proformas = () => {
 
   const closeModal = () => {
     setIsModalOpen(false);
-    setEditingProforma(null);
+    setEditingAppelOffre(null);
   };
 
   const formatPrice = (price) => {
@@ -477,7 +468,7 @@ const Proformas = () => {
   const getStatutBadge = (statut) => {
     const badges = {
       'en_attente': { label: 'En attente', class: 'badge-warning' },
-      'facturee': { label: 'Facturée', class: 'badge-success' }
+      'transformee': { label: 'Transformée en proforma', class: 'badge-success' }
     };
     const badge = badges[statut] || badges['en_attente'];
     return <span className={`badge ${badge.class}`}>{badge.label}</span>;
@@ -485,21 +476,21 @@ const Proformas = () => {
 
   const { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, tvaApplicable, tauxTVA } = calculateTotals();
 
-  const filteredProformas = proformas.filter((p) => {
+  const filteredAppelsOffres = appelsOffres.filter((a) => {
     const term = searchTerm.toLowerCase();
     const matchSearch =
       !term ||
-      matchesWordPrefix(p.numero, term) ||
-      matchesWordPrefix(p.client_nom, term) ||
-      matchesWordPrefix(p.objet, term);
-    const matchStatut = statutFilter === 'tous' || p.statut === statutFilter;
-    const matchDate = inDateRange(p.date, dateFrom, dateTo);
-    const matchMontant = inNumberRange(p.total_ttc, montantMin, montantMax);
+      matchesWordPrefix(a.numero, term) ||
+      matchesWordPrefix(a.client_nom, term) ||
+      matchesWordPrefix(a.objet, term);
+    const matchStatut = statutFilter === 'tous' || a.statut === statutFilter;
+    const matchDate = inDateRange(a.date, dateFrom, dateTo);
+    const matchMontant = inNumberRange(a.total_ttc, montantMin, montantMax);
     return matchSearch && matchStatut && matchDate && matchMontant;
   });
 
-  const sortedFilteredProformas = useMemo(() => {
-    const items = [...filteredProformas];
+  const sortedFilteredAppelsOffres = useMemo(() => {
+    const items = [...filteredAppelsOffres];
     const { key, direction } = sortConfig;
     const factor = direction === 'asc' ? 1 : -1;
     return items.sort((a, b) => {
@@ -511,7 +502,7 @@ const Proformas = () => {
       }
       return String(a[key] || '').localeCompare(String(b[key] || ''), 'fr', { sensitivity: 'base' }) * factor;
     });
-  }, [filteredProformas, sortConfig]);
+  }, [filteredAppelsOffres, sortConfig]);
 
   const toggleSort = (key) => {
     setSortConfig((prev) =>
@@ -539,24 +530,24 @@ const Proformas = () => {
     setMontantMax('');
   };
 
-  const selection = useBulkSelection(sortedFilteredProformas);
+  const selection = useBulkSelection(sortedFilteredAppelsOffres);
   const handleBulkDelete = () =>
     bulkDelete({
       ids: selection.selectedIds,
-      deleteFn: (id) => window.electronAPI.proformas.delete(id),
+      deleteFn: (id) => window.electronAPI.appelsOffres.delete(id),
       confirm,
       toast,
       reload: loadData,
       clear: selection.clear,
-      labels: { confirmTitle: 'Supprimer les proformas', singular: 'proforma', plural: 'proformas' },
+      labels: { confirmTitle: "Supprimer les appels d'offre", singular: "appel d'offre", plural: "appels d'offre" },
     });
 
   return (
     <div className="page fade-in">
       <div className="page-header">
         <div>
-          <h1>Factures Proforma</h1>
-          <p className="subtitle">Créez et gérez vos factures proforma</p>
+          <h1>Appels d'offre</h1>
+          <p className="subtitle">Créez et gérez vos offres pour les appels d'offre</p>
         </div>
         <div className="header-actions">
           {selection.count > 0 && (
@@ -567,7 +558,7 @@ const Proformas = () => {
           )}
           <button className="btn btn-primary" onClick={openModal}>
             <Plus size={20} />
-            Nouvelle proforma
+            Nouvel appel d'offre
           </button>
         </div>
       </div>
@@ -589,7 +580,7 @@ const Proformas = () => {
             >
               <option value="tous">Tous les statuts</option>
               <option value="en_attente">En attente</option>
-              <option value="facturee">Facturée</option>
+              <option value="transformee">Transformée en proforma</option>
             </select>
           </div>
 
@@ -615,7 +606,7 @@ const Proformas = () => {
           </div>
 
           <PeriodFilter
-            label="Date de la proforma"
+            label="Date de l'appel d'offre"
             from={dateFrom}
             to={dateTo}
             onChange={(f, t) => {
@@ -647,35 +638,34 @@ const Proformas = () => {
               </tr>
             </thead>
             <tbody>
-              {sortedFilteredProformas.length === 0 ? (
+              {sortedFilteredAppelsOffres.length === 0 ? (
                 <tr>
                   <td colSpan="8" className="empty-state">
-                    {searchTerm || statutFilter !== 'tous' ? 'Aucune proforma trouvée' : 'Aucune proforma enregistrée'}
+                    {searchTerm || activeCount > 0 ? "Aucun appel d'offre trouvé" : "Aucun appel d'offre enregistré"}
                   </td>
                 </tr>
               ) : (
-                sortedFilteredProformas.map((proforma) => (
-                  <tr key={proforma.id}>
+                sortedFilteredAppelsOffres.map((appelOffre) => (
+                  <tr key={appelOffre.id}>
                     <td className="select-col">
                       <input
                         type="checkbox"
-                        checked={selection.isSelected(proforma.id)}
-                        onChange={() => selection.toggle(proforma.id)}
-                        disabled={proforma.statut === 'facturee'}
-                        title={proforma.statut === 'facturee' ? 'Proforma déjà convertie' : 'Sélectionner'}
+                        checked={selection.isSelected(appelOffre.id)}
+                        onChange={() => selection.toggle(appelOffre.id)}
+                        title="Sélectionner"
                       />
                     </td>
-                    <td className="font-semibold">{proforma.numero}</td>
-                    <td>{formatDate(proforma.date)}</td>
-                    <td>{proforma.client_nom}</td>
-                    <td>{proforma.objet}</td>
-                    <td>{formatPrice(proforma.total_ttc)} FCFA</td>
-                    <td>{getStatutBadge(proforma.statut)}</td>
+                    <td className="font-semibold">{appelOffre.numero}</td>
+                    <td>{formatDate(appelOffre.date)}</td>
+                    <td>{appelOffre.client_nom}</td>
+                    <td>{appelOffre.objet}</td>
+                    <td>{formatPrice(appelOffre.total_ttc)} FCFA</td>
+                    <td>{getStatutBadge(appelOffre.statut)}</td>
                     <td>
                       <div className="action-buttons">
                         <button
                           className="btn-icon btn-icon-primary"
-                          onClick={() => handleView(proforma)}
+                          onClick={() => handleView(appelOffre)}
                           title="Voir"
                         >
                           <Eye size={16} />
@@ -683,38 +673,59 @@ const Proformas = () => {
                         <button
                           className="btn-icon"
                           style={{ color: '#f59e0b' }}
-                          onClick={() => handleEdit(proforma)}
+                          onClick={() => handleEdit(appelOffre)}
                           title="Modifier"
-                          disabled={proforma.statut === 'facturee'}
+                          disabled={appelOffre.statut === 'transformee'}
                         >
                           <Edit2 size={16} />
                         </button>
                         <button
                           className="btn-icon btn-icon-success"
-                          onClick={() => handlePrint(proforma)}
+                          onClick={() => handlePrint(appelOffre)}
                           title="Imprimer"
                         >
                           <Printer size={16} />
                         </button>
                         <button
                           className="btn-icon btn-icon-info"
-                          onClick={() => handleCreateBordereau(proforma)}
-                          title="Créer un bordereau"
+                          onClick={() => handleTransformer(appelOffre)}
+                          title="Transformer en proforma"
+                          disabled={appelOffre.statut === 'transformee'}
                         >
-                          <Truck size={16} />
+                          <FileText size={16} />
                         </button>
                         <button
                           className="btn-icon btn-icon-info"
-                          onClick={() => handleExport(proforma)}
+                          onClick={() => handleExport(appelOffre)}
                           title="Exporter PDF"
                         >
                           <Download size={16} />
                         </button>
                         <button
+                          className="btn-icon btn-icon-info"
+                          onClick={() => handleBordereauPrix(appelOffre)}
+                          title="Bordereau des prix (PDF)"
+                        >
+                          <Receipt size={16} />
+                        </button>
+                        <button
+                          className="btn-icon btn-icon-info"
+                          onClick={() => handleLettreSoumission(appelOffre)}
+                          title="Lettre de soumission (PDF)"
+                        >
+                          <Mail size={16} />
+                        </button>
+                        <button
+                          className="btn-icon btn-icon-info"
+                          onClick={() => handleEnveloppes(appelOffre)}
+                          title="Enveloppes intérieure / extérieure (PDF)"
+                        >
+                          <Mails size={16} />
+                        </button>
+                        <button
                           className="btn-icon btn-icon-danger"
-                          onClick={() => handleDelete(proforma.id)}
+                          onClick={() => handleDelete(appelOffre.id)}
                           title="Supprimer"
-                          disabled={proforma.statut === 'facturee'}
                         >
                           <Trash2 size={16} />
                         </button>
@@ -728,11 +739,11 @@ const Proformas = () => {
         </div>
       </div>
 
-      {/* Modal Création */}
+      {/* Modal Création / Édition */}
       <Modal
         isOpen={isModalOpen}
         onClose={closeModal}
-        title={editingProforma ? `Modifier la proforma ${editingProforma.numero}` : 'Nouvelle facture proforma'}
+        title={editingAppelOffre ? `Modifier l'appel d'offre ${editingAppelOffre.numero}` : "Nouvel appel d'offre"}
         size="xlarge"
       >
         <form onSubmit={handleSubmit} className="form">
@@ -765,9 +776,61 @@ const Proformas = () => {
               type="text"
               value={formData.objet}
               onChange={(e) => setFormData({ ...formData, objet: e.target.value })}
-              placeholder="Ex: Location de consommables informatiques"
+              placeholder="Ex: Fourniture et installation de matériel réseau"
               required
             />
+          </div>
+
+          <h4 style={{ margin: '0.5rem 0 0', color: 'var(--primary, #1e3a8a)' }}>Informations de soumission (facultatif)</h4>
+          <div className="form-row">
+            <div className="form-group">
+              <label>Référence de l'appel d'offres (publiée)</label>
+              <input
+                type="text"
+                value={formData.reference_externe}
+                onChange={(e) => setFormData({ ...formData, reference_externe: e.target.value })}
+                placeholder="Ex: AOO N°005/2025/MEF"
+              />
+            </div>
+            <div className="form-group">
+              <label>Autorité contractante</label>
+              <input
+                type="text"
+                value={formData.autorite}
+                onChange={(e) => setFormData({ ...formData, autorite: e.target.value })}
+                placeholder="Ex: Ministère de l'Économie et des Finances"
+              />
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label>Adresse de l'autorité</label>
+              <input
+                type="text"
+                value={formData.autorite_adresse}
+                onChange={(e) => setFormData({ ...formData, autorite_adresse: e.target.value })}
+                placeholder="Ex: BP 123, Lomé - TOGO"
+              />
+            </div>
+            <div className="form-group">
+              <label>Validité de l'offre (jours)</label>
+              <input
+                type="number"
+                value={formData.validite_offre}
+                onChange={(e) => setFormData({ ...formData, validite_offre: e.target.value })}
+                min="1"
+                placeholder="90"
+              />
+            </div>
+            <div className="form-group">
+              <label>Délai d'exécution</label>
+              <input
+                type="text"
+                value={formData.delai_execution}
+                onChange={(e) => setFormData({ ...formData, delai_execution: e.target.value })}
+                placeholder="Ex: 45 jours"
+              />
+            </div>
           </div>
 
           <div className="form-row">
@@ -806,7 +869,7 @@ const Proformas = () => {
                 <span className="option-card__title">Cachet &amp; signature</span>
                 <span className={`option-card__desc ${!parametres.signature_image ? 'is-warning' : ''}`}>
                   {parametres.signature_image
-                    ? 'Appliquer le cachet et la signature sur cette proforma.'
+                    ? "Appliquer le cachet et la signature sur cet appel d'offre."
                     : 'Importez d’abord une image dans Paramètres pour activer cette option.'}
                 </span>
               </span>
@@ -832,8 +895,8 @@ const Proformas = () => {
                 </span>
                 <span className="option-card__desc">
                   {formData.tva_applicable
-                    ? 'La TVA est appliquée à cette proforma et à la facture.'
-                    : 'Proforma et facture émises sans TVA.'}
+                    ? "La TVA est appliquée à cet appel d'offre."
+                    : "Appel d'offre émis sans TVA."}
                 </span>
               </span>
               <span className="switch">
@@ -849,7 +912,7 @@ const Proformas = () => {
 
           <div className="lignes-section">
             <div className="lignes-header">
-              <h3>Lignes de la proforma</h3>
+              <h3>Lignes de l'appel d'offre</h3>
               <div style={{ display: 'flex', gap: '0.5rem' }}>
                 <button type="button" className="btn btn-secondary btn-sm" onClick={handleOpenLigneForm}>
                   <Plus size={16} />
@@ -901,7 +964,7 @@ const Proformas = () => {
                       type="text"
                       value={ligneFormData.unite}
                       onChange={(e) => handleLigneFormChange('unite', e.target.value)}
-                      list="proformas-unites-list"
+                      list="appels-offres-unites-list"
                       placeholder="Ex: Carton, Pack..."
                     />
                   </div>
@@ -993,7 +1056,7 @@ const Proformas = () => {
                             type="text"
                             value={ligne.unite}
                             onChange={(e) => handleLigneChange(index, 'unite', e.target.value)}
-                            list="proformas-unites-list"
+                            list="appels-offres-unites-list"
                             placeholder="Unité"
                           />
                         </td>
@@ -1075,29 +1138,29 @@ const Proformas = () => {
               Annuler
             </button>
             <button type="submit" className="btn btn-primary">
-              {editingProforma ? 'Enregistrer les modifications' : 'Créer la proforma'}
+              {editingAppelOffre ? 'Enregistrer les modifications' : "Créer l'appel d'offre"}
             </button>
           </div>
         </form>
       </Modal>
 
       {/* Modal Visualisation */}
-      {selectedProforma && (
+      {selectedAppelOffre && (
         <Modal
           isOpen={viewModalOpen}
           onClose={() => setViewModalOpen(false)}
-          title={`Proforma ${selectedProforma.numero}`}
+          title={`Appel d'offre ${selectedAppelOffre.numero}`}
           size="large"
         >
           <div className="view-document">
             <div className="view-header">
               <div>
-                <p><strong>Date :</strong> {formatDate(selectedProforma.date)}</p>
-                <p><strong>Client :</strong> {selectedProforma.client_nom}</p>
-                <p><strong>Objet :</strong> {selectedProforma.objet}</p>
+                <p><strong>Date :</strong> {formatDate(selectedAppelOffre.date)}</p>
+                <p><strong>Client :</strong> {selectedAppelOffre.client_nom}</p>
+                <p><strong>Objet :</strong> {selectedAppelOffre.objet}</p>
               </div>
               <div>
-                {getStatutBadge(selectedProforma.statut)}
+                {getStatutBadge(selectedAppelOffre.statut)}
               </div>
             </div>
 
@@ -1112,7 +1175,7 @@ const Proformas = () => {
                 </tr>
               </thead>
               <tbody>
-                {selectedProforma.lignes.map((ligne, index) => (
+                {selectedAppelOffre.lignes.map((ligne, index) => (
                   <tr key={index}>
                     <td>{ligne.designation}</td>
                     <td>{ligne.unite}</td>
@@ -1127,15 +1190,15 @@ const Proformas = () => {
             <div className="view-totaux">
               <div className="totaux-row">
                 <span>Total HT :</span>
-                <strong>{formatPrice(selectedProforma.total_ht)} FCFA</strong>
+                <strong>{formatPrice(selectedAppelOffre.total_ht)} FCFA</strong>
               </div>
               <div className="totaux-row">
-                <span>TVA ({selectedProforma.total_ht ? Math.round((selectedProforma.tva / selectedProforma.total_ht) * 100) : 18}%) :</span>
-                <strong>{formatPrice(selectedProforma.tva)} FCFA</strong>
+                <span>TVA ({selectedAppelOffre.total_ht ? Math.round((selectedAppelOffre.tva / selectedAppelOffre.total_ht) * 100) : 18}%) :</span>
+                <strong>{formatPrice(selectedAppelOffre.tva)} FCFA</strong>
               </div>
               <div className="totaux-row total">
                 <span>Total TTC :</span>
-                <strong>{formatPrice(selectedProforma.total_ttc)} FCFA</strong>
+                <strong>{formatPrice(selectedAppelOffre.total_ttc)} FCFA</strong>
               </div>
             </div>
           </div>
@@ -1208,7 +1271,7 @@ const Proformas = () => {
         </form>
       </Modal>
 
-      <datalist id="proformas-unites-list">
+      <datalist id="appels-offres-unites-list">
         {uniteSuggestions.map((u) => (
           <option key={u} value={u} />
         ))}
@@ -1217,4 +1280,4 @@ const Proformas = () => {
   );
 };
 
-export default Proformas;
+export default AppelsOffres;

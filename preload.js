@@ -39,10 +39,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     delete: (id) => ipcRenderer.invoke('factures:delete', id)
   },
   
+  // APPELS D'OFFRE
+  appelsOffres: {
+    getAll: () => ipcRenderer.invoke('appelsOffres:getAll'),
+    getById: (id) => ipcRenderer.invoke('appelsOffres:getById', id),
+    create: (data) => ipcRenderer.invoke('appelsOffres:create', data),
+    update: (id, data) => ipcRenderer.invoke('appelsOffres:update', id, data),
+    delete: (id) => ipcRenderer.invoke('appelsOffres:delete', id),
+    transformerEnProforma: (id) => ipcRenderer.invoke('appelsOffres:transformerEnProforma', id)
+  },
+
   // BORDEREAUX
   bordereaux: {
     getAll: () => ipcRenderer.invoke('bordereaux:getAll'),
     getById: (id) => ipcRenderer.invoke('bordereaux:getById', id),
+    create: (data) => ipcRenderer.invoke('bordereaux:create', data),
     createFromFacture: (factureId) => ipcRenderer.invoke('bordereaux:createFromFacture', factureId),
     createFromProforma: (proformaId, createFacture) => ipcRenderer.invoke('bordereaux:createFromProforma', proformaId, createFacture),
     delete: (id) => ipcRenderer.invoke('bordereaux:delete', id)
@@ -51,7 +62,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // TVA / OTR
   tva: {
     getStats: () => ipcRenderer.invoke('tva:getStats'),
-    verser: (ids) => ipcRenderer.invoke('tva:verser', ids)
+    verser: (ids) => ipcRenderer.invoke('tva:verser', ids),
+    annuler: (ids) => ipcRenderer.invoke('tva:annuler', ids)
   },
   // ATTESTATIONS DE SERVICE FAIT
   attestations: {

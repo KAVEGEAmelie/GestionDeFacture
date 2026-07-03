@@ -4,6 +4,7 @@ import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import Clients from './pages/Clients';
 import Produits from './pages/Produits';
+import AppelsOffres from './pages/AppelsOffres';
 import Proformas from './pages/Proformas';
 import Factures from './pages/Factures';
 import Bordereaux from './pages/Bordereaux';
@@ -56,6 +57,7 @@ function App() {
               <Route path="dashboard" element={<Dashboard />} />
               <Route path="clients" element={<Clients />} />
               <Route path="produits" element={<Produits />} />
+              <Route path="appels-offres" element={<AppelsOffres />} />
               <Route path="proformas" element={<Proformas />} />
               <Route path="factures" element={<Factures />} />
               <Route path="bordereaux" element={<Bordereaux />} />
