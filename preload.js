@@ -39,6 +39,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     delete: (id) => ipcRenderer.invoke('factures:delete', id)
   },
   
+  // LICENCE / PÉRIODE D'ESSAI
+  license: {
+    getStatus: () => ipcRenderer.invoke('license:getStatus'),
+    activate: (code) => ipcRenderer.invoke('license:activate', code)
+  },
+
   // APPELS D'OFFRE
   appelsOffres: {
     getAll: () => ipcRenderer.invoke('appelsOffres:getAll'),

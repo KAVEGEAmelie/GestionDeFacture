@@ -1,0 +1,168 @@
+.license-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #0f2557 0%, #1e3a8a 55%, #172554 100%);
+  padding: 1.5rem;
+}
+
+.license-gate__card {
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 30px 70px -15px rgba(0, 0, 0, 0.5);
+  max-width: 480px;
+  width: 100%;
+  padding: 2.25rem 2rem;
+  text-align: center;
+}
+
+.license-gate__icon {
+  width: 82px;
+  height: 82px;
+  margin: 0 auto 1rem;
+  border-radius: 50%;
+  background: #fee2e2;
+  color: #dc2626;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.license-gate__card h1 {
+  font-size: 1.45rem;
+  color: #0f2557;
+  margin: 0 0 0.75rem;
+}
+
+.license-gate__msg {
+  color: #475569;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  margin-bottom: 1.5rem;
+}
+
+.license-gate__machine {
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.license-gate__machine-label {
+  display: block;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  margin-bottom: 0.4rem;
+  font-weight: 600;
+}
+
+.license-gate__machine-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.license-gate__machine-row code {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #0f2557;
+  letter-spacing: 0.06em;
+}
+
+.license-gate__machine-row button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #64748b;
+  padding: 0.3rem;
+  border-radius: 6px;
+  display: flex;
+}
+
+.license-gate__machine-row button:hover {
+  background: #e2e8f0;
+  color: #0f2557;
+}
+
+.license-gate__machine small {
+  display: block;
+  margin-top: 0.5rem;
+  color: #64748b;
+  font-size: 0.8rem;
+}
+
+.license-gate__form {
+  text-align: left;
+}
+
+.license-gate__form label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 0.4rem;
+}
+
+.license-gate__form textarea {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  font-family: monospace;
+  font-size: 0.8rem;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.license-gate__form textarea:focus {
+  outline: none;
+  border-color: #1e3a8a;
+  box-shadow: 0 0 0 3px rgba(30, 58, 138, 0.15);
+}
+
+.license-gate__error {
+  background: #fee2e2;
+  color: #b91c1c;
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.85rem;
+  margin-top: 0.6rem;
+}
+
+.license-gate__form button[type='submit'] {
+  width: 100%;
+  margin-top: 0.9rem;
+  background: #1e3a8a;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 0.75rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.license-gate__form button[type='submit']:hover:not(:disabled) {
+  background: #172554;
+}
+
+.license-gate__form button[type='submit']:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.license-gate__contact {
+  margin-top: 1.4rem;
+  font-size: 0.8rem;
+  color: #64748b;
+}

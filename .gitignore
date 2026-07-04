@@ -37,3 +37,6 @@ yarn-error.log*
 
 # Aperçus PDF temporaires (harness de test hors application)
 nouveau/_preview/
+
+# Clés de licence (NE JAMAIS COMMITTER - la clé privée doit rester secrète)
+license-keys/

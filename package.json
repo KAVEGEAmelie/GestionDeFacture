@@ -28,6 +28,7 @@
       "build/**/*",
       "main.js",
       "preload.js",
+      "license/**/*",
       "src/assets/**/*",
       "node_modules/**/*"
     ],

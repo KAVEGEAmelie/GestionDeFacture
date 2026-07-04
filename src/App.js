@@ -13,6 +13,7 @@ import Rapports from './pages/Rapports';
 import AttestationServiceFait from './pages/AttestationServiceFait';
 import Parametres from './pages/Parametres';
 import LockScreen from './components/LockScreen/LockScreen';
+import LicenseGate from './components/LicenseGate/LicenseGate';
 import { ToastProvider } from './components/Toast/ToastProvider';
 import { ConfirmProvider } from './components/ConfirmDialog/ConfirmProvider';
 import './App.css';
@@ -48,28 +49,30 @@ function App() {
   }
 
   return (
-    <ToastProvider>
-      <ConfirmProvider>
-        <Router>
-          <Routes>
-            <Route path="/" element={<Layout />}>
-              <Route index element={<Navigate to="/dashboard" replace />} />
-              <Route path="dashboard" element={<Dashboard />} />
-              <Route path="clients" element={<Clients />} />
-              <Route path="produits" element={<Produits />} />
-              {/* <Route path="appels-offres" element={<AppelsOffres />} /> */} {/* ← désactivé temporairement */}
-              <Route path="proformas" element={<Proformas />} />
-              <Route path="factures" element={<Factures />} />
-              <Route path="bordereaux" element={<Bordereaux />} />
-              <Route path="tva" element={<Tva />} />
-              <Route path="rapports" element={<Rapports />} />
-              <Route path="attestation-service-fait" element={<AttestationServiceFait />} />
-              <Route path="parametres" element={<Parametres />} />
-            </Route>
-          </Routes>
-        </Router>
-      </ConfirmProvider>
-    </ToastProvider>
+    <LicenseGate>
+      <ToastProvider>
+        <ConfirmProvider>
+          <Router>
+            <Routes>
+              <Route path="/" element={<Layout />}>
+                <Route index element={<Navigate to="/dashboard" replace />} />
+                <Route path="dashboard" element={<Dashboard />} />
+                <Route path="clients" element={<Clients />} />
+                <Route path="produits" element={<Produits />} />
+                {/* <Route path="appels-offres" element={<AppelsOffres />} /> */} {/* ← désactivé temporairement */}
+                <Route path="proformas" element={<Proformas />} />
+                <Route path="factures" element={<Factures />} />
+                <Route path="bordereaux" element={<Bordereaux />} />
+                <Route path="tva" element={<Tva />} />
+                <Route path="rapports" element={<Rapports />} />
+                <Route path="attestation-service-fait" element={<AttestationServiceFait />} />
+                <Route path="parametres" element={<Parametres />} />
+              </Route>
+            </Routes>
+          </Router>
+        </ConfirmProvider>
+      </ToastProvider>
+    </LicenseGate>
   );
 }
 

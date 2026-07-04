@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Save, Download, Upload, Lock, ShieldCheck, ShieldOff } from 'lucide-react';
+import { Save, Download, Upload, Lock, ShieldCheck, ShieldOff, KeyRound, Copy } from 'lucide-react';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
@@ -20,9 +20,15 @@ const Parametres = () => {
   const [pwdConfirm, setPwdConfirm] = useState('');
   const [isSavingPwd, setIsSavingPwd] = useState(false);
 
+  // Licence / période d'essai
+  const [licenseStatus, setLicenseStatus] = useState(null);
+  const [activationCode, setActivationCode] = useState('');
+  const [isActivating, setIsActivating] = useState(false);
+
   useEffect(() => {
     loadParametres();
     loadSecurity();
+    loadLicense();
   }, []);
 
   const loadParametres = async () => {
@@ -36,6 +42,48 @@ const Parametres = () => {
       setSecurity(status);
     } catch (error) {
       // silencieux : la section sécurité reste à l'état par défaut
+    }
+  };
+
+  const loadLicense = async () => {
+    try {
+      const status = await window.electronAPI.license.getStatus();
+      setLicenseStatus(status);
+    } catch (error) {
+      // module licence indisponible : section masquée
+    }
+  };
+
+  const handleCopyMachineId = async () => {
+    if (!licenseStatus) return;
+    try {
+      await navigator.clipboard.writeText(licenseStatus.machineId);
+      toast.success('ID machine copié dans le presse-papiers.');
+    } catch {
+      toast.error('Impossible de copier automatiquement.');
+    }
+  };
+
+  const handleActivateLicense = async (e) => {
+    e.preventDefault();
+    if (!activationCode.trim()) {
+      toast.error("Saisissez le code d'activation reçu.");
+      return;
+    }
+    setIsActivating(true);
+    try {
+      const res = await window.electronAPI.license.activate(activationCode.trim());
+      if (res.success) {
+        toast.success('Licence activée avec succès — merci !');
+        setActivationCode('');
+        loadLicense();
+      } else {
+        toast.error(res.message || "Code d'activation invalide.");
+      }
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Erreur lors de l'activation."));
+    } finally {
+      setIsActivating(false);
     }
   };
 
@@ -649,6 +697,70 @@ const Parametres = () => {
           </div>
         </div>
       </div>
+
+      {/* ===== Licence ===== */}
+      {licenseStatus && (
+        <div className="content-card" style={{ marginTop: '1.5rem' }}>
+          <div className="form" style={{ padding: '2rem' }}>
+            <div className="form-section" style={{ marginBottom: 0 }}>
+              <h3 className="form-section-title">
+                <KeyRound size={18} style={{ verticalAlign: '-3px', marginRight: '0.4rem' }} />
+                Licence
+              </h3>
+
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  marginBottom: '1rem',
+                  fontSize: '0.9rem',
+                  fontWeight: 600,
+                  color: licenseStatus.activated ? '#16a34a' : licenseStatus.expired ? '#dc2626' : '#f59e0b',
+                }}
+              >
+                <ShieldCheck size={18} />
+                {licenseStatus.activated
+                  ? 'Licence activée — utilisation illimitée sur cet ordinateur.'
+                  : licenseStatus.expired
+                  ? `Période d'essai terminée (${licenseStatus.trialDays} jours).`
+                  : `Période d'essai : ${licenseStatus.daysLeft} jour(s) restant(s) sur ${licenseStatus.trialDays}.`}
+              </div>
+
+              <div className="form-group">
+                <label>ID de cet ordinateur (à communiquer pour l'activation)</label>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <input type="text" value={licenseStatus.machineId} readOnly style={{ fontFamily: 'monospace', fontWeight: 700, maxWidth: '260px' }} />
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={handleCopyMachineId} title="Copier">
+                    <Copy size={16} />
+                    Copier
+                  </button>
+                </div>
+              </div>
+
+              {!licenseStatus.activated && (
+                <form onSubmit={handleActivateLicense}>
+                  <div className="form-group">
+                    <label>Code d'activation</label>
+                    <textarea
+                      value={activationCode}
+                      onChange={(e) => setActivationCode(e.target.value)}
+                      placeholder="Collez ici le code d'activation reçu de IN-TEL SERVICES…"
+                      rows={3}
+                      spellCheck={false}
+                      style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}
+                    />
+                  </div>
+                  <button type="submit" className="btn btn-primary" disabled={isActivating}>
+                    <KeyRound size={20} />
+                    {isActivating ? 'Vérification…' : 'Activer la licence'}
+                  </button>
+                </form>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

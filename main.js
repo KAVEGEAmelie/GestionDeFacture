@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
+const license = require('./license/license');
 
 // Désactive l'accélération matérielle (évite que la fenêtre reste invisible
 // sur certaines configurations GPU sous Linux)
@@ -474,6 +475,13 @@ async function createWindow() {
 
 app.whenReady().then(() => {
   initDatabase();
+  // Suivi de la période d'essai : enregistre le lancement à chaque démarrage
+  // (le blocage effectif dépend de TRIAL_ENFORCEMENT dans license/license.js)
+  try {
+    license.recordRun();
+  } catch (e) {
+    console.error('Licence : échec du suivi d\'essai', e);
+  }
   createWindow();
 
   app.on('activate', () => {
@@ -483,11 +491,59 @@ app.whenReady().then(() => {
   });
 });
 
+// ===== Sauvegarde automatique de la base de données =====
+// À chaque fermeture de l'application, une copie de la base est déposée
+// dans Documents/GestionFacturation-Backups (les 10 plus récentes sont
+// conservées). Protège les utilisateurs qui ne font jamais de sauvegarde
+// manuelle : en cas de panne/changement de PC, il suffit de restaurer le
+// fichier le plus récent via Paramètres → Restaurer.
+function autoBackupDatabase() {
+  try {
+    const dbPath = path.join(app.getPath('userData'), 'facturation.db');
+    if (!fs.existsSync(dbPath)) return;
+
+    const backupDir = path.join(app.getPath('documents'), 'GestionFacturation-Backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}h${pad(now.getMinutes())}`;
+    const dest = path.join(backupDir, `facturation-backup-${stamp}.db`);
+    fs.copyFileSync(dbPath, dest);
+
+    // Rotation : ne conserver que les 10 sauvegardes les plus récentes
+    const files = fs.readdirSync(backupDir)
+      .filter((f) => f.startsWith('facturation-backup-') && f.endsWith('.db'))
+      .map((f) => ({ f, t: fs.statSync(path.join(backupDir, f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t);
+    files.slice(10).forEach(({ f }) => {
+      try {
+        fs.unlinkSync(path.join(backupDir, f));
+      } catch {
+        // suppression impossible : non bloquant
+      }
+    });
+  } catch (e) {
+    // La sauvegarde automatique ne doit jamais empêcher la fermeture
+    console.error('Sauvegarde automatique échouée :', e);
+  }
+}
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     db.close();
+    autoBackupDatabase();
     app.quit();
   }
+});
+
+// ===== Licence / période d'essai =====
+ipcMain.handle('license:getStatus', () => {
+  return license.getStatus();
+});
+
+ipcMain.handle('license:activate', (event, code) => {
+  return license.activate(code);
 });
 
 // ===== Sécurité : hachage du mot de passe (scrypt + sel) =====
