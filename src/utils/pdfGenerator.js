@@ -1281,6 +1281,23 @@ export const generateAttestationPDF = async (attestation, parametres = {}) => {
   doc.line(pageWidth / 2 - 40, titleY - 1, pageWidth / 2 + 40, titleY - 1);
   yPos = titleY + 6;
 
+  // Bloc entreprise (sous le titre) : bloc compact à gauche, lignes superposées
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.ink);
+  doc.text((parametres.entreprise_nom || 'IN-TEL SERVICES').toUpperCase(), contentLeft, yPos);
+  yPos += 5;
+  doc.setFontSize(9);
+  const activites = parametres.attestation_activites
+    || 'Solutions Informatiques – Réseaux – Télécommunications – Électricité – Maintenance Technique';
+  // Largeur limitée (~60% de la page) pour que le texte s'empile à gauche
+  const activitesLines = doc.splitTextToSize(activites, (pageWidth - MARGIN * 2) * 0.6);
+  activitesLines.forEach((line) => {
+    doc.text(line, contentLeft, yPos);
+    yPos += 4.5;
+  });
+  yPos += 4;
+
   const intro = attestation.intro || '';
   const introAlign = ['left', 'center', 'right', 'justify'].includes(attestation.intro_align)
     ? attestation.intro_align
