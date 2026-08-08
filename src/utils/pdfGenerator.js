@@ -400,12 +400,25 @@ const drawTotals = (doc, x, y, w, data, tauxTVA) => {
   doc.setDrawColor(...COLORS.line);
   doc.setLineWidth(0.4);
   doc.line(x, ry - lineH + 2.5, x + w, ry - lineH + 2.5);
+
+  // Sans TVA : pas de ligne TVA ni de TOTAL TTC, la barre finale affiche le TOTAL HT
+  const sansTva = !(parseFloat(data.tva) > 0);
+  const barH = 9;
+  if (sansTva) {
+    doc.setFillColor(...COLORS.navy);
+    doc.rect(x, ry - 4, w, barH, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(...COLORS.white);
+    doc.text('TOTAL HT', x + 3, ry + 2);
+    doc.text(`${formatNumber(data.total_ht)}`, x + w - 3, ry + 2, { align: 'right' });
+    return ry + 5;
+  }
+
   row('TOTAL HT', formatNumber(data.total_ht), { bold: true, color: COLORS.navySoft });
-  const tauxAffiche = data.tva && data.tva > 0 ? tauxTVA : 0;
-  row(`TVA (${tauxAffiche}%)`, formatNumber(data.tva || 0), { color: COLORS.ink });
+  row(`TVA (${tauxTVA}%)`, formatNumber(data.tva || 0), { color: COLORS.ink });
 
   // Barre TOTAL TTC
-  const barH = 9;
   doc.setFillColor(...COLORS.navy);
   doc.rect(x, ry - 4, w, barH, 'F');
   doc.setFont('helvetica', 'bold');
@@ -416,8 +429,18 @@ const drawTotals = (doc, x, y, w, data, tauxTVA) => {
   return ry + 5;
 };
 
+// Hauteur réelle du bloc totaux (doit suivre la logique de drawTotals)
+const totalsHeight = (data) => {
+  const lineH = 6.5;
+  let n = 1; // TOTAL MATÉRIEL HT
+  if (data.prestations > 0) n += 1;
+  if (data.remise > 0) n += 1;
+  if (parseFloat(data.tva) > 0) n += 2; // TOTAL HT + TVA
+  return 5 + n * lineH + 10; // offset initial + lignes + barre finale
+};
+
 // --- Encadré "somme en lettres" (à gauche) ---
-const drawAmountInWords = (doc, x, y, w, h, intro, montantTTC) => {
+const drawAmountInWords = (doc, x, y, w, h, intro, montantTTC, suffixe = 'TTC') => {
   doc.setDrawColor(...COLORS.navy);
   doc.setLineWidth(0.5);
   doc.roundedRect(x, y, w, h, 2, 2, 'S');
@@ -428,7 +451,7 @@ const drawAmountInWords = (doc, x, y, w, h, intro, montantTTC) => {
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(12);
   doc.setTextColor(...COLORS.navy);
-  const phrase = `${nombreEnLettres(montantTTC)} (${formatNumber(montantTTC)}) Francs CFA TTC.`;
+  const phrase = `${nombreEnLettres(montantTTC)} (${formatNumber(montantTTC)}) Francs CFA ${suffixe}.`;
   const lines = doc.splitTextToSize(phrase, w - 10);
   doc.text(lines, x + 5, y + 16);
 };
@@ -862,8 +885,11 @@ export const generateProformaPDF = async (proforma, parametres, options = {}) =>
   const totalsX = rightX - totalsW;
   const wordsW = totalsX - contentLeft - 8;
   const wordsH = 34;
+  const footerTop = pageHeight - 24;
 
-  if (yPos + wordsH + 36 > pageHeight - 24) {
+  // Saut de page uniquement si le bloc (lettres + totaux) ne tient pas réellement
+  const blocH = Math.max(wordsH, totalsHeight(proforma));
+  if (yPos + blocH > footerTop - 2) {
     doc.addPage();
     drawPageFrame(doc);
     drawFooter(doc, parametres);
@@ -871,7 +897,8 @@ export const generateProformaPDF = async (proforma, parametres, options = {}) =>
   }
 
   drawAmountInWords(doc, contentLeft, yPos, wordsW, wordsH,
-    options.sommeIntro || 'Arrêtée la présente facture proforma à la somme de :', proforma.total_ttc);
+    options.sommeIntro || 'Arrêtée la présente facture proforma à la somme de :',
+    proforma.total_ttc, parseFloat(proforma.tva) > 0 ? 'TTC' : 'HT');
 
   const totalsBottom = drawTotals(doc, totalsX, yPos, totalsW, {
     total_materiel_ht: proforma.total_materiel_ht,
@@ -882,8 +909,15 @@ export const generateProformaPDF = async (proforma, parametres, options = {}) =>
     total_ttc: proforma.total_ttc
   }, tauxTVA);
 
-  // Signature centrée sous les totaux (un peu plus bas)
-  drawSignature(doc, totalsX + totalsW / 2, Math.max(totalsBottom, yPos + wordsH) + 10, parametres, options.withCachet === true);
+  // Signature centrée sous les totaux — bascule seule en page suivante si elle ne tient pas
+  let sigY = Math.max(totalsBottom, yPos + wordsH) + 10;
+  if (sigY + 24 > footerTop - 2) {
+    doc.addPage();
+    drawPageFrame(doc);
+    drawFooter(doc, parametres);
+    sigY = 34;
+  }
+  drawSignature(doc, totalsX + totalsW / 2, sigY, parametres, options.withCachet === true);
 
   // Pied de page commun
   drawFooter(doc, parametres);
@@ -981,12 +1015,13 @@ export const generateFacturePDF = async (facture, parametres) => {
   const totalsX = rightX - totalsW;
   const wordsW = totalsX - contentLeft - 8;
   const wordsH = 32;
+  const footerTop = pageHeight - 24;
 
-  // Hauteur du bloc bas gauche (somme en lettres + conditions de paiement)
+  // Hauteur réelle du bloc bas : gauche (lettres + conditions) vs droite (totaux)
   const condGap = 6;
   const condH = 22;
-  const blocBasH = wordsH + condGap + condH + 8;
-  if (yPos + blocBasH > pageHeight - 24) {
+  const blocBasH = Math.max(wordsH + condGap + condH, totalsHeight(facture));
+  if (yPos + blocBasH > footerTop - 2) {
     doc.addPage();
     drawPageFrame(doc);
     drawFooter(doc, parametres);
@@ -994,7 +1029,8 @@ export const generateFacturePDF = async (facture, parametres) => {
   }
 
   drawAmountInWords(doc, contentLeft, yPos, wordsW, wordsH,
-    'Arrêtée la présente facture à la somme de :', facture.total_ttc);
+    'Arrêtée la présente facture à la somme de :',
+    facture.total_ttc, parseFloat(facture.tva) > 0 ? 'TTC' : 'HT');
 
   const totalsBottom = drawTotals(doc, totalsX, yPos, totalsW, {
     total_materiel_ht: facture.total_materiel_ht,
@@ -1008,8 +1044,15 @@ export const generateFacturePDF = async (facture, parametres) => {
   // Conditions de paiement (gauche, sous la somme en lettres)
   drawConditionsBox(doc, contentLeft, yPos + wordsH + condGap, wordsW);
 
-  // Signature centrée sous les totaux
-  drawSignature(doc, totalsX + totalsW / 2, Math.max(totalsBottom, yPos + wordsH) + 10, parametres);
+  // Signature centrée sous les totaux — bascule seule en page suivante si elle ne tient pas
+  let sigY = Math.max(totalsBottom, yPos + wordsH) + 10;
+  if (sigY + 24 > footerTop - 2) {
+    doc.addPage();
+    drawPageFrame(doc);
+    drawFooter(doc, parametres);
+    sigY = 34;
+  }
+  drawSignature(doc, totalsX + totalsW / 2, sigY, parametres);
 
   // (Le pied de page est dessiné sur chaque page via didDrawPage / la page de débordement)
 
