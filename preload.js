@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getAll: () => ipcRenderer.invoke('factures:getAll'),
     getById: (id) => ipcRenderer.invoke('factures:getById', id),
     createFromProforma: (proformaId, dateFacture) => ipcRenderer.invoke('factures:createFromProforma', proformaId, dateFacture),
+    update: (id, data) => ipcRenderer.invoke('factures:update', id, data),
     markPaid: (id) => ipcRenderer.invoke('factures:markPaid', id),
     markUnpaid: (id) => ipcRenderer.invoke('factures:markUnpaid', id),
     delete: (id) => ipcRenderer.invoke('factures:delete', id)
@@ -60,6 +61,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getAll: () => ipcRenderer.invoke('bordereaux:getAll'),
     getById: (id) => ipcRenderer.invoke('bordereaux:getById', id),
     create: (data) => ipcRenderer.invoke('bordereaux:create', data),
+    update: (id, data) => ipcRenderer.invoke('bordereaux:update', id, data),
     createFromFacture: (factureId) => ipcRenderer.invoke('bordereaux:createFromFacture', factureId),
     createFromProforma: (proformaId, createFacture) => ipcRenderer.invoke('bordereaux:createFromProforma', proformaId, createFacture),
     delete: (id) => ipcRenderer.invoke('bordereaux:delete', id)

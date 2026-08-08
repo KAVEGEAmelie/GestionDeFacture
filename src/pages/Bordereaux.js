@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Eye, Trash2, Printer, Download, Plus, X, FileText } from 'lucide-react';
+import { Eye, Trash2, Printer, Download, Plus, X, FileText, Edit2 } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
@@ -21,6 +21,7 @@ const Bordereaux = () => {
   const navigate = useNavigate();
   const [bordereaux, setBordereaux] = useState([]);
   const [clients, setClients] = useState([]);
+  const [produits, setProduits] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
   const [dateFrom, setDateFrom] = useState('');
@@ -29,6 +30,7 @@ const Bordereaux = () => {
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [selectedBordereau, setSelectedBordereau] = useState(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [editingBordereau, setEditingBordereau] = useState(null);
   const emptyLigne = { designation: '', quantite: '' };
   const [createForm, setCreateForm] = useState({
     date: new Date().toISOString().split('T')[0],
@@ -41,23 +43,49 @@ const Bordereaux = () => {
   }, []);
 
   const loadData = async () => {
-    const [bordereauxData, parametresData, clientsData] = await Promise.all([
+    const [bordereauxData, parametresData, clientsData, produitsData] = await Promise.all([
       window.electronAPI.bordereaux.getAll(),
       window.electronAPI.parametres.getAll(),
-      window.electronAPI.clients.getAll()
+      window.electronAPI.clients.getAll(),
+      window.electronAPI.produits.getAll()
     ]);
     setBordereaux(bordereauxData);
     setParametres(parametresData);
     setClients(clientsData || []);
+    setProduits(produitsData || []);
   };
 
+  const produitOptions = useMemo(() => {
+    return [...produits]
+      .sort((a, b) => String(a.designation || '').localeCompare(String(b.designation || ''), 'fr', { sensitivity: 'base' }))
+      .map((p) => ({ value: p.designation, label: p.designation }));
+  }, [produits]);
+
   const openCreateModal = () => {
+    setEditingBordereau(null);
     setCreateForm({
       date: new Date().toISOString().split('T')[0],
       client_id: '',
       lignes: [{ ...emptyLigne }]
     });
     setCreateModalOpen(true);
+  };
+
+  const openEditModal = async (bordereau) => {
+    try {
+      const full = await window.electronAPI.bordereaux.getById(bordereau.id);
+      setEditingBordereau(full);
+      setCreateForm({
+        date: full.date,
+        client_id: String(full.client_id),
+        lignes: (full.lignes || []).length > 0
+          ? full.lignes.map((l) => ({ designation: l.designation, quantite: String(l.quantite) }))
+          : [{ ...emptyLigne }]
+      });
+      setCreateModalOpen(true);
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Impossible de charger le bordereau.'));
+    }
   };
 
   const updateLigne = (index, field, value) => {
@@ -92,16 +120,26 @@ const Bordereaux = () => {
       return;
     }
     try {
-      const res = await window.electronAPI.bordereaux.create({
-        date: createForm.date,
-        client_id: parseInt(createForm.client_id, 10),
-        lignes
-      });
-      toast.success(`Bordereau ${res.numero} créé avec succès.`);
+      if (editingBordereau) {
+        await window.electronAPI.bordereaux.update(editingBordereau.id, {
+          date: createForm.date,
+          client_id: parseInt(createForm.client_id, 10),
+          lignes
+        });
+        toast.success(`Bordereau ${editingBordereau.numero} modifié avec succès.`);
+      } else {
+        const res = await window.electronAPI.bordereaux.create({
+          date: createForm.date,
+          client_id: parseInt(createForm.client_id, 10),
+          lignes
+        });
+        toast.success(`Bordereau ${res.numero} créé avec succès.`);
+      }
       setCreateModalOpen(false);
+      setEditingBordereau(null);
       loadData();
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Erreur lors de la création du bordereau.'));
+      toast.error(getErrorMessage(error, "Erreur lors de l'enregistrement du bordereau."));
     }
   };
 
@@ -350,6 +388,14 @@ const Bordereaux = () => {
                           <Eye size={16} />
                         </button>
                         <button
+                          className="btn-icon"
+                          style={{ color: '#f59e0b' }}
+                          onClick={() => openEditModal(bordereau)}
+                          title="Modifier"
+                        >
+                          <Edit2 size={16} />
+                        </button>
+                        <button
                           className="btn-icon btn-icon-success"
                           onClick={() => handlePrint(bordereau)}
                           title="Imprimer"
@@ -380,11 +426,11 @@ const Bordereaux = () => {
         </div>
       </div>
 
-      {/* Modal Création bordereau autonome */}
+      {/* Modal Création / Modification bordereau */}
       <Modal
         isOpen={createModalOpen}
-        onClose={() => setCreateModalOpen(false)}
-        title="Nouveau bordereau de livraison"
+        onClose={() => { setCreateModalOpen(false); setEditingBordereau(null); }}
+        title={editingBordereau ? `Modifier le bordereau ${editingBordereau.numero}` : 'Nouveau bordereau de livraison'}
         size="large"
       >
         <form onSubmit={handleCreateSubmit} className="form">
@@ -415,11 +461,13 @@ const Bordereaux = () => {
             {createForm.lignes.map((ligne, index) => (
               <div key={index} className="form-row" style={{ alignItems: 'flex-end', marginBottom: '0.5rem' }}>
                 <div className="form-group" style={{ flex: 3, marginBottom: 0 }}>
-                  <input
-                    type="text"
-                    placeholder="Désignation"
+                  <SearchableSelect
+                    options={produitOptions}
                     value={ligne.designation}
-                    onChange={(e) => updateLigne(index, 'designation', e.target.value)}
+                    onChange={(designation, option) => updateLigne(index, 'designation', option?.label || designation)}
+                    placeholder="Rechercher un produit ou saisir une désignation"
+                    noOptionsText="Aucun produit correspondant"
+                    allowCustomValue
                   />
                 </div>
                 <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
@@ -450,11 +498,11 @@ const Bordereaux = () => {
           </div>
 
           <div className="form-actions">
-            <button type="button" className="btn btn-secondary" onClick={() => setCreateModalOpen(false)}>
+            <button type="button" className="btn btn-secondary" onClick={() => { setCreateModalOpen(false); setEditingBordereau(null); }}>
               Annuler
             </button>
             <button type="submit" className="btn btn-primary">
-              Créer le bordereau
+              {editingBordereau ? 'Enregistrer les modifications' : 'Créer le bordereau'}
             </button>
           </div>
         </form>

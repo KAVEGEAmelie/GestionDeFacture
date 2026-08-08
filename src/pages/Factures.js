@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Eye, Trash2, FileCheck, Truck, Printer, Download, CheckCircle, RotateCcw } from 'lucide-react';
+import { Eye, Trash2, FileCheck, Truck, Printer, Download, CheckCircle, RotateCcw, Edit2, Plus, FolderPlus } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
@@ -33,6 +33,15 @@ const Factures = () => {
   const [convertDate, setConvertDate] = useState(new Date().toISOString().split('T')[0]);
   const [convertSearchTerm, setConvertSearchTerm] = useState('');
   const [selectedFacture, setSelectedFacture] = useState(null);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editingFacture, setEditingFacture] = useState(null);
+  const [editForm, setEditForm] = useState({
+    date: '',
+    objet: '',
+    prestations: 0,
+    remise: 0,
+    lignes: []
+  });
 
   useEffect(() => {
     loadData();
@@ -68,6 +77,134 @@ const Factures = () => {
     const fullFacture = await window.electronAPI.factures.getById(facture.id);
     setSelectedFacture(fullFacture);
     setViewModalOpen(true);
+  };
+
+  // —— Édition d'une facture ——
+  const handleEdit = async (facture) => {
+    const full = await window.electronAPI.factures.getById(facture.id);
+    setEditingFacture(full);
+    // Reconstruire les séparateurs de section à partir des lignes
+    const lignesForm = [];
+    let sectionCourante = '';
+    (full.lignes || []).forEach((l) => {
+      const titre = l.section_titre || '';
+      if (titre !== sectionCourante) {
+        sectionCourante = titre;
+        if (titre) lignesForm.push({ _type: 'section', titre });
+      }
+      lignesForm.push({
+        produit_id: l.produit_id,
+        designation: l.designation,
+        unite: l.unite,
+        quantite: l.quantite,
+        prix_unitaire: l.prix_unitaire,
+        montant: l.montant
+      });
+    });
+    setEditForm({
+      date: full.date,
+      objet: full.objet || '',
+      prestations: full.prestations || 0,
+      remise: full.remise || 0,
+      lignes: lignesForm
+    });
+    setEditModalOpen(true);
+  };
+
+  const editLigneChange = (index, field, value) => {
+    setEditForm((prev) => {
+      const lignes = prev.lignes.map((l, i) => {
+        if (i !== index) return l;
+        const updated = { ...l, [field]: value };
+        if (updated._type !== 'section') {
+          const q = parseFloat(updated.quantite) || 0;
+          const pu = parseFloat(updated.prix_unitaire) || 0;
+          updated.montant = q * pu;
+        }
+        return updated;
+      });
+      return { ...prev, lignes };
+    });
+  };
+
+  const editAddLigne = () => {
+    setEditForm((prev) => ({
+      ...prev,
+      lignes: [...prev.lignes, { produit_id: null, designation: '', unite: 'Unité', quantite: 1, prix_unitaire: 0, montant: 0 }]
+    }));
+  };
+
+  const editAddSection = () => {
+    setEditForm((prev) => ({
+      ...prev,
+      lignes: [...prev.lignes, { _type: 'section', titre: '' }]
+    }));
+  };
+
+  const editRemoveLigne = (index) => {
+    setEditForm((prev) => ({ ...prev, lignes: prev.lignes.filter((_, i) => i !== index) }));
+  };
+
+  const computeEditTotals = () => {
+    const total_materiel_ht = editForm.lignes.reduce(
+      (sum, l) => (l._type === 'section' ? sum : sum + (l.montant || 0)),
+      0
+    );
+    const prestations = parseFloat(editForm.prestations) || 0;
+    const remise = parseFloat(editForm.remise) || 0;
+    const total_ht = total_materiel_ht + prestations - remise;
+    const tvaApplicable = editingFacture ? (editingFacture.tva || 0) > 0 : true;
+    const tauxTVA = parseFloat(parametres.tva_taux) || 18;
+    const tva = tvaApplicable ? total_ht * (tauxTVA / 100) : 0;
+    const total_ttc = total_ht + tva;
+    return { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, tvaApplicable, tauxTVA };
+  };
+
+  const handleEditSubmit = async (e) => {
+    e.preventDefault();
+    // Aplatir : les séparateurs attribuent leur titre aux lignes suivantes
+    let currentSection = '';
+    const lignes = [];
+    editForm.lignes.forEach((l) => {
+      if (l._type === 'section') {
+        currentSection = (l.titre || '').trim();
+        return;
+      }
+      if (!String(l.designation || '').trim()) return;
+      lignes.push({
+        produit_id: Number.isInteger(l.produit_id) ? l.produit_id : null,
+        designation: l.designation,
+        unite: l.unite,
+        quantite: parseFloat(l.quantite) || 0,
+        prix_unitaire: parseFloat(l.prix_unitaire) || 0,
+        montant: l.montant || 0,
+        section_titre: currentSection
+      });
+    });
+    if (lignes.length === 0) {
+      toast.error('La facture doit contenir au moins une ligne.');
+      return;
+    }
+    const { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc } = computeEditTotals();
+    try {
+      await window.electronAPI.factures.update(editingFacture.id, {
+        date: editForm.date,
+        objet: editForm.objet,
+        total_materiel_ht,
+        prestations,
+        remise,
+        total_ht,
+        tva,
+        total_ttc,
+        lignes
+      });
+      toast.success(`Facture ${editingFacture.numero} modifiée avec succès.`);
+      setEditModalOpen(false);
+      setEditingFacture(null);
+      loadData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la modification de la facture.'));
+    }
   };
 
   const handleDelete = async (id) => {
@@ -390,6 +527,14 @@ const Factures = () => {
                           <Eye size={16} />
                         </button>
                         <button
+                          className="btn-icon"
+                          style={{ color: '#f59e0b' }}
+                          onClick={() => handleEdit(facture)}
+                          title="Modifier"
+                        >
+                          <Edit2 size={16} />
+                        </button>
+                        <button
                           className="btn-icon btn-icon-success"
                           onClick={() => handlePrint(facture)}
                           title="Imprimer"
@@ -427,6 +572,233 @@ const Factures = () => {
           </table>
         </div>
       </div>
+
+      {/* Modal Modification Facture */}
+      <Modal
+        isOpen={editModalOpen}
+        onClose={() => { setEditModalOpen(false); setEditingFacture(null); }}
+        title={editingFacture ? `Modifier la facture ${editingFacture.numero}` : 'Modifier la facture'}
+        size="xlarge"
+      >
+        {editingFacture && (
+          <form onSubmit={handleEditSubmit} className="form">
+            <div className="form-row">
+              <div className="form-group">
+                <label>Date *</label>
+                <input
+                  type="date"
+                  value={editForm.date}
+                  onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>Client</label>
+                <input type="text" value={editingFacture.client_nom || ''} readOnly className="readonly" />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label>Objet</label>
+              <input
+                type="text"
+                value={editForm.objet}
+                onChange={(e) => setEditForm({ ...editForm, objet: e.target.value })}
+              />
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>Main d'œuvre (FCFA)</label>
+                <input
+                  type="number"
+                  value={editForm.prestations}
+                  onChange={(e) => setEditForm({ ...editForm, prestations: e.target.value })}
+                  min="0"
+                  step="0.01"
+                />
+              </div>
+              <div className="form-group">
+                <label>Remise (FCFA)</label>
+                <input
+                  type="number"
+                  value={editForm.remise}
+                  onChange={(e) => setEditForm({ ...editForm, remise: e.target.value })}
+                  min="0"
+                  step="0.01"
+                />
+              </div>
+            </div>
+
+            <div className="lignes-section">
+              <div className="lignes-header">
+                <h3>Lignes de la facture</h3>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={editAddSection} title="Regrouper les lignes suivantes sous un titre avec sous-total">
+                    <FolderPlus size={16} />
+                    Ajouter une section
+                  </button>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={editAddLigne}>
+                    <Plus size={16} />
+                    Ajouter une ligne
+                  </button>
+                </div>
+              </div>
+
+              {editForm.lignes.length === 0 ? (
+                <div className="ligne-empty-state">Aucune ligne.</div>
+              ) : (
+                <div className="ligne-table-wrapper">
+                  <table className="data-table ligne-table">
+                    <thead>
+                      <tr>
+                        <th>Désignation</th>
+                        <th>Unité</th>
+                        <th>Quantité</th>
+                        <th>Prix unitaire</th>
+                        <th>Montant</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {editForm.lignes.map((ligne, index) => {
+                        if (ligne._type === 'section') {
+                          let sousTotal = 0;
+                          for (let i = index + 1; i < editForm.lignes.length; i++) {
+                            if (editForm.lignes[i]._type === 'section') break;
+                            sousTotal += editForm.lignes[i].montant || 0;
+                          }
+                          return (
+                            <tr key={index}>
+                              <td colSpan="4" style={{ background: '#eef2ff', padding: '0.4rem 0.6rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                  <FolderPlus size={16} style={{ color: '#1e3a8a', flexShrink: 0 }} />
+                                  <input
+                                    type="text"
+                                    value={ligne.titre}
+                                    onChange={(e) => editLigneChange(index, 'titre', e.target.value)}
+                                    placeholder="Titre de la section"
+                                    style={{ fontWeight: 700, color: '#1e3a8a', background: 'transparent', border: 'none', borderBottom: '1px dashed #94a3b8', width: '100%' }}
+                                  />
+                                </div>
+                              </td>
+                              <td style={{ background: '#eef2ff', textAlign: 'right', fontWeight: 700, color: '#1e3a8a' }}>
+                                {formatPrice(sousTotal)}
+                              </td>
+                              <td style={{ background: '#eef2ff' }}>
+                                <button
+                                  type="button"
+                                  className="btn-remove-ligne"
+                                  onClick={() => editRemoveLigne(index)}
+                                  title="Supprimer la section (les lignes sont conservées)"
+                                >
+                                  <Trash2 size={18} />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        }
+                        return (
+                          <tr key={index}>
+                            <td>
+                              <input
+                                type="text"
+                                value={ligne.designation}
+                                onChange={(e) => editLigneChange(index, 'designation', e.target.value)}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="text"
+                                value={ligne.unite}
+                                onChange={(e) => editLigneChange(index, 'unite', e.target.value)}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="number"
+                                value={ligne.quantite}
+                                onChange={(e) => editLigneChange(index, 'quantite', e.target.value)}
+                                min="0"
+                                step="1"
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="number"
+                                value={ligne.prix_unitaire}
+                                onChange={(e) => editLigneChange(index, 'prix_unitaire', e.target.value)}
+                                min="0"
+                                step="0.01"
+                              />
+                            </td>
+                            <td>
+                              <input type="text" value={formatPrice(ligne.montant)} readOnly className="readonly" />
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                className="btn-remove-ligne"
+                                onClick={() => editRemoveLigne(index)}
+                                title="Supprimer"
+                              >
+                                <Trash2 size={18} />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {(() => {
+              const t = computeEditTotals();
+              return (
+                <div className="totaux-section">
+                  <div className="totaux-grid">
+                    <div className="totaux-item">
+                      <span>Total Matériel HT :</span>
+                      <strong>{formatPrice(t.total_materiel_ht)} FCFA</strong>
+                    </div>
+                    <div className="totaux-item">
+                      <span>Main d'œuvre :</span>
+                      <strong>{formatPrice(t.prestations)} FCFA</strong>
+                    </div>
+                    <div className="totaux-item">
+                      <span>Remise :</span>
+                      <strong>- {formatPrice(t.remise)} FCFA</strong>
+                    </div>
+                    <div className="totaux-item">
+                      <span>Total HT :</span>
+                      <strong>{formatPrice(t.total_ht)} FCFA</strong>
+                    </div>
+                    <div className="totaux-item">
+                      <span>TVA ({t.tvaApplicable ? t.tauxTVA : 0}%) :</span>
+                      <strong>{formatPrice(t.tva)} FCFA</strong>
+                    </div>
+                    <div className="totaux-item total-ttc">
+                      <span>Total TTC :</span>
+                      <strong>{formatPrice(t.total_ttc)} FCFA</strong>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div className="form-actions">
+              <button type="button" className="btn btn-secondary" onClick={() => { setEditModalOpen(false); setEditingFacture(null); }}>
+                Annuler
+              </button>
+              <button type="submit" className="btn btn-primary">
+                Enregistrer les modifications
+              </button>
+            </div>
+          </form>
+        )}
+      </Modal>
 
       {/* Modal Conversion Proforma */}
       <Modal

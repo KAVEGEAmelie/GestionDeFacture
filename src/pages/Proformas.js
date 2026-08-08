@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Plus, Eye, Trash2, FileText, DollarSign, Printer, Download, PackagePlus, Edit2, X, Truck, Stamp, Percent } from 'lucide-react';
+import { Plus, Eye, Trash2, FileText, DollarSign, Printer, Download, PackagePlus, Edit2, X, Truck, Stamp, Percent, FolderPlus, Copy } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
@@ -210,6 +210,22 @@ const Proformas = () => {
     handleCloseLigneForm();
   };
 
+  // Ajoute un séparateur de section (lot de travaux) dans la liste des lignes.
+  // Les lignes situées après un séparateur appartiennent à cette section.
+  const handleAddSection = () => {
+    setFormData((prev) => ({
+      ...prev,
+      lignes: [...prev.lignes, { _type: 'section', titre: '' }]
+    }));
+  };
+
+  const handleSectionTitleChange = (index, titre) => {
+    setFormData((prev) => {
+      const lignes = prev.lignes.map((l, i) => (i === index ? { ...l, titre } : l));
+      return { ...prev, lignes };
+    });
+  };
+
   const handleRemoveLigne = (index) => {
     const newLignes = formData.lignes.filter((_, i) => i !== index);
     setFormData({ ...formData, lignes: newLignes });
@@ -253,7 +269,10 @@ const Proformas = () => {
   };
 
   const calculateTotals = () => {
-    const total_materiel_ht = formData.lignes.reduce((sum, ligne) => sum + (ligne.montant || 0), 0);
+    const total_materiel_ht = formData.lignes.reduce(
+      (sum, ligne) => (ligne._type === 'section' ? sum : sum + (ligne.montant || 0)),
+      0
+    );
     const prestations = parseFloat(formData.prestations) || 0;
     const remise = parseFloat(formData.remise) || 0;
     const total_ht = total_materiel_ht + prestations - remise;
@@ -272,7 +291,18 @@ const Proformas = () => {
       return;
     }
     
-    if (formData.lignes.length === 0) {
+    // Aplatir : les séparateurs de section attribuent leur titre aux lignes suivantes
+    let currentSection = '';
+    const lignesAplaties = [];
+    formData.lignes.forEach((l) => {
+      if (l._type === 'section') {
+        currentSection = (l.titre || '').trim();
+        return;
+      }
+      lignesAplaties.push({ ...l, section_titre: currentSection });
+    });
+
+    if (lignesAplaties.length === 0) {
       toast.error('Veuillez ajouter au moins une ligne.');
       return;
     }
@@ -291,13 +321,14 @@ const Proformas = () => {
       total_ttc,
       avec_cachet: formData.avec_cachet,
       tva_applicable: formData.tva_applicable,
-      lignes: formData.lignes.map(l => ({
+      lignes: lignesAplaties.map(l => ({
         produit_id: parseInt(l.produit_id),
         designation: l.designation,
         unite: l.unite,
         quantite: parseFloat(l.quantite),
         prix_unitaire: parseFloat(l.prix_unitaire),
-        montant: l.montant
+        montant: l.montant,
+        section_titre: l.section_titre
       }))
     };
 
@@ -368,15 +399,16 @@ const Proformas = () => {
     }
     const full = await window.electronAPI.proformas.getById(proforma.id);
     setEditingProforma(full);
-    setFormData({
-      date: full.date,
-      client_id: String(full.client_id),
-      objet: full.objet || '',
-      prestations: full.prestations || 0,
-      remise: full.remise || 0,
-      avec_cachet: full.avec_cachet === 1,
-      tva_applicable: full.tva_applicable !== 0,
-      lignes: (full.lignes || []).map(l => ({
+    // Reconstruire les séparateurs de section à partir des lignes
+    const lignesForm = [];
+    let sectionCourante = '';
+    (full.lignes || []).forEach((l) => {
+      const titre = l.section_titre || '';
+      if (titre !== sectionCourante) {
+        sectionCourante = titre;
+        if (titre) lignesForm.push({ _type: 'section', titre });
+      }
+      lignesForm.push({
         produit_id: String(l.produit_id),
         produit_search: (() => {
           const produit = produits.find((p) => p.id === l.produit_id);
@@ -387,9 +419,59 @@ const Proformas = () => {
         quantite: l.quantite,
         prix_unitaire: l.prix_unitaire,
         montant: l.montant
-      }))
+      });
+    });
+    setFormData({
+      date: full.date,
+      client_id: String(full.client_id),
+      objet: full.objet || '',
+      prestations: full.prestations || 0,
+      remise: full.remise || 0,
+      avec_cachet: full.avec_cachet === 1,
+      tva_applicable: full.tva_applicable !== 0,
+      lignes: lignesForm
     });
     setIsModalOpen(true);
+  };
+
+  // Ouvre le formulaire de création pré-rempli avec les données d'une proforma existante.
+  // Un nouveau numéro sera généré à l'enregistrement.
+  const handleDuplicate = async (proforma) => {
+    const full = await window.electronAPI.proformas.getById(proforma.id);
+    const lignesForm = [];
+    let sectionCourante = '';
+    (full.lignes || []).forEach((l) => {
+      const titre = l.section_titre || '';
+      if (titre !== sectionCourante) {
+        sectionCourante = titre;
+        if (titre) lignesForm.push({ _type: 'section', titre });
+      }
+      lignesForm.push({
+        produit_id: String(l.produit_id),
+        produit_search: (() => {
+          const produit = produits.find((p) => p.id === l.produit_id);
+          return produit ? produit.designation : (l.designation || '');
+        })(),
+        designation: l.designation,
+        unite: l.unite,
+        quantite: l.quantite,
+        prix_unitaire: l.prix_unitaire,
+        montant: l.montant
+      });
+    });
+    setEditingProforma(null);
+    setFormData({
+      date: new Date().toISOString().split('T')[0],
+      client_id: String(full.client_id),
+      objet: full.objet || '',
+      prestations: full.prestations || 0,
+      remise: full.remise || 0,
+      avec_cachet: full.avec_cachet === 1,
+      tva_applicable: full.tva_applicable !== 0,
+      lignes: lignesForm
+    });
+    setIsModalOpen(true);
+    toast.info(`Duplication de ${full.numero} — modifiez ce que vous voulez puis enregistrez.`);
   };
 
   const handleDelete = async (id) => {
@@ -690,6 +772,14 @@ const Proformas = () => {
                           <Edit2 size={16} />
                         </button>
                         <button
+                          className="btn-icon"
+                          style={{ color: '#8b5cf6' }}
+                          onClick={() => handleDuplicate(proforma)}
+                          title="Dupliquer (nouvelle proforma pré-remplie)"
+                        >
+                          <Copy size={16} />
+                        </button>
+                        <button
                           className="btn-icon btn-icon-success"
                           onClick={() => handlePrint(proforma)}
                           title="Imprimer"
@@ -851,6 +941,10 @@ const Proformas = () => {
             <div className="lignes-header">
               <h3>Lignes de la proforma</h3>
               <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={handleAddSection} title="Regrouper les lignes suivantes sous un titre avec sous-total">
+                  <FolderPlus size={16} />
+                  Ajouter une section
+                </button>
                 <button type="button" className="btn btn-secondary btn-sm" onClick={handleOpenLigneForm}>
                   <Plus size={16} />
                   Ajouter une ligne
@@ -970,7 +1064,45 @@ const Proformas = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {formData.lignes.map((ligne, index) => (
+                    {formData.lignes.map((ligne, index) => {
+                      if (ligne._type === 'section') {
+                        // Sous-total : somme des lignes jusqu'au prochain séparateur
+                        let sousTotal = 0;
+                        for (let i = index + 1; i < formData.lignes.length; i++) {
+                          if (formData.lignes[i]._type === 'section') break;
+                          sousTotal += formData.lignes[i].montant || 0;
+                        }
+                        return (
+                          <tr key={index} className="section-row">
+                            <td colSpan="5" style={{ background: '#eef2ff', padding: '0.4rem 0.6rem' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <FolderPlus size={16} style={{ color: '#1e3a8a', flexShrink: 0 }} />
+                                <input
+                                  type="text"
+                                  value={ligne.titre}
+                                  onChange={(e) => handleSectionTitleChange(index, e.target.value)}
+                                  placeholder="Titre de la section (ex : Interconnexion du nouveau bâtiment…)"
+                                  style={{ fontWeight: 700, color: '#1e3a8a', background: 'transparent', border: 'none', borderBottom: '1px dashed #94a3b8', width: '100%' }}
+                                />
+                              </div>
+                            </td>
+                            <td style={{ background: '#eef2ff', textAlign: 'right', fontWeight: 700, color: '#1e3a8a' }}>
+                              {formatPrice(sousTotal)}
+                            </td>
+                            <td style={{ background: '#eef2ff' }}>
+                              <button
+                                type="button"
+                                className="btn-remove-ligne"
+                                onClick={() => handleRemoveLigne(index)}
+                                title="Supprimer la section (les lignes sont conservées)"
+                              >
+                                <Trash2 size={18} />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      }
+                      return (
                       <tr key={index}>
                         <td>
                           <SearchableSelect
@@ -1034,7 +1166,8 @@ const Proformas = () => {
                           </button>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

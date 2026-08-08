@@ -273,6 +273,15 @@ function initDatabase() {
     db.exec("ALTER TABLE proformas ADD COLUMN tva_applicable INTEGER DEFAULT 1");
   }
 
+  // Migration : sections (lots de travaux) sur les lignes de documents.
+  // Permet de regrouper les lignes sous des titres avec sous-totaux.
+  ['proforma_lignes', 'facture_lignes', 'bordereau_lignes'].forEach((table) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (cols.length > 0 && !cols.includes('section_titre')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN section_titre TEXT DEFAULT ''`);
+    }
+  });
+
   // Migration : champs de soumission des appels d'offre (bordereau de prix,
   // lettre de soumission, enveloppes).
   const aoCols = db.prepare("PRAGMA table_info(appels_offres)").all().map((c) => c.name);
@@ -929,8 +938,8 @@ ipcMain.handle('proformas:create', (event, proforma) => {
     
     // Insérer les lignes
     const stmtLigne = db.prepare(`
-      INSERT INTO proforma_lignes (proforma_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO proforma_lignes (proforma_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     data.lignes.forEach((ligne, index) => {
@@ -942,7 +951,8 @@ ipcMain.handle('proformas:create', (event, proforma) => {
         ligne.quantite,
         ligne.prix_unitaire,
         ligne.montant,
-        index
+        index,
+        ligne.section_titre || ''
       );
     });
     
@@ -987,8 +997,8 @@ ipcMain.handle('proformas:update', (event, id, data) => {
     // Remplacer les lignes
     db.prepare('DELETE FROM proforma_lignes WHERE proforma_id = ?').run(id);
     const stmtLigne = db.prepare(`
-      INSERT INTO proforma_lignes (proforma_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO proforma_lignes (proforma_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     payload.lignes.forEach((ligne, index) => {
       stmtLigne.run(
@@ -999,7 +1009,8 @@ ipcMain.handle('proformas:update', (event, id, data) => {
         ligne.quantite,
         ligne.prix_unitaire,
         ligne.montant,
-        index
+        index,
+        ligne.section_titre || ''
       );
     });
 
@@ -1084,8 +1095,8 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId, dateFacture) =
     
     // Insérer les lignes
     const stmtLigne = db.prepare(`
-      INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     lignes.forEach((ligne, index) => {
@@ -1097,7 +1108,8 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId, dateFacture) =
         ligne.quantite,
         ligne.prix_unitaire,
         ligne.montant,
-        index
+        index,
+        ligne.section_titre || ''
       );
     });
     
@@ -1111,6 +1123,58 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId, dateFacture) =
   });
   
   return transaction(proformaId);
+});
+
+// Modification d'une facture (date, objet, montants, lignes).
+// Le numéro et le client restent inchangés.
+ipcMain.handle('factures:update', (event, id, data) => {
+  const existing = db.prepare('SELECT id FROM factures WHERE id = ?').get(id);
+  if (!existing) {
+    throw new Error('Facture introuvable.');
+  }
+
+  const transaction = db.transaction((payload) => {
+    db.prepare(`
+      UPDATE factures
+      SET date = ?, objet = ?, total_materiel_ht = ?, prestations = ?, remise = ?,
+          total_ht = ?, tva = ?, total_ttc = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      payload.date,
+      payload.objet,
+      payload.total_materiel_ht || 0,
+      payload.prestations || 0,
+      payload.remise || 0,
+      payload.total_ht,
+      payload.tva,
+      payload.total_ttc,
+      id
+    );
+
+    // Remplacer les lignes
+    db.prepare('DELETE FROM facture_lignes WHERE facture_id = ?').run(id);
+    const stmtLigne = db.prepare(`
+      INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    payload.lignes.forEach((ligne, index) => {
+      stmtLigne.run(
+        id,
+        Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
+        ligne.designation,
+        ligne.unite,
+        ligne.quantite,
+        ligne.prix_unitaire,
+        ligne.montant,
+        index,
+        ligne.section_titre || ''
+      );
+    });
+
+    return { success: true };
+  });
+
+  return transaction(data);
 });
 
 ipcMain.handle('factures:delete', (event, id) => {
@@ -1485,6 +1549,44 @@ ipcMain.handle('bordereaux:create', (event, data) => {
   return transaction(data);
 });
 
+// Modification d'un bordereau (date, client, lignes)
+ipcMain.handle('bordereaux:update', (event, id, data) => {
+  const existing = db.prepare('SELECT id FROM bordereaux WHERE id = ?').get(id);
+  if (!existing) {
+    throw new Error('Bordereau introuvable.');
+  }
+  const lignes = Array.isArray(data.lignes)
+    ? data.lignes.filter((l) => l.designation && String(l.designation).trim())
+    : [];
+  if (lignes.length === 0) {
+    throw new Error('Le bordereau doit contenir au moins une ligne.');
+  }
+
+  const transaction = db.transaction(() => {
+    db.prepare(`
+      UPDATE bordereaux
+      SET date = ?, client_id = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      data.date || new Date().toISOString().split('T')[0],
+      data.client_id,
+      id
+    );
+
+    db.prepare('DELETE FROM bordereau_lignes WHERE bordereau_id = ?').run(id);
+    const stmtLigne = db.prepare(`
+      INSERT INTO bordereau_lignes (bordereau_id, designation, quantite, ordre)
+      VALUES (?, ?, ?, ?)
+    `);
+    lignes.forEach((ligne, index) => {
+      stmtLigne.run(id, String(ligne.designation).trim(), Number(ligne.quantite) || 0, index);
+    });
+
+    return { success: true };
+  });
+  return transaction();
+});
+
 ipcMain.handle('bordereaux:getById', (event, id) => {
   const bordereau = db.prepare(`
     SELECT b.*, c.nom as client_nom, c.adresse as client_adresse,
@@ -1529,8 +1631,8 @@ ipcMain.handle('bordereaux:createFromFacture', (event, factureId) => {
     
     // Insérer les lignes
     const stmtLigne = db.prepare(`
-      INSERT INTO bordereau_lignes (bordereau_id, designation, quantite, ordre)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO bordereau_lignes (bordereau_id, designation, quantite, ordre, section_titre)
+      VALUES (?, ?, ?, ?, ?)
     `);
     
     lignes.forEach((ligne, index) => {
@@ -1538,7 +1640,8 @@ ipcMain.handle('bordereaux:createFromFacture', (event, factureId) => {
         bordereauId,
         ligne.designation,
         ligne.quantite,
-        index
+        index,
+        ligne.section_titre || ''
       );
     });
     
@@ -1585,8 +1688,8 @@ ipcMain.handle('bordereaux:createFromProforma', (event, proformaId, createFactur
 
       const factureLignes = db.prepare('SELECT * FROM proforma_lignes WHERE proforma_id = ?').all(pId);
       const factLigneStmt = db.prepare(`
-        INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       factureLignes.forEach((ligne, index) => {
         factLigneStmt.run(
@@ -1597,7 +1700,8 @@ ipcMain.handle('bordereaux:createFromProforma', (event, proformaId, createFactur
           ligne.quantite,
           ligne.prix_unitaire,
           ligne.montant,
-          index
+          index,
+          ligne.section_titre || ''
         );
       });
 
@@ -1623,8 +1727,8 @@ ipcMain.handle('bordereaux:createFromProforma', (event, proformaId, createFactur
     const bordereauId = bordereauInsert.lastInsertRowid;
 
     const bordereauLigneStmt = db.prepare(`
-      INSERT INTO bordereau_lignes (bordereau_id, designation, quantite, ordre)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO bordereau_lignes (bordereau_id, designation, quantite, ordre, section_titre)
+      VALUES (?, ?, ?, ?, ?)
     `);
     const proformaLignes = db.prepare('SELECT * FROM proforma_lignes WHERE proforma_id = ?').all(pId);
     proformaLignes.forEach((ligne, index) => {
@@ -1632,7 +1736,8 @@ ipcMain.handle('bordereaux:createFromProforma', (event, proformaId, createFactur
         bordereauId,
         ligne.designation,
         ligne.quantite,
-        index
+        index,
+        ligne.section_titre || ''
       );
     });
 

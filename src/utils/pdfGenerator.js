@@ -727,6 +727,62 @@ const drawCertification = (doc, x, rightX, y, annee) => {
   return ty + cadreH;
 };
 
+// --- Corps de tableau avec sections (lots de travaux) ---
+// Si des lignes portent un titre de section, construit : bandeau de titre
+// pleine largeur, numérotation redémarrant à 1 dans chaque section, puis
+// ligne « Sous TOTAL n ». Sans section : numérotation continue classique.
+const buildSectionedBody = (lignes, nbCols, mapLigne, getMontant) => {
+  const hasSections = (lignes || []).some((l) => (l.section_titre || '').trim());
+  if (!hasSections) {
+    return (lignes || []).map((l, i) => mapLigne(l, i + 1));
+  }
+
+  const body = [];
+  let sectionIdx = 0;
+  let i = 0;
+  while (i < lignes.length) {
+    const titre = (lignes[i].section_titre || '').trim();
+    const group = [];
+    while (i < lignes.length && (lignes[i].section_titre || '').trim() === titre) {
+      group.push(lignes[i]);
+      i++;
+    }
+
+    if (titre) {
+      sectionIdx += 1;
+      body.push([{
+        content: titre,
+        colSpan: nbCols,
+        styles: {
+          fillColor: [224, 231, 255],
+          textColor: COLORS.navy,
+          fontStyle: 'bold',
+          halign: 'center',
+          fontSize: 9,
+        },
+      }]);
+    }
+
+    group.forEach((l, j) => body.push(mapLigne(l, j + 1)));
+
+    if (titre && getMontant) {
+      const sousTotal = group.reduce((s, l) => s + (getMontant(l) || 0), 0);
+      body.push([
+        {
+          content: `Sous TOTAL ${sectionIdx}`,
+          colSpan: nbCols - 1,
+          styles: { halign: 'center', fontStyle: 'bold', fillColor: COLORS.boxBg, textColor: COLORS.navy },
+        },
+        {
+          content: formatNumber(sousTotal),
+          styles: { halign: 'right', fontStyle: 'bold', fillColor: COLORS.boxBg, textColor: COLORS.navy },
+        },
+      ]);
+    }
+  }
+  return body;
+};
+
 // Génération PDF Proforma
 export const generateProformaPDF = async (proforma, parametres, options = {}) => {
   const doc = new jsPDF();
@@ -755,10 +811,15 @@ export const generateProformaPDF = async (proforma, parametres, options = {}) =>
   yPos = Math.max(clientBottom, objetBottom) + 8;
 
   // Tableau des lignes
-  const tableData = proforma.lignes.map((l, i) => [
-    i + 1, l.designation, l.unite, l.quantite,
-    formatNumber(l.prix_unitaire), formatNumber(l.montant)
-  ]);
+  const tableData = buildSectionedBody(
+    proforma.lignes,
+    6,
+    (l, n) => [
+      n, l.designation, l.unite, l.quantite,
+      formatNumber(l.prix_unitaire), formatNumber(l.montant)
+    ],
+    (l) => parseFloat(l.montant) || 0
+  );
   const qteTotal = proforma.lignes.reduce((s, l) => s + (parseFloat(l.quantite) || 0), 0);
 
   doc.autoTable({
@@ -868,10 +929,15 @@ export const generateFacturePDF = async (facture, parametres) => {
   yPos = objetY + Math.max(6, objetLines.length * 5);
 
   // Tableau des lignes
-  const tableData = facture.lignes.map((l, i) => [
-    i + 1, l.designation, l.unite, l.quantite,
-    formatNumber(l.prix_unitaire), formatNumber(l.montant)
-  ]);
+  const tableData = buildSectionedBody(
+    facture.lignes,
+    6,
+    (l, n) => [
+      n, l.designation, l.unite, l.quantite,
+      formatNumber(l.prix_unitaire), formatNumber(l.montant)
+    ],
+    (l) => parseFloat(l.montant) || 0
+  );
   const qteTotal = facture.lignes.reduce((s, l) => s + (parseFloat(l.quantite) || 0), 0);
 
   doc.autoTable({
@@ -974,9 +1040,12 @@ export const generateBordereauPDF = async (bordereau, parametres) => {
   yPos = clientBottom + 6;
 
   // Tableau des lignes livrées
-  const tableData = bordereau.lignes.map((l, i) => [
-    i + 1, l.designation, l.quantite, ''
-  ]);
+  const tableData = buildSectionedBody(
+    bordereau.lignes,
+    4,
+    (l, n) => [n, l.designation, l.quantite, ''],
+    null
+  );
   const qteTotal = bordereau.lignes.reduce((s, l) => s + (parseFloat(l.quantite) || 0), 0);
 
   doc.autoTable({
