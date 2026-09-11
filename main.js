@@ -217,6 +217,35 @@ function initDatabase() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS interventions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      numero TEXT UNIQUE NOT NULL,
+      date DATE,
+      intervenant TEXT,
+      heure_arrivee TEXT,
+      heure_depart TEXT,
+      client_nom TEXT,
+      client_adresse TEXT,
+      client_contact TEXT,
+      interlocuteur TEXT,
+      options_reseaux TEXT,
+      options_maintenance TEXT,
+      marque_modele TEXT,
+      num_serie TEXT,
+      systeme_exploitation TEXT,
+      vol_donnees TEXT,
+      test_continuite TEXT,
+      ping TEXT,
+      debit_desc TEXT,
+      debit_mont TEXT,
+      description_probleme TEXT,
+      travaux_realises TEXT,
+      materiels TEXT,
+      statut_final TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   // Migration : table attestations pour les bases existantes
@@ -713,8 +742,15 @@ ipcMain.handle('attestations:getById', (event, id) => {
 });
 
 ipcMain.handle('attestations:create', (event, data) => {
+  // Part du nombre d'attestations et saute les numéros déjà utilisés (évite les doublons après suppression)
   const existing = db.prepare('SELECT COUNT(*) as count FROM attestations').get();
-  const numero = `ASF-${String((existing.count || 0) + 1).padStart(4, '0')}`;
+  const existeStmt = db.prepare('SELECT 1 FROM attestations WHERE numero = ?');
+  let compteur = existing.count || 0;
+  let numero;
+  do {
+    compteur += 1;
+    numero = `ASF-${String(compteur).padStart(4, '0')}`;
+  } while (existeStmt.get(numero));
   const result = db.prepare(`
     INSERT INTO attestations (numero, reference, title, date, lieu, client_nom, objet,
       intro, intro_align, travaux, travaux_align, travaux_list_mode,
@@ -772,6 +808,104 @@ ipcMain.handle('attestations:update', (event, id, data) => {
 
 ipcMain.handle('attestations:delete', (event, id) => {
   db.prepare('DELETE FROM attestations WHERE id = ?').run(id);
+  return { success: true };
+});
+
+// ===== FICHES D'INTERVENTION TECHNIQUE =====
+
+// Valeurs ordonnées pour INSERT/UPDATE (hors numero et id)
+const interventionToRow = (data) => ([
+  data.date || '',
+  data.intervenant || '',
+  data.heure_arrivee || '',
+  data.heure_depart || '',
+  data.client_nom || '',
+  data.client_adresse || '',
+  data.client_contact || '',
+  data.interlocuteur || '',
+  JSON.stringify(Array.isArray(data.options_reseaux) ? data.options_reseaux : []),
+  JSON.stringify(Array.isArray(data.options_maintenance) ? data.options_maintenance : []),
+  data.marque_modele || '',
+  data.num_serie || '',
+  data.systeme_exploitation || '',
+  data.vol_donnees || '',
+  data.test_continuite || '',
+  data.ping || '',
+  data.debit_desc || '',
+  data.debit_mont || '',
+  data.description_probleme || '',
+  data.travaux_realises || '',
+  JSON.stringify(Array.isArray(data.materiels) ? data.materiels : []),
+  data.statut_final || '',
+]);
+
+const parseInterventionRow = (row) => {
+  const safeParse = (value) => {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+  return {
+    ...row,
+    options_reseaux: safeParse(row.options_reseaux),
+    options_maintenance: safeParse(row.options_maintenance),
+    materiels: safeParse(row.materiels),
+  };
+};
+
+ipcMain.handle('interventions:getAll', () => {
+  return db.prepare('SELECT * FROM interventions ORDER BY created_at DESC').all().map(parseInterventionRow);
+});
+
+ipcMain.handle('interventions:getById', (event, id) => {
+  const row = db.prepare('SELECT * FROM interventions WHERE id = ?').get(id);
+  return row ? parseInterventionRow(row) : null;
+});
+
+ipcMain.handle('interventions:create', (event, data) => {
+  // Numéro FIT- : saute les numéros déjà utilisés (évite les doublons après suppression)
+  const existing = db.prepare('SELECT COUNT(*) as count FROM interventions').get();
+  const existeStmt = db.prepare('SELECT 1 FROM interventions WHERE numero = ?');
+  let compteur = existing.count || 0;
+  let numero;
+  do {
+    compteur += 1;
+    numero = `FIT-${String(compteur).padStart(4, '0')}`;
+  } while (existeStmt.get(numero));
+
+  const result = db.prepare(`
+    INSERT INTO interventions (numero, date, intervenant, heure_arrivee, heure_depart,
+      client_nom, client_adresse, client_contact, interlocuteur,
+      options_reseaux, options_maintenance, marque_modele, num_serie, systeme_exploitation, vol_donnees,
+      test_continuite, ping, debit_desc, debit_mont, description_probleme, travaux_realises,
+      materiels, statut_final)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(numero, ...interventionToRow(data));
+  return { id: result.lastInsertRowid, numero };
+});
+
+ipcMain.handle('interventions:update', (event, id, data) => {
+  const existing = db.prepare('SELECT id FROM interventions WHERE id = ?').get(id);
+  if (!existing) {
+    throw new Error('Fiche d\'intervention introuvable.');
+  }
+  db.prepare(`
+    UPDATE interventions SET
+      date = ?, intervenant = ?, heure_arrivee = ?, heure_depart = ?,
+      client_nom = ?, client_adresse = ?, client_contact = ?, interlocuteur = ?,
+      options_reseaux = ?, options_maintenance = ?, marque_modele = ?, num_serie = ?, systeme_exploitation = ?, vol_donnees = ?,
+      test_continuite = ?, ping = ?, debit_desc = ?, debit_mont = ?, description_probleme = ?, travaux_realises = ?,
+      materiels = ?, statut_final = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(...interventionToRow(data), id);
+  return { success: true };
+});
+
+ipcMain.handle('interventions:delete', (event, id) => {
+  db.prepare('DELETE FROM interventions WHERE id = ?').run(id);
   return { success: true };
 });
 
@@ -855,6 +989,8 @@ ipcMain.handle('rapports:delete', (event, id) => {
 });
 
 // PARAMETRES
+ipcMain.handle('app:getVersion', () => app.getVersion());
+
 ipcMain.handle('parametres:getAll', () => {
   const params = db.prepare('SELECT * FROM parametres').all();
   return params.reduce((acc, p) => {
@@ -1064,6 +1200,9 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId, dateFacture) =
   const transaction = db.transaction((pId) => {
     // Récupérer la proforma
     const proforma = db.prepare('SELECT * FROM proformas WHERE id = ?').get(pId);
+    if (!proforma) {
+      throw new Error('Proforma introuvable.');
+    }
     const lignes = db.prepare('SELECT * FROM proforma_lignes WHERE proforma_id = ?').all(pId);
     
     // Générer le numéro de facture (année courante), en sautant les numéros déjà utilisés.
@@ -1610,6 +1749,9 @@ ipcMain.handle('bordereaux:createFromFacture', (event, factureId) => {
   const transaction = db.transaction((fId) => {
     // Récupérer la facture
     const facture = db.prepare('SELECT * FROM factures WHERE id = ?').get(fId);
+    if (!facture) {
+      throw new Error('Facture introuvable.');
+    }
     const lignes = db.prepare('SELECT * FROM facture_lignes WHERE facture_id = ?').all(fId);
     
     // Générer le numéro de bordereau (année courante), en sautant les numéros déjà utilisés.

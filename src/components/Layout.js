@@ -9,6 +9,7 @@ import {
   Truck,
   Landmark,
   ClipboardList,
+  Wrench,
   // Megaphone, // ← désactivé temporairement (appels d'offre)
   Settings 
 } from 'lucide-react';
@@ -17,6 +18,7 @@ import logo from '../assets/logo.png';
 
 const Layout = () => {
   const [parametres, setParametres] = useState({});
+  const [appVersion, setAppVersion] = useState('');
 
   useEffect(() => {
     let mounted = true;
@@ -29,7 +31,17 @@ const Layout = () => {
       }
     };
 
+    const loadVersion = async () => {
+      try {
+        const version = await window.electronAPI.app?.getVersion();
+        if (mounted && version) setAppVersion(version);
+      } catch {
+        // fallback silencieux : la version reste masquée
+      }
+    };
+
     loadBranding();
+    loadVersion();
 
     const handleSettingsUpdated = () => {
       loadBranding();
@@ -57,6 +69,7 @@ const Layout = () => {
     { path: '/tva', icon: Landmark, label: 'TVA / OTR' },
     { path: '/rapports', icon: ClipboardList, label: 'Rapports' },
     { path: '/attestation-service-fait', icon: FileText, label: 'Attestation service fait' },
+    { path: '/interventions', icon: Wrench, label: "Fiches d'intervention" },
     { path: '/parametres', icon: Settings, label: 'Paramètres' }
   ];
 
@@ -91,7 +104,7 @@ const Layout = () => {
         </nav>
 
         <div className="sidebar-footer">
-          <p className="version">v1.0.0</p>
+          <p className="version">{appVersion ? `v${appVersion}` : ''}</p>
         </div>
       </aside>
 

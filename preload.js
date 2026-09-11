@@ -2,6 +2,11 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 // Expose les API de manière sécurisée au renderer process
 contextBridge.exposeInMainWorld('electronAPI', {
+  // APPLICATION
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:getVersion')
+  },
+
   // CLIENTS
   clients: {
     getAll: () => ipcRenderer.invoke('clients:getAll'),
@@ -80,6 +85,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     create: (data) => ipcRenderer.invoke('attestations:create', data),
     update: (id, data) => ipcRenderer.invoke('attestations:update', id, data),
     delete: (id) => ipcRenderer.invoke('attestations:delete', id)
+  },
+  // FICHES D'INTERVENTION TECHNIQUE
+  interventions: {
+    getAll: () => ipcRenderer.invoke('interventions:getAll'),
+    getById: (id) => ipcRenderer.invoke('interventions:getById', id),
+    create: (data) => ipcRenderer.invoke('interventions:create', data),
+    update: (id, data) => ipcRenderer.invoke('interventions:update', id, data),
+    delete: (id) => ipcRenderer.invoke('interventions:delete', id)
   },
   // RAPPORTS TECHNIQUES
   rapports: {

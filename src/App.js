@@ -11,6 +11,7 @@ import Bordereaux from './pages/Bordereaux';
 import Tva from './pages/Tva';
 import Rapports from './pages/Rapports';
 import AttestationServiceFait from './pages/AttestationServiceFait';
+import Interventions from './pages/Interventions';
 import Parametres from './pages/Parametres';
 import LockScreen from './components/LockScreen/LockScreen';
 import LicenseGate from './components/LicenseGate/LicenseGate';
@@ -66,6 +67,7 @@ function App() {
                 <Route path="tva" element={<Tva />} />
                 <Route path="rapports" element={<Rapports />} />
                 <Route path="attestation-service-fait" element={<AttestationServiceFait />} />
+                <Route path="interventions" element={<Interventions />} />
                 <Route path="parametres" element={<Parametres />} />
               </Route>
             </Routes>
