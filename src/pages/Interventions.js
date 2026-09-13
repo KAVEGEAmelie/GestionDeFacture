@@ -6,8 +6,15 @@ import PeriodFilter from '../components/Filters/PeriodFilter';
 import { inDateRange } from '../utils/dateFilters';
 import {
   generateInterventionPDF,
-  FIT_OPTIONS_RESEAUX,
-  FIT_OPTIONS_MAINTENANCE,
+  FIT_NATURE_OPTIONS,
+  FIT_EQUIPEMENT_OPTIONS,
+  FIT_TESTS_OPTIONS,
+  FIT_BACKUP_OPTIONS,
+  FIT_DONNEES_OPTIONS,
+  FIT_SECURITE_OPTIONS,
+  FIT_ETAT_FINAL_OPTIONS,
+  FIT_EQUIP_FINAL_OPTIONS,
+  FIT_ETAT_RECEPTION_OPTIONS,
 } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
@@ -20,97 +27,112 @@ import './RapportsModal.css';
 
 const todayISO = () => new Date().toISOString().split('T')[0];
 
-const OS_OPTIONS = [
-  { value: 'Windows', label: 'Windows' },
-  { value: 'Linux', label: 'Linux' },
-  { value: 'Autre', label: 'Autre' },
-];
-const TEST_OPTIONS = [
-  { value: 'Conforme', label: 'Conforme' },
-  { value: 'Non conforme', label: 'Non conforme' },
-];
-const STATUT_OPTIONS = [
-  { value: 'Résolu', label: 'Résolu' },
-  { value: 'Partiellement résolu', label: 'Partiellement résolu' },
-  { value: 'Non résolu', label: 'Non résolu (Nouvelle intervention requise)' },
-];
+const trim = (v) => String(v || '').trim();
+const arr = (v) => (Array.isArray(v) ? v : []);
 
 const buildDefaultForm = () => ({
   date: todayISO(),
   intervenant: '',
-  heure_arrivee: '',
-  heure_depart: '',
   client_nom: '',
   client_adresse: '',
   client_contact: '',
+  marque_modele: '',
+  num_serie: '',
+  description_probleme: '',
+  travaux_realises: '',
+  materiels: [],
+  statut_final: '',
+  // Champs du modèle V11
+  nature: [],
+  equipements: [],
+  accessoires: '',
+  etat_reception: '',
+  diagnostic: '',
+  tests: [],
+  backup_before: '',
+  donnees: [],
+  donnees_autres: '',
+  securite: [],
+  data_obs: '',
+  equip_final: '',
+  fin: '',
+  duree: '',
+  prochaine_action: '',
+  recommandations: '',
+  obs_client: '',
+  // Anciens champs conservés pour ne pas perdre les données des fiches existantes
+  heure_arrivee: '',
+  heure_depart: '',
   interlocuteur: '',
   options_reseaux: [],
   options_maintenance: [],
-  marque_modele: '',
-  num_serie: '',
   systeme_exploitation: '',
   vol_donnees: '',
   test_continuite: '',
   ping: '',
   debit_desc: '',
   debit_mont: '',
-  description_probleme: '',
-  travaux_realises: '',
-  materiels: [],
-  statut_final: '',
 });
 
-const toStoredRecord = (form) => ({
-  date: form.date,
-  intervenant: (form.intervenant || '').trim(),
-  heure_arrivee: (form.heure_arrivee || '').trim(),
-  heure_depart: (form.heure_depart || '').trim(),
-  client_nom: (form.client_nom || '').trim(),
-  client_adresse: (form.client_adresse || '').trim(),
-  client_contact: (form.client_contact || '').trim(),
-  interlocuteur: (form.interlocuteur || '').trim(),
-  options_reseaux: Array.isArray(form.options_reseaux) ? form.options_reseaux : [],
-  options_maintenance: Array.isArray(form.options_maintenance) ? form.options_maintenance : [],
-  marque_modele: (form.marque_modele || '').trim(),
-  num_serie: (form.num_serie || '').trim(),
-  systeme_exploitation: form.systeme_exploitation || '',
-  vol_donnees: (form.vol_donnees || '').trim(),
-  test_continuite: form.test_continuite || '',
-  ping: (form.ping || '').trim(),
-  debit_desc: (form.debit_desc || '').trim(),
-  debit_mont: (form.debit_mont || '').trim(),
-  description_probleme: (form.description_probleme || '').trim(),
-  travaux_realises: (form.travaux_realises || '').trim(),
-  materiels: (Array.isArray(form.materiels) ? form.materiels : []).filter(
-    (m) => m && (String(m.designation || '').trim() || String(m.qte || '').trim() || String(m.garantie || '').trim())
-  ),
-  statut_final: form.statut_final || '',
-});
+const toStoredRecord = (form) => {
+  const details = {
+    nature: arr(form.nature),
+    equipements: arr(form.equipements),
+    accessoires: trim(form.accessoires),
+    etat_reception: form.etat_reception || '',
+    diagnostic: trim(form.diagnostic),
+    tests: arr(form.tests),
+    backup_before: form.backup_before || '',
+    donnees: arr(form.donnees),
+    donnees_autres: trim(form.donnees_autres),
+    securite: arr(form.securite),
+    data_obs: trim(form.data_obs),
+    equip_final: form.equip_final || '',
+    fin: form.fin || '',
+    duree: trim(form.duree),
+    prochaine_action: trim(form.prochaine_action),
+    recommandations: trim(form.recommandations),
+    obs_client: trim(form.obs_client),
+  };
+  return {
+    date: form.date,
+    intervenant: trim(form.intervenant),
+    heure_arrivee: trim(form.heure_arrivee),
+    heure_depart: trim(form.heure_depart),
+    client_nom: trim(form.client_nom),
+    client_adresse: trim(form.client_adresse),
+    client_contact: trim(form.client_contact),
+    interlocuteur: trim(form.interlocuteur),
+    options_reseaux: arr(form.options_reseaux),
+    options_maintenance: arr(form.options_maintenance),
+    marque_modele: trim(form.marque_modele),
+    num_serie: trim(form.num_serie),
+    systeme_exploitation: form.systeme_exploitation || '',
+    vol_donnees: trim(form.vol_donnees),
+    test_continuite: form.test_continuite || '',
+    ping: trim(form.ping),
+    debit_desc: trim(form.debit_desc),
+    debit_mont: trim(form.debit_mont),
+    description_probleme: trim(form.description_probleme),
+    travaux_realises: trim(form.travaux_realises),
+    materiels: arr(form.materiels).filter(
+      (m) => m && ['designation', 'qte', 'etat', 'ref', 'garantie'].some((k) => trim(m[k]))
+    ),
+    statut_final: form.statut_final || '',
+    ...details,
+    details,
+  };
+};
 
-const toForm = (record) => ({
-  date: record.date || todayISO(),
-  intervenant: record.intervenant || '',
-  heure_arrivee: record.heure_arrivee || '',
-  heure_depart: record.heure_depart || '',
-  client_nom: record.client_nom || '',
-  client_adresse: record.client_adresse || '',
-  client_contact: record.client_contact || '',
-  interlocuteur: record.interlocuteur || '',
-  options_reseaux: Array.isArray(record.options_reseaux) ? record.options_reseaux : [],
-  options_maintenance: Array.isArray(record.options_maintenance) ? record.options_maintenance : [],
-  marque_modele: record.marque_modele || '',
-  num_serie: record.num_serie || '',
-  systeme_exploitation: record.systeme_exploitation || '',
-  vol_donnees: record.vol_donnees || '',
-  test_continuite: record.test_continuite || '',
-  ping: record.ping || '',
-  debit_desc: record.debit_desc || '',
-  debit_mont: record.debit_mont || '',
-  description_probleme: record.description_probleme || '',
-  travaux_realises: record.travaux_realises || '',
-  materiels: Array.isArray(record.materiels) ? record.materiels : [],
-  statut_final: record.statut_final || '',
-});
+const toForm = (record) => {
+  const base = buildDefaultForm();
+  const form = { ...base };
+  Object.keys(base).forEach((key) => {
+    if (record[key] !== undefined && record[key] !== null) form[key] = record[key];
+  });
+  form.date = record.date || todayISO();
+  return form;
+};
 
 const checkboxRowStyle = {
   display: 'flex',
@@ -276,52 +298,42 @@ const Interventions = () => {
     });
   };
 
-  const [customInputs, setCustomInputs] = useState({ options_reseaux: '', options_maintenance: '' });
+  const renderCheckGrid = (field, options) => (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: '0 12px' }}>
+      {options.map((label) => (
+        <label key={label} style={checkboxRowStyle}>
+          <input
+            type="checkbox"
+            checked={(formData[field] || []).includes(label)}
+            onChange={() => toggleOption(field, label)}
+          />
+          {label}
+        </label>
+      ))}
+    </div>
+  );
 
-  const customOptions = (field) => {
-    const fixed = field === 'options_reseaux' ? FIT_OPTIONS_RESEAUX : FIT_OPTIONS_MAINTENANCE;
-    return (formData[field] || []).filter((l) => !fixed.includes(l));
-  };
-
-  const addCustomOption = (field) => {
-    const value = (customInputs[field] || '').trim();
-    if (!value) return;
-    const fixed = field === 'options_reseaux' ? FIT_OPTIONS_RESEAUX : FIT_OPTIONS_MAINTENANCE;
-    // Si la saisie correspond à une option standard, on coche celle-ci au lieu de dupliquer
-    const existing = fixed.find((l) => l.toLowerCase() === value.toLowerCase());
-    const label = existing || value;
-    setFormData((prev) => {
-      const list = Array.isArray(prev[field]) ? prev[field] : [];
-      if (list.some((l) => l.toLowerCase() === label.toLowerCase())) return prev;
-      return { ...prev, [field]: [...list, label] };
-    });
-    setCustomInputs((prev) => ({ ...prev, [field]: '' }));
-  };
-
-  const renderCustomOptionInput = (field) => (
-    <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-      <input
-        type="text"
-        value={customInputs[field]}
-        onChange={(e) => setCustomInputs((prev) => ({ ...prev, [field]: e.target.value }))}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            addCustomOption(field);
-          }
-        }}
-        placeholder="Autre : préciser puis Entrée..."
-      />
-      <button type="button" className="btn btn-secondary" title="Ajouter l'option" onClick={() => addCustomOption(field)}>
-        <Plus size={16} />
-      </button>
+  // Radio décochable : recliquer sur l'option sélectionnée la vide
+  const renderRadioRow = (field, options) => (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0 16px' }}>
+      {options.map((label) => (
+        <label key={label} style={checkboxRowStyle}>
+          <input
+            type="radio"
+            checked={formData[field] === label}
+            onChange={() => {}}
+            onClick={() => handleChange(field, formData[field] === label ? '' : label)}
+          />
+          {label}
+        </label>
+      ))}
     </div>
   );
 
   const addMateriel = () => {
     setFormData((prev) => ({
       ...prev,
-      materiels: [...(prev.materiels || []), { designation: '', qte: '', garantie: '' }],
+      materiels: [...(prev.materiels || []), { designation: '', qte: '', etat: '', ref: '' }],
     }));
   };
 
@@ -526,31 +538,17 @@ const Interventions = () => {
                 <input type="text" value={editingNumero || 'Généré automatiquement'} readOnly />
               </div>
               <div className="form-group">
-                <label>Date *</label>
+                <label>Date intervention *</label>
                 <input type="date" value={formData.date} onChange={(e) => handleChange('date', e.target.value)} />
               </div>
               <div className="form-group">
-                <label>Intervenant</label>
-                <input type="text" value={formData.intervenant} onChange={(e) => handleChange('intervenant', e.target.value)} placeholder="Nom du technicien" />
+                <label>Technicien(s)</label>
+                <input type="text" value={formData.intervenant} onChange={(e) => handleChange('intervenant', e.target.value)} placeholder="Nom du ou des techniciens" />
               </div>
             </div>
             <div className="form-row">
               <div className="form-group">
-                <label>Heure d'arrivée</label>
-                <input type="time" value={formData.heure_arrivee} onChange={(e) => handleChange('heure_arrivee', e.target.value)} />
-              </div>
-              <div className="form-group">
-                <label>Heure de départ</label>
-                <input type="time" value={formData.heure_depart} onChange={(e) => handleChange('heure_depart', e.target.value)} />
-              </div>
-            </div>
-          </section>
-
-          <section className="form-section">
-            <span className="form-section__eyebrow">Client</span>
-            <div className="form-row">
-              <div className="form-group">
-                <label>Nom / Entreprise *</label>
+                <label>Client / Structure *</label>
                 <SearchableSelect
                   options={sortedClients.map((client) => ({ value: client.nom, label: client.nom }))}
                   value={formData.client_nom}
@@ -560,144 +558,68 @@ const Interventions = () => {
                 />
               </div>
               <div className="form-group">
-                <label>Adresse client</label>
-                <input type="text" value={formData.client_adresse} onChange={(e) => handleChange('client_adresse', e.target.value)} placeholder="Adresse du site d'intervention" />
+                <label>Site / Service</label>
+                <input type="text" value={formData.client_adresse} onChange={(e) => handleChange('client_adresse', e.target.value)} placeholder="Site ou service concerné" />
               </div>
-            </div>
-            <div className="form-row">
               <div className="form-group">
-                <label>Tél / E-mail</label>
+                <label>Contact client</label>
                 <input type="text" value={formData.client_contact} onChange={(e) => handleChange('client_contact', e.target.value)} placeholder="Ex : +228 90 00 00 00 / client@mail.com" />
-              </div>
-              <div className="form-group">
-                <label>Interlocuteur</label>
-                <input type="text" value={formData.interlocuteur} onChange={(e) => handleChange('interlocuteur', e.target.value)} placeholder="Personne rencontrée sur place" />
               </div>
             </div>
           </section>
 
           <section className="form-section">
-            <span className="form-section__eyebrow">Type d'intervention & composants concernés</span>
-            <div className="form-row">
-              <div className="form-group">
-                <label>Option A : Réseaux & Télécoms</label>
-                {FIT_OPTIONS_RESEAUX.map((label) => (
-                  <label key={label} style={checkboxRowStyle}>
-                    <input
-                      type="checkbox"
-                      checked={formData.options_reseaux.includes(label)}
-                      onChange={() => toggleOption('options_reseaux', label)}
-                    />
-                    {label}
-                  </label>
-                ))}
-                {customOptions('options_reseaux').map((label) => (
-                  <label key={label} style={checkboxRowStyle}>
-                    <input
-                      type="checkbox"
-                      checked
-                      onChange={() => toggleOption('options_reseaux', label)}
-                    />
-                    {label} <span style={{ color: '#888', fontSize: 12 }}>(ajoutée)</span>
-                  </label>
-                ))}
-                {renderCustomOptionInput('options_reseaux')}
-              </div>
-              <div className="form-group">
-                <label>Option D : Maintenance Informatique</label>
-                {FIT_OPTIONS_MAINTENANCE.map((label) => (
-                  <label key={label} style={checkboxRowStyle}>
-                    <input
-                      type="checkbox"
-                      checked={formData.options_maintenance.includes(label)}
-                      onChange={() => toggleOption('options_maintenance', label)}
-                    />
-                    {label}
-                  </label>
-                ))}
-                {customOptions('options_maintenance').map((label) => (
-                  <label key={label} style={checkboxRowStyle}>
-                    <input
-                      type="checkbox"
-                      checked
-                      onChange={() => toggleOption('options_maintenance', label)}
-                    />
-                    {label} <span style={{ color: '#888', fontSize: 12 }}>(ajoutée)</span>
-                  </label>
-                ))}
-                {renderCustomOptionInput('options_maintenance')}
-              </div>
+            <span className="form-section__eyebrow">1. Nature de la demande</span>
+            {renderCheckGrid('nature', FIT_NATURE_OPTIONS)}
+            <div className="form-group" style={{ marginTop: 10 }}>
+              <label>Description de la demande / problème signalé</label>
+              <textarea rows={3} value={formData.description_probleme} onChange={(e) => handleChange('description_probleme', e.target.value)} placeholder="Décrivez la demande ou le problème signalé..." />
             </div>
-            <div className="form-row">
+          </section>
+
+          <section className="form-section">
+            <span className="form-section__eyebrow">2. Équipement(s) / système(s) concerné(s)</span>
+            {renderCheckGrid('equipements', FIT_EQUIPEMENT_OPTIONS)}
+            <div className="form-row" style={{ marginTop: 10 }}>
               <div className="form-group">
                 <label>Marque / Modèle</label>
                 <input type="text" value={formData.marque_modele} onChange={(e) => handleChange('marque_modele', e.target.value)} />
               </div>
               <div className="form-group">
-                <label>N° Série</label>
+                <label>N° série / Inventaire</label>
                 <input type="text" value={formData.num_serie} onChange={(e) => handleChange('num_serie', e.target.value)} />
               </div>
+              <div className="form-group">
+                <label>Accessoires reçus</label>
+                <input type="text" value={formData.accessoires} onChange={(e) => handleChange('accessoires', e.target.value)} placeholder="Ex : câble d'alimentation, sacoche..." />
+              </div>
             </div>
-            <div className="form-row">
-              <div className="form-group">
-                <label>Système d'exploitation</label>
-                <SearchableSelect
-                  options={OS_OPTIONS}
-                  value={formData.systeme_exploitation}
-                  onChange={(value) => handleChange('systeme_exploitation', value)}
-                  placeholder="Windows / Linux / Autre"
-                  noOptionsText="Aucun système"
-                />
-              </div>
-              <div className="form-group">
-                <label>Vol. Données (Go)</label>
-                <input type="text" value={formData.vol_donnees} onChange={(e) => handleChange('vol_donnees', e.target.value)} placeholder="Ex : 500" />
-              </div>
+            <div className="form-group">
+              <label>État réception</label>
+              {renderRadioRow('etat_reception', FIT_ETAT_RECEPTION_OPTIONS)}
             </div>
           </section>
 
           <section className="form-section">
-            <span className="form-section__eyebrow">Mesures, tests qualité & diagnostic</span>
-            <div className="form-row">
-              <div className="form-group">
-                <label>Test Continuité / Recette</label>
-                <SearchableSelect
-                  options={TEST_OPTIONS}
-                  value={formData.test_continuite}
-                  onChange={(value) => handleChange('test_continuite', value)}
-                  placeholder="Conforme / Non conforme"
-                  noOptionsText="Aucun résultat"
-                />
-              </div>
-              <div className="form-group">
-                <label>Ping (ms)</label>
-                <input type="text" value={formData.ping} onChange={(e) => handleChange('ping', e.target.value)} placeholder="Ex : 12" />
-              </div>
-              <div className="form-group">
-                <label>Débit descendant (Mbps)</label>
-                <input type="text" value={formData.debit_desc} onChange={(e) => handleChange('debit_desc', e.target.value)} placeholder="Ex : 95" />
-              </div>
-              <div className="form-group">
-                <label>Débit montant (Mbps)</label>
-                <input type="text" value={formData.debit_mont} onChange={(e) => handleChange('debit_mont', e.target.value)} placeholder="Ex : 40" />
-              </div>
-            </div>
+            <span className="form-section__eyebrow">3. Diagnostic / constat technique</span>
             <div className="form-group">
-              <label>Description du problème / Symptômes constatés</label>
-              <textarea rows={3} value={formData.description_probleme} onChange={(e) => handleChange('description_probleme', e.target.value)} placeholder="Décrivez le problème constaté..." />
-            </div>
-            <div className="form-group">
-              <label>Travaux réalisés & Solutions apportées</label>
-              <textarea rows={3} value={formData.travaux_realises} onChange={(e) => handleChange('travaux_realises', e.target.value)} placeholder="Décrivez les travaux effectués..." />
+              <textarea rows={4} value={formData.diagnostic} onChange={(e) => handleChange('diagnostic', e.target.value)} placeholder="Constat technique détaillé... Les paragraphes seront respectés sur le PDF." />
             </div>
           </section>
 
           <section className="form-section">
-            <span className="form-section__eyebrow">Matériels / pièces de rechange remplacées</span>
+            <span className="form-section__eyebrow">4. Travaux effectués</span>
+            <div className="form-group">
+              <textarea rows={4} value={formData.travaux_realises} onChange={(e) => handleChange('travaux_realises', e.target.value)} placeholder="Décrivez les travaux effectués..." />
+            </div>
+          </section>
+
+          <section className="form-section">
+            <span className="form-section__eyebrow">5. Pièces / consommables / matériel utilisés ou remplacés</span>
             {(formData.materiels || []).map((m, index) => (
               <div className="form-row" key={index} style={{ alignItems: 'flex-end' }}>
                 <div className="form-group" style={{ flex: 3 }}>
-                  <label>Désignation / Référence composant</label>
+                  <label>Désignation</label>
                   <input type="text" value={m.designation || ''} onChange={(e) => updateMateriel(index, 'designation', e.target.value)} />
                 </div>
                 <div className="form-group" style={{ flex: 1 }}>
@@ -705,8 +627,12 @@ const Interventions = () => {
                   <input type="text" value={m.qte || ''} onChange={(e) => updateMateriel(index, 'qte', e.target.value)} />
                 </div>
                 <div className="form-group" style={{ flex: 1 }}>
-                  <label>Garantie (mois)</label>
-                  <input type="text" value={m.garantie || ''} onChange={(e) => updateMateriel(index, 'garantie', e.target.value)} />
+                  <label>État</label>
+                  <input type="text" value={m.etat || ''} onChange={(e) => updateMateriel(index, 'etat', e.target.value)} placeholder="Neuf / Réutilisé" />
+                </div>
+                <div className="form-group" style={{ flex: 2 }}>
+                  <label>Observation / Référence</label>
+                  <input type="text" value={m.ref || ''} onChange={(e) => updateMateriel(index, 'ref', e.target.value)} />
                 </div>
                 <button
                   type="button"
@@ -721,21 +647,80 @@ const Interventions = () => {
             ))}
             <button type="button" className="btn btn-secondary" onClick={addMateriel}>
               <Plus size={16} />
-              Ajouter un matériel
+              Ajouter une pièce / un matériel
             </button>
           </section>
 
           <section className="form-section">
-            <span className="form-section__eyebrow">Clôture</span>
+            <span className="form-section__eyebrow">6. Contrôles et tests après intervention</span>
+            {renderCheckGrid('tests', FIT_TESTS_OPTIONS)}
+          </section>
+
+          <section className="form-section">
+            <span className="form-section__eyebrow">7. Données, sauvegarde et sécurité</span>
+            <div className="form-group">
+              <label>Sauvegarde avant intervention</label>
+              {renderRadioRow('backup_before', FIT_BACKUP_OPTIONS)}
+            </div>
+            <div className="form-group">
+              <label>Données concernées</label>
+              {renderCheckGrid('donnees', FIT_DONNEES_OPTIONS)}
+              <input
+                type="text"
+                value={formData.donnees_autres}
+                onChange={(e) => handleChange('donnees_autres', e.target.value)}
+                placeholder="Autres données : préciser..."
+                style={{ marginTop: 6 }}
+              />
+            </div>
+            <div className="form-group">
+              <label>Sécurité</label>
+              {renderCheckGrid('securite', FIT_SECURITE_OPTIONS)}
+            </div>
+            <div className="form-group">
+              <label>Observation sur les données / la sécurité</label>
+              <textarea rows={3} value={formData.data_obs} onChange={(e) => handleChange('data_obs', e.target.value)} />
+            </div>
+          </section>
+
+          <section className="form-section">
+            <span className="form-section__eyebrow">8. État final de l'intervention</span>
             <div className="form-group">
               <label>Statut final</label>
-              <SearchableSelect
-                options={STATUT_OPTIONS}
-                value={formData.statut_final}
-                onChange={(value) => handleChange('statut_final', value)}
-                placeholder="Résolu / Partiellement résolu / Non résolu"
-                noOptionsText="Aucun statut"
-              />
+              {renderRadioRow('statut_final', FIT_ETAT_FINAL_OPTIONS)}
+            </div>
+            <div className="form-group">
+              <label>Équipement</label>
+              {renderRadioRow('equip_final', FIT_EQUIP_FINAL_OPTIONS)}
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>Fin de l'intervention</label>
+                <input type="date" value={formData.fin} onChange={(e) => handleChange('fin', e.target.value)} />
+              </div>
+              <div className="form-group">
+                <label>Durée</label>
+                <input type="text" value={formData.duree} onChange={(e) => handleChange('duree', e.target.value)} placeholder="Ex : 2h30" />
+              </div>
+              <div className="form-group">
+                <label>Prochaine action</label>
+                <input type="text" value={formData.prochaine_action} onChange={(e) => handleChange('prochaine_action', e.target.value)} placeholder="Ex : retour avec la pièce commandée" />
+              </div>
+            </div>
+          </section>
+
+          <section className="form-section">
+            <span className="form-section__eyebrow">9. Recommandations / travaux complémentaires</span>
+            <div className="form-group">
+              <textarea rows={3} value={formData.recommandations} onChange={(e) => handleChange('recommandations', e.target.value)} placeholder="Recommandations, travaux à prévoir..." />
+            </div>
+          </section>
+
+          <section className="form-section">
+            <span className="form-section__eyebrow">10. Validation du client / utilisateur</span>
+            <div className="form-group">
+              <label>Observation du client</label>
+              <textarea rows={3} value={formData.obs_client} onChange={(e) => handleChange('obs_client', e.target.value)} />
             </div>
           </section>
 

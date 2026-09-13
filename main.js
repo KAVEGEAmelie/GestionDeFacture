@@ -243,6 +243,7 @@ function initDatabase() {
       travaux_realises TEXT,
       materiels TEXT,
       statut_final TEXT,
+      details TEXT DEFAULT '{}',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -292,6 +293,33 @@ function initDatabase() {
     db.exec("ALTER TABLE factures ADD COLUMN date_versement_tva DATE");
   }
 
+  // Suivi des versements de TVA à l'OTR : lots de factures + paiements partiels
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tva_versements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      numero TEXT UNIQUE NOT NULL,
+      date DATE,
+      total_du REAL DEFAULT 0,
+      note TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS tva_versement_factures (
+      versement_id INTEGER NOT NULL,
+      facture_id INTEGER NOT NULL UNIQUE,
+      tva REAL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS tva_paiements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      versement_id INTEGER NOT NULL,
+      date DATE,
+      montant REAL DEFAULT 0,
+      quittance TEXT DEFAULT '',
+      mode TEXT DEFAULT '',
+      note TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
   // Migration : choix d'ajouter le cachet + signature sur la proforma.
   const proformaCols = db.prepare("PRAGMA table_info(proformas)").all().map((c) => c.name);
   if (!proformaCols.includes('avec_cachet')) {
@@ -310,6 +338,20 @@ function initDatabase() {
       db.exec(`ALTER TABLE ${table} ADD COLUMN section_titre TEXT DEFAULT ''`);
     }
   });
+
+  // Migration : description détaillée sur les lignes (prestations en texte long).
+  ['proforma_lignes', 'facture_lignes'].forEach((table) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (cols.length > 0 && !cols.includes('description')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN description TEXT DEFAULT ''`);
+    }
+  });
+
+  // Migration : détails étendus des fiches d'intervention (modèle V11).
+  const fitCols = db.prepare("PRAGMA table_info(interventions)").all().map((c) => c.name);
+  if (fitCols.length > 0 && !fitCols.includes('details')) {
+    db.exec("ALTER TABLE interventions ADD COLUMN details TEXT DEFAULT '{}'");
+  }
 
   // Migration : champs de soumission des appels d'offre (bordereau de prix,
   // lettre de soumission, enveloppes).
@@ -837,6 +879,7 @@ const interventionToRow = (data) => ([
   data.travaux_realises || '',
   JSON.stringify(Array.isArray(data.materiels) ? data.materiels : []),
   data.statut_final || '',
+  JSON.stringify(data.details && typeof data.details === 'object' && !Array.isArray(data.details) ? data.details : {}),
 ]);
 
 const parseInterventionRow = (row) => {
@@ -848,8 +891,17 @@ const parseInterventionRow = (row) => {
       return [];
     }
   };
+  let details = {};
+  try {
+    const parsed = JSON.parse(row.details);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) details = parsed;
+  } catch {
+    details = {};
+  }
   return {
     ...row,
+    ...details,
+    details,
     options_reseaux: safeParse(row.options_reseaux),
     options_maintenance: safeParse(row.options_maintenance),
     materiels: safeParse(row.materiels),
@@ -866,14 +918,19 @@ ipcMain.handle('interventions:getById', (event, id) => {
 });
 
 ipcMain.handle('interventions:create', (event, data) => {
-  // Numéro FIT- : saute les numéros déjà utilisés (évite les doublons après suppression)
-  const existing = db.prepare('SELECT COUNT(*) as count FROM interventions').get();
+  // Numéro AAAA/NNNNN-ITS (modèle V11) : reprend le plus grand numéro de l'année.
+  // Les anciens numéros FIT-XXXX restent valides sur les fiches existantes.
+  const year = new Date().getFullYear();
   const existeStmt = db.prepare('SELECT 1 FROM interventions WHERE numero = ?');
-  let compteur = existing.count || 0;
+  let compteur = year === 2026 ? 16 : 0;
+  db.prepare('SELECT numero FROM interventions').all().forEach((r) => {
+    const m = String(r.numero || '').match(/^(\d{4})\/(\d{5})-ITS$/);
+    if (m && Number(m[1]) === year) compteur = Math.max(compteur, Number(m[2]));
+  });
   let numero;
   do {
     compteur += 1;
-    numero = `FIT-${String(compteur).padStart(4, '0')}`;
+    numero = `${year}/${String(compteur).padStart(5, '0')}-ITS`;
   } while (existeStmt.get(numero));
 
   const result = db.prepare(`
@@ -881,8 +938,8 @@ ipcMain.handle('interventions:create', (event, data) => {
       client_nom, client_adresse, client_contact, interlocuteur,
       options_reseaux, options_maintenance, marque_modele, num_serie, systeme_exploitation, vol_donnees,
       test_continuite, ping, debit_desc, debit_mont, description_probleme, travaux_realises,
-      materiels, statut_final)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      materiels, statut_final, details)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(numero, ...interventionToRow(data));
   return { id: result.lastInsertRowid, numero };
 });
@@ -898,7 +955,7 @@ ipcMain.handle('interventions:update', (event, id, data) => {
       client_nom = ?, client_adresse = ?, client_contact = ?, interlocuteur = ?,
       options_reseaux = ?, options_maintenance = ?, marque_modele = ?, num_serie = ?, systeme_exploitation = ?, vol_donnees = ?,
       test_continuite = ?, ping = ?, debit_desc = ?, debit_mont = ?, description_probleme = ?, travaux_realises = ?,
-      materiels = ?, statut_final = ?, updated_at = CURRENT_TIMESTAMP
+      materiels = ?, statut_final = ?, details = ?, updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(...interventionToRow(data), id);
   return { success: true };
@@ -1074,8 +1131,8 @@ ipcMain.handle('proformas:create', (event, proforma) => {
     
     // Insérer les lignes
     const stmtLigne = db.prepare(`
-      INSERT INTO proforma_lignes (proforma_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO proforma_lignes (proforma_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre, description)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     data.lignes.forEach((ligne, index) => {
@@ -1088,7 +1145,8 @@ ipcMain.handle('proformas:create', (event, proforma) => {
         ligne.prix_unitaire,
         ligne.montant,
         index,
-        ligne.section_titre || ''
+        ligne.section_titre || '',
+        ligne.description || ''
       );
     });
     
@@ -1133,8 +1191,8 @@ ipcMain.handle('proformas:update', (event, id, data) => {
     // Remplacer les lignes
     db.prepare('DELETE FROM proforma_lignes WHERE proforma_id = ?').run(id);
     const stmtLigne = db.prepare(`
-      INSERT INTO proforma_lignes (proforma_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO proforma_lignes (proforma_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre, description)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     payload.lignes.forEach((ligne, index) => {
       stmtLigne.run(
@@ -1146,7 +1204,8 @@ ipcMain.handle('proformas:update', (event, id, data) => {
         ligne.prix_unitaire,
         ligne.montant,
         index,
-        ligne.section_titre || ''
+        ligne.section_titre || '',
+        ligne.description || ''
       );
     });
 
@@ -1234,8 +1293,8 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId, dateFacture) =
     
     // Insérer les lignes
     const stmtLigne = db.prepare(`
-      INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre, description)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     lignes.forEach((ligne, index) => {
@@ -1248,7 +1307,8 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId, dateFacture) =
         ligne.prix_unitaire,
         ligne.montant,
         index,
-        ligne.section_titre || ''
+        ligne.section_titre || '',
+        ligne.description || ''
       );
     });
     
@@ -1293,8 +1353,8 @@ ipcMain.handle('factures:update', (event, id, data) => {
     // Remplacer les lignes
     db.prepare('DELETE FROM facture_lignes WHERE facture_id = ?').run(id);
     const stmtLigne = db.prepare(`
-      INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre, description)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     payload.lignes.forEach((ligne, index) => {
       stmtLigne.run(
@@ -1306,7 +1366,8 @@ ipcMain.handle('factures:update', (event, id, data) => {
         ligne.prix_unitaire,
         ligne.montant,
         index,
-        ligne.section_titre || ''
+        ligne.section_titre || '',
+        ligne.description || ''
       );
     });
 
@@ -1358,7 +1419,7 @@ ipcMain.handle('factures:markUnpaid', (event, id) => {
   return { success: true };
 });
 
-// SUIVI DE LA TVA (OTR)
+// SUIVI DE LA TVA (OTR) — la TVA à verser à l'OTR vaut 50 % de la TVA collectée
 ipcMain.handle('tva:getStats', () => {
   const nonVersee = db.prepare(
     "SELECT COALESCE(SUM(tva), 0) as total, COUNT(*) as count FROM factures WHERE statut_paiement = 'payee' AND tva_versee = 0 AND tva > 0"
@@ -1367,52 +1428,95 @@ ipcMain.handle('tva:getStats', () => {
     "SELECT COALESCE(SUM(tva), 0) as total, COUNT(*) as count FROM factures WHERE tva_versee = 1 AND tva > 0"
   ).get();
 
-  // Factures payées dont la TVA n'est pas encore versée
+  // Factures payées dont la TVA n'est pas encore versée ni dans un lot en cours
   const aVerser = db.prepare(`
-    SELECT f.id, f.numero, f.date, f.date_paiement, f.tva, f.total_ttc, c.nom as client_nom
+    SELECT f.id, f.numero, f.date, f.date_paiement, f.tva, f.tva / 2.0 AS tva_a_verser, f.total_ttc, c.nom as client_nom
     FROM factures f
     LEFT JOIN clients c ON f.client_id = c.id
     WHERE f.statut_paiement = 'payee' AND f.tva_versee = 0 AND f.tva > 0
+      AND f.id NOT IN (SELECT facture_id FROM tva_versement_factures)
     ORDER BY f.date_paiement
   `).all();
 
   // Factures dont la TVA a été versée
   const verseesListe = db.prepare(`
-    SELECT f.id, f.numero, f.date, f.date_versement_tva, f.tva, f.total_ttc, c.nom as client_nom
+    SELECT f.id, f.numero, f.date, f.date_versement_tva, f.tva, f.tva / 2.0 AS tva_a_verser, f.total_ttc, c.nom as client_nom,
+      (SELECT v.numero FROM tva_versements v
+        JOIN tva_versement_factures vf ON vf.versement_id = v.id
+        WHERE vf.facture_id = f.id) AS numero_versement
     FROM factures f
     LEFT JOIN clients c ON f.client_id = c.id
     WHERE f.tva_versee = 1 AND f.tva > 0
     ORDER BY f.date_versement_tva DESC
   `).all();
 
+  // Lots de versement avec payé / reste / historique des paiements
+  const versements = db.prepare(`
+    SELECT v.id, v.numero, v.date, v.total_du, v.note,
+      COALESCE((SELECT SUM(p.montant) FROM tva_paiements p WHERE p.versement_id = v.id), 0) AS paye,
+      (SELECT COUNT(*) FROM tva_versement_factures vf WHERE vf.versement_id = v.id) AS nb_factures
+    FROM tva_versements v
+    ORDER BY v.id DESC
+  `).all().map((v) => ({
+    ...v,
+    reste: Math.max(0, v.total_du - v.paye),
+    solde: v.paye >= v.total_du - 0.5 ? 1 : 0,
+    factures: db.prepare(`
+      SELECT f.id, f.numero, f.tva, c.nom AS client_nom
+      FROM tva_versement_factures vf
+      JOIN factures f ON f.id = vf.facture_id
+      LEFT JOIN clients c ON f.client_id = c.id
+      WHERE vf.versement_id = ?
+    `).all(v.id),
+    paiements: db.prepare(
+      'SELECT id, date, montant, quittance, mode, note FROM tva_paiements WHERE versement_id = ? ORDER BY date, id'
+    ).all(v.id),
+  }));
+
   return {
     tvaNonVersee: nonVersee.total,
+    tvaAVerser: nonVersee.total / 2,
     nbNonVersee: nonVersee.count,
     tvaVersee: versee.total,
     nbVersee: versee.count,
     aVerser,
-    versees: verseesListe
+    versees: verseesListe,
+    versements
   };
 });
 
+// Crée un lot de versement OTR : dû = 50 % de la TVA des factures sélectionnées
 ipcMain.handle('tva:verser', (event, ids) => {
   if (!Array.isArray(ids) || ids.length === 0) {
     throw new Error('Aucune facture sélectionnée.');
   }
-  const dateVersement = new Date().toISOString().split('T')[0];
   const transaction = db.transaction((factureIds) => {
-    const stmt = db.prepare(
-      "UPDATE factures SET tva_versee = 1, date_versement_tva = ? WHERE id = ? AND statut_paiement = 'payee' AND tva_versee = 0"
-    );
-    let count = 0;
-    factureIds.forEach((id) => {
-      const res = stmt.run(dateVersement, id);
-      count += res.changes;
-    });
-    return count;
+    const sel = db.prepare(`
+      SELECT id, tva FROM factures
+      WHERE id = ? AND statut_paiement = 'payee' AND tva_versee = 0 AND tva > 0
+        AND id NOT IN (SELECT facture_id FROM tva_versement_factures)
+    `);
+    const rows = factureIds.map((id) => sel.get(id)).filter(Boolean);
+    if (rows.length === 0) {
+      throw new Error('Aucune facture éligible (déjà versée ou déjà dans un versement).');
+    }
+    const totalTva = rows.reduce((s, r) => s + (r.tva || 0), 0);
+    let cpt = db.prepare('SELECT COUNT(*) AS c FROM tva_versements').get().c || 0;
+    let numero;
+    do {
+      cpt += 1;
+      numero = `VT-${String(cpt).padStart(4, '0')}`;
+    } while (db.prepare('SELECT 1 FROM tva_versements WHERE numero = ?').get(numero));
+    const res = db.prepare(
+      'INSERT INTO tva_versements (numero, date, total_du) VALUES (?, ?, ?)'
+    ).run(numero, new Date().toISOString().split('T')[0], totalTva / 2);
+    const vid = Number(res.lastInsertRowid);
+    const ins = db.prepare('INSERT INTO tva_versement_factures (versement_id, facture_id, tva) VALUES (?, ?, ?)');
+    rows.forEach((r) => ins.run(vid, r.id, r.tva));
+    return { id: vid, numero, count: rows.length, totalDu: totalTva / 2 };
   });
-  const count = transaction(ids);
-  return { success: true, count };
+  const out = transaction(ids);
+  return { success: true, ...out };
 });
 
 ipcMain.handle('tva:annuler', (event, ids) => {
@@ -1420,9 +1524,12 @@ ipcMain.handle('tva:annuler', (event, ids) => {
     throw new Error('Aucune facture sélectionnée.');
   }
   const transaction = db.transaction((factureIds) => {
-    const stmt = db.prepare(
-      "UPDATE factures SET tva_versee = 0, date_versement_tva = NULL WHERE id = ? AND tva_versee = 1"
-    );
+    // Les factures gérées via un lot s'annulent par le lot, pas ici
+    const stmt = db.prepare(`
+      UPDATE factures SET tva_versee = 0, date_versement_tva = NULL
+      WHERE id = ? AND tva_versee = 1
+        AND id NOT IN (SELECT facture_id FROM tva_versement_factures)
+    `);
     let count = 0;
     factureIds.forEach((id) => {
       const res = stmt.run(id);
@@ -1432,6 +1539,69 @@ ipcMain.handle('tva:annuler', (event, ids) => {
   });
   const count = transaction(ids);
   return { success: true, count };
+});
+
+// Enregistre un paiement partiel ; lot soldé => factures marquées TVA versée
+ipcMain.handle('tva:ajouterPaiement', (event, versementId, paiement) => {
+  const v = db.prepare('SELECT * FROM tva_versements WHERE id = ?').get(versementId);
+  if (!v) throw new Error('Versement introuvable.');
+  const montant = Number(paiement && paiement.montant);
+  if (!montant || montant <= 0) throw new Error('Montant du paiement invalide.');
+  const datePaiement = (paiement && paiement.date) || new Date().toISOString().split('T')[0];
+  const transaction = db.transaction(() => {
+    db.prepare(
+      'INSERT INTO tva_paiements (versement_id, date, montant, quittance, mode, note) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(versementId, datePaiement, montant, paiement.quittance || '', paiement.mode || '', paiement.note || '');
+    const paye = db.prepare(
+      'SELECT COALESCE(SUM(montant), 0) AS t FROM tva_paiements WHERE versement_id = ?'
+    ).get(versementId).t;
+    const solde = paye >= v.total_du - 0.5;
+    if (solde) {
+      db.prepare(`
+        UPDATE factures SET tva_versee = 1, date_versement_tva = ?
+        WHERE id IN (SELECT facture_id FROM tva_versement_factures WHERE versement_id = ?)
+      `).run(datePaiement, versementId);
+    }
+    return { paye, reste: Math.max(0, v.total_du - paye), solde };
+  });
+  return { success: true, ...transaction() };
+});
+
+ipcMain.handle('tva:supprimerPaiement', (event, paiementId) => {
+  const p = db.prepare('SELECT * FROM tva_paiements WHERE id = ?').get(paiementId);
+  if (!p) throw new Error('Paiement introuvable.');
+  const transaction = db.transaction(() => {
+    db.prepare('DELETE FROM tva_paiements WHERE id = ?').run(paiementId);
+    const v = db.prepare('SELECT total_du FROM tva_versements WHERE id = ?').get(p.versement_id);
+    const paye = db.prepare(
+      'SELECT COALESCE(SUM(montant), 0) AS t FROM tva_paiements WHERE versement_id = ?'
+    ).get(p.versement_id).t;
+    if (v && paye < v.total_du - 0.5) {
+      db.prepare(`
+        UPDATE factures SET tva_versee = 0, date_versement_tva = NULL
+        WHERE id IN (SELECT facture_id FROM tva_versement_factures WHERE versement_id = ?)
+      `).run(p.versement_id);
+    }
+  });
+  transaction();
+  return { success: true };
+});
+
+// Supprime le lot : paiements effacés, factures de nouveau « à reverser »
+ipcMain.handle('tva:annulerVersement', (event, versementId) => {
+  const v = db.prepare('SELECT id FROM tva_versements WHERE id = ?').get(versementId);
+  if (!v) throw new Error('Versement introuvable.');
+  const transaction = db.transaction(() => {
+    db.prepare(`
+      UPDATE factures SET tva_versee = 0, date_versement_tva = NULL
+      WHERE id IN (SELECT facture_id FROM tva_versement_factures WHERE versement_id = ?)
+    `).run(versementId);
+    db.prepare('DELETE FROM tva_paiements WHERE versement_id = ?').run(versementId);
+    db.prepare('DELETE FROM tva_versement_factures WHERE versement_id = ?').run(versementId);
+    db.prepare('DELETE FROM tva_versements WHERE id = ?').run(versementId);
+  });
+  transaction();
+  return { success: true };
 });
 
 // APPELS D'OFFRE
@@ -1830,8 +2000,8 @@ ipcMain.handle('bordereaux:createFromProforma', (event, proformaId, createFactur
 
       const factureLignes = db.prepare('SELECT * FROM proforma_lignes WHERE proforma_id = ?').all(pId);
       const factLigneStmt = db.prepare(`
-        INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre, description)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       factureLignes.forEach((ligne, index) => {
         factLigneStmt.run(
@@ -1843,7 +2013,8 @@ ipcMain.handle('bordereaux:createFromProforma', (event, proformaId, createFactur
           ligne.prix_unitaire,
           ligne.montant,
           index,
-          ligne.section_titre || ''
+          ligne.section_titre || '',
+          ligne.description || ''
         );
       });
 

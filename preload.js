@@ -76,7 +76,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   tva: {
     getStats: () => ipcRenderer.invoke('tva:getStats'),
     verser: (ids) => ipcRenderer.invoke('tva:verser', ids),
-    annuler: (ids) => ipcRenderer.invoke('tva:annuler', ids)
+    annuler: (ids) => ipcRenderer.invoke('tva:annuler', ids),
+    ajouterPaiement: (versementId, paiement) => ipcRenderer.invoke('tva:ajouterPaiement', versementId, paiement),
+    supprimerPaiement: (paiementId) => ipcRenderer.invoke('tva:supprimerPaiement', paiementId),
+    annulerVersement: (versementId) => ipcRenderer.invoke('tva:annulerVersement', versementId)
   },
   // ATTESTATIONS DE SERVICE FAIT
   attestations: {

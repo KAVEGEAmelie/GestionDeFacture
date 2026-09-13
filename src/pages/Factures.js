@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Eye, Trash2, FileCheck, Truck, Printer, Download, CheckCircle, RotateCcw, Edit2, Plus, FolderPlus } from 'lucide-react';
+import { Eye, Trash2, FileCheck, Truck, Printer, Download, CheckCircle, RotateCcw, Edit2, Plus, FolderPlus, AlignLeft } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
@@ -35,6 +35,7 @@ const Factures = () => {
   const [selectedFacture, setSelectedFacture] = useState(null);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [editingFacture, setEditingFacture] = useState(null);
+  const [openDescRows, setOpenDescRows] = useState({});
   const [editForm, setEditForm] = useState({
     date: '',
     objet: '',
@@ -95,6 +96,7 @@ const Factures = () => {
       lignesForm.push({
         produit_id: l.produit_id,
         designation: l.designation,
+        description: l.description || '',
         unite: l.unite,
         quantite: l.quantite,
         prix_unitaire: l.prix_unitaire,
@@ -108,6 +110,7 @@ const Factures = () => {
       remise: full.remise || 0,
       lignes: lignesForm
     });
+    setOpenDescRows({});
     setEditModalOpen(true);
   };
 
@@ -130,7 +133,7 @@ const Factures = () => {
   const editAddLigne = () => {
     setEditForm((prev) => ({
       ...prev,
-      lignes: [...prev.lignes, { produit_id: null, designation: '', unite: 'Unité', quantite: 1, prix_unitaire: 0, montant: 0 }]
+      lignes: [...prev.lignes, { produit_id: null, designation: '', description: '', unite: 'Unité', quantite: 1, prix_unitaire: 0, montant: 0 }]
     }));
   };
 
@@ -174,6 +177,7 @@ const Factures = () => {
       lignes.push({
         produit_id: Number.isInteger(l.produit_id) ? l.produit_id : null,
         designation: l.designation,
+        description: l.description || '',
         unite: l.unite,
         quantite: parseFloat(l.quantite) || 0,
         prix_unitaire: parseFloat(l.prix_unitaire) || 0,
@@ -701,11 +705,32 @@ const Factures = () => {
                         return (
                           <tr key={index}>
                             <td>
-                              <input
-                                type="text"
-                                value={ligne.designation}
-                                onChange={(e) => editLigneChange(index, 'designation', e.target.value)}
-                              />
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                <input
+                                  type="text"
+                                  value={ligne.designation}
+                                  onChange={(e) => editLigneChange(index, 'designation', e.target.value)}
+                                />
+                                {!(openDescRows[index] || String(ligne.description || '').trim()) && (
+                                  <button
+                                    type="button"
+                                    title="Ajouter une description détaillée"
+                                    onClick={() => setOpenDescRows((p) => ({ ...p, [index]: true }))}
+                                    style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748b', padding: 4, flexShrink: 0 }}
+                                  >
+                                    <AlignLeft size={15} />
+                                  </button>
+                                )}
+                              </div>
+                              {(openDescRows[index] || String(ligne.description || '').trim()) ? (
+                                <textarea
+                                  value={ligne.description || ''}
+                                  onChange={(e) => editLigneChange(index, 'description', e.target.value)}
+                                  placeholder="Description détaillée (optionnel)"
+                                  rows={2}
+                                  style={{ marginTop: 4, width: '100%', fontSize: '0.8rem', resize: 'vertical', border: '1px solid #e5e7eb', borderRadius: 6, padding: '0.4rem 0.6rem', color: 'inherit', background: '#fff' }}
+                                />
+                              ) : null}
                             </td>
                             <td>
                               <input
@@ -902,7 +927,14 @@ const Factures = () => {
               <tbody>
                 {selectedFacture.lignes.map((ligne, index) => (
                   <tr key={index}>
-                    <td>{ligne.designation}</td>
+                    <td>
+                      {ligne.designation}
+                      {ligne.description ? (
+                        <div style={{ whiteSpace: 'pre-line', color: '#64748b', fontSize: '0.8rem', marginTop: 2 }}>
+                          {ligne.description}
+                        </div>
+                      ) : null}
+                    </td>
                     <td>{ligne.unite}</td>
                     <td>{ligne.quantite}</td>
                     <td>{formatPrice(ligne.prix_unitaire)}</td>

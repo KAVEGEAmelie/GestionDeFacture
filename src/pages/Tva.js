@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Landmark, Wallet, CheckCircle, Send, FileDown, FileSpreadsheet, Printer, RotateCcw } from 'lucide-react';
+import { Landmark, Wallet, CheckCircle, Send, FileDown, FileSpreadsheet, Printer, RotateCcw, Plus, Trash2, ChevronDown, ChevronUp, Coins } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
+import Modal from '../components/modals/Modal';
 import { inDateRange, inNumberRange } from '../utils/dateFilters';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
@@ -22,14 +23,19 @@ const Tva = () => {
   const confirm = useConfirm();
   const [stats, setStats] = useState({
     tvaNonVersee: 0,
+    tvaAVerser: 0,
     nbNonVersee: 0,
     tvaVersee: 0,
     nbVersee: 0,
     aVerser: [],
-    versees: []
+    versees: [],
+    versements: []
   });
   const [selected, setSelected] = useState([]);
   const [activeTab, setActiveTab] = useState('a_verser');
+  const [paiementModal, setPaiementModal] = useState(null);
+  const [paiementForm, setPaiementForm] = useState({ montant: '', date: '', quittance: '', mode: '', note: '' });
+  const [expandedVersements, setExpandedVersements] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -158,18 +164,91 @@ const Tva = () => {
       return;
     }
     const ok = await confirm({
-      title: 'Verser la TVA à l\'OTR',
-      message: `Confirmer le versement à l'OTR de la TVA de ${selected.length} facture(s), soit ${formatFCFA(totalSelectionne)} ? Cette action marquera ces TVA comme versées.`,
-      confirmText: 'Confirmer le versement',
+      title: 'Créer un versement OTR',
+      message: `Créer un versement OTR pour ${selected.length} facture(s) ? TVA collectée : ${formatFCFA(totalSelectionne)} — à verser à l'OTR (50 %) : ${formatFCFA(totalSelectionne / 2)}. Vous pourrez ensuite enregistrer vos paiements au fur et à mesure.`,
+      confirmText: 'Créer le versement',
     });
     if (!ok) return;
     try {
       const res = await window.electronAPI.tva.verser(selected);
-      toast.success(`TVA versée pour ${res.count} facture(s).`);
+      toast.success(`Versement ${res.numero} créé — à payer à l'OTR : ${formatFCFA(res.totalDu)}.`);
+      setActiveTab('versements');
       loadStats();
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Erreur lors du versement de la TVA.'));
+      toast.error(getErrorMessage(error, 'Erreur lors de la création du versement.'));
     }
+  };
+
+  const openPaiement = (v) => {
+    setPaiementForm({
+      montant: String(Math.round(v.reste) || ''),
+      date: new Date().toISOString().split('T')[0],
+      quittance: '',
+      mode: '',
+      note: '',
+    });
+    setPaiementModal(v);
+  };
+
+  const handleAjouterPaiement = async (e) => {
+    e.preventDefault();
+    const montant = Number(paiementForm.montant);
+    if (!montant || montant <= 0) {
+      toast.error('Saisissez un montant valide.');
+      return;
+    }
+    try {
+      const res = await window.electronAPI.tva.ajouterPaiement(paiementModal.id, { ...paiementForm, montant });
+      toast.success(
+        res.solde
+          ? `Versement ${paiementModal.numero} soldé — TVA marquée comme versée.`
+          : `Paiement enregistré. Reste à payer : ${formatFCFA(res.reste)}.`
+      );
+      setPaiementModal(null);
+      loadStats();
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Erreur lors de l'enregistrement du paiement."));
+    }
+  };
+
+  const handleSupprimerPaiement = async (v, p) => {
+    const ok = await confirm({
+      title: 'Supprimer ce paiement',
+      message: `Supprimer le paiement de ${formatFCFA(p.montant)} du ${formatDate(p.date)} sur le versement ${v.numero} ?`,
+      confirmText: 'Supprimer',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await window.electronAPI.tva.supprimerPaiement(p.id);
+      toast.success('Paiement supprimé.');
+      loadStats();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la suppression du paiement.'));
+    }
+  };
+
+  const handleAnnulerLot = async (v) => {
+    const ok = await confirm({
+      title: 'Annuler le versement',
+      message: `Annuler le versement ${v.numero} (dû : ${formatFCFA(v.total_du)}, déjà payé : ${formatFCFA(v.paye)}) ? Les paiements enregistrés seront effacés et les factures repasseront dans « TVA à reverser ».`,
+      confirmText: 'Annuler le versement',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await window.electronAPI.tva.annulerVersement(v.id);
+      toast.success(`Versement ${v.numero} annulé.`);
+      loadStats();
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Erreur lors de l'annulation du versement."));
+    }
+  };
+
+  const toggleExpand = (id) => {
+    setExpandedVersements((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
   };
 
   const handleAnnulerVersement = async (facture) => {
@@ -288,9 +367,20 @@ const Tva = () => {
             <Wallet size={24} color="#f59e0b" />
           </div>
           <div className="stat-content">
-            <h3 className="stat-label">TVA à reverser à l'OTR</h3>
+            <h3 className="stat-label">TVA collectée non versée</h3>
             <p className="stat-value" style={{ fontSize: '1.4rem' }}>{formatFCFA(stats.tvaNonVersee)}</p>
             <small style={{ color: '#6b7280' }}>{stats.nbNonVersee} facture(s) payée(s)</small>
+          </div>
+        </div>
+
+        <div className="stat-card">
+          <div className="stat-icon" style={{ backgroundColor: '#fee2e2' }}>
+            <Coins size={24} color="#dc2626" />
+          </div>
+          <div className="stat-content">
+            <h3 className="stat-label">TVA à verser (50 %)</h3>
+            <p className="stat-value" style={{ fontSize: '1.4rem' }}>{formatFCFA(stats.tvaNonVersee / 2)}</p>
+            <small style={{ color: '#6b7280' }}>la moitié de la TVA collectée</small>
           </div>
         </div>
 
@@ -366,6 +456,12 @@ const Tva = () => {
             TVA à reverser ({stats.nbNonVersee})
           </button>
           <button
+            className={`tva-tab ${activeTab === 'versements' ? 'active' : ''}`}
+            onClick={() => setActiveTab('versements')}
+          >
+            Versements OTR ({(stats.versements || []).filter((v) => !v.solde).length})
+          </button>
+          <button
             className={`tva-tab ${activeTab === 'versee' ? 'active' : ''}`}
             onClick={() => setActiveTab('versee')}
           >
@@ -392,11 +488,11 @@ const Tva = () => {
             {sortedAVerser.length > 0 && (
               <div className="tva-actions-bar">
                 <span>
-                  {selected.length} sélectionnée(s) — TVA : <strong>{formatFCFA(totalSelectionne)}</strong>
+                  {selected.length} sélectionnée(s) — TVA : <strong>{formatFCFA(totalSelectionne)}</strong> — à verser (50 %) : <strong style={{ color: '#dc2626' }}>{formatFCFA(totalSelectionne / 2)}</strong>
                 </span>
                 <button className="btn btn-primary btn-sm" onClick={handleVerser} disabled={selected.length === 0}>
                   <Send size={16} />
-                  Verser à l'OTR
+                  Créer un versement OTR
                 </button>
               </div>
             )}
@@ -416,12 +512,13 @@ const Tva = () => {
                     <th onClick={() => toggleSortAVerser('date_paiement')} style={{ cursor: 'pointer' }}>Date paiement{sortMarkAVerser('date_paiement')}</th>
                     <th onClick={() => toggleSortAVerser('total_ttc')} style={{ cursor: 'pointer' }}>Montant TTC{sortMarkAVerser('total_ttc')}</th>
                     <th onClick={() => toggleSortAVerser('tva')} style={{ cursor: 'pointer' }}>TVA{sortMarkAVerser('tva')}</th>
+                    <th>TVA à verser (50 %)</th>
                   </tr>
                 </thead>
                 <tbody>
                   {sortedAVerser.length === 0 ? (
                     <tr>
-                      <td colSpan="6" className="empty-state">
+                      <td colSpan="7" className="empty-state">
                         Aucune TVA en attente de versement
                       </td>
                     </tr>
@@ -439,7 +536,8 @@ const Tva = () => {
                         <td>{f.client_nom}</td>
                         <td>{formatDate(f.date_paiement)}</td>
                         <td>{formatFCFA(f.total_ttc)}</td>
-                        <td className="font-semibold">{formatFCFA(f.tva)}</td>
+                        <td>{formatFCFA(f.tva)}</td>
+                        <td className="font-semibold" style={{ color: '#dc2626' }}>{formatFCFA(f.tva / 2)}</td>
                       </tr>
                     ))
                   )}
@@ -447,6 +545,140 @@ const Tva = () => {
               </table>
             </div>
           </>
+        ) : activeTab === 'versements' ? (
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th style={{ width: '36px' }}></th>
+                  <th>N° Versement</th>
+                  <th>Date</th>
+                  <th>Factures</th>
+                  <th>Total dû (50 %)</th>
+                  <th>Payé</th>
+                  <th>Reste</th>
+                  <th>Statut</th>
+                  <th style={{ width: '220px' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(stats.versements || []).length === 0 ? (
+                  <tr>
+                    <td colSpan="9" className="empty-state">
+                      Aucun versement OTR. Sélectionnez des factures dans « TVA à reverser » puis créez un versement.
+                    </td>
+                  </tr>
+                ) : (
+                  stats.versements.map((v) => (
+                    <React.Fragment key={v.id}>
+                      <tr>
+                        <td>
+                          <button
+                            className="btn-icon"
+                            title={expandedVersements.includes(v.id) ? 'Replier' : 'Voir le détail'}
+                            onClick={() => toggleExpand(v.id)}
+                          >
+                            {expandedVersements.includes(v.id) ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                          </button>
+                        </td>
+                        <td className="font-semibold">{v.numero}</td>
+                        <td>{formatDate(v.date)}</td>
+                        <td>{v.nb_factures}</td>
+                        <td>{formatFCFA(v.total_du)}</td>
+                        <td style={{ color: '#10b981' }}>{formatFCFA(v.paye)}</td>
+                        <td className="font-semibold" style={{ color: v.reste > 0 ? '#dc2626' : '#10b981' }}>{formatFCFA(v.reste)}</td>
+                        <td>
+                          <span
+                            style={{
+                              padding: '3px 10px',
+                              borderRadius: 12,
+                              fontSize: 12,
+                              fontWeight: 600,
+                              backgroundColor: v.solde ? '#dcfce7' : v.paye > 0 ? '#fef3c7' : '#fee2e2',
+                              color: v.solde ? '#166534' : v.paye > 0 ? '#92400e' : '#991b1b',
+                            }}
+                          >
+                            {v.solde ? 'Soldé' : v.paye > 0 ? 'Partiellement payé' : 'Non payé'}
+                          </span>
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            {!v.solde && (
+                              <button className="btn btn-primary btn-sm" onClick={() => openPaiement(v)} title="Enregistrer un paiement à l'OTR">
+                                <Plus size={14} />
+                                Paiement
+                              </button>
+                            )}
+                            <button className="btn btn-secondary btn-sm" onClick={() => handleAnnulerLot(v)} title="Annuler ce versement (les factures redeviennent à reverser)">
+                              <RotateCcw size={14} />
+                              Annuler
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                      {expandedVersements.includes(v.id) && (
+                        <tr>
+                          <td colSpan="9" style={{ backgroundColor: '#f9fafb', padding: '12px 18px' }}>
+                            <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
+                              <div style={{ minWidth: 260 }}>
+                                <strong style={{ fontSize: 13 }}>Factures du lot</strong>
+                                <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 13 }}>
+                                  {(v.factures || []).map((f) => (
+                                    <li key={f.id}>
+                                      {f.numero} — {f.client_nom || '-'} — TVA : {formatFCFA(f.tva)} (à verser : {formatFCFA(f.tva / 2)})
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                              <div style={{ flex: 1, minWidth: 320 }}>
+                                <strong style={{ fontSize: 13 }}>Historique des paiements à l'OTR</strong>
+                                {(v.paiements || []).length === 0 ? (
+                                  <p style={{ margin: '6px 0 0', fontSize: 13, color: '#6b7280' }}>Aucun paiement enregistré pour le moment.</p>
+                                ) : (
+                                  <table style={{ marginTop: 6, fontSize: 13, borderCollapse: 'collapse', width: '100%' }}>
+                                    <thead>
+                                      <tr style={{ textAlign: 'left', color: '#6b7280' }}>
+                                        <th style={{ padding: '4px 8px' }}>Date</th>
+                                        <th style={{ padding: '4px 8px' }}>Montant</th>
+                                        <th style={{ padding: '4px 8px' }}>Quittance</th>
+                                        <th style={{ padding: '4px 8px' }}>Mode</th>
+                                        <th style={{ padding: '4px 8px' }}>Note</th>
+                                        <th></th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {v.paiements.map((p) => (
+                                        <tr key={p.id} style={{ borderTop: '1px solid #e5e7eb' }}>
+                                          <td style={{ padding: '4px 8px' }}>{formatDate(p.date)}</td>
+                                          <td style={{ padding: '4px 8px', fontWeight: 600 }}>{formatFCFA(p.montant)}</td>
+                                          <td style={{ padding: '4px 8px' }}>{p.quittance || '-'}</td>
+                                          <td style={{ padding: '4px 8px' }}>{p.mode || '-'}</td>
+                                          <td style={{ padding: '4px 8px' }}>{p.note || '-'}</td>
+                                          <td style={{ padding: '4px 8px' }}>
+                                            <button
+                                              className="btn-icon btn-icon-danger"
+                                              title="Supprimer ce paiement"
+                                              onClick={() => handleSupprimerPaiement(v, p)}
+                                            >
+                                              <Trash2 size={14} />
+                                            </button>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <div className="table-container">
             <table className="data-table">
@@ -476,14 +708,20 @@ const Tva = () => {
                       <td>{formatFCFA(f.total_ttc)}</td>
                       <td className="font-semibold">{formatFCFA(f.tva)}</td>
                       <td>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => handleAnnulerVersement(f)}
-                          title="Annuler ce versement (la TVA redevient à reverser)"
-                        >
-                          <RotateCcw size={14} />
-                          Annuler
-                        </button>
+                        {f.numero_versement ? (
+                          <span style={{ fontSize: 13, color: '#6b7280' }} title="Gérée via ce versement — annulez le versement pour revenir en arrière">
+                            {f.numero_versement}
+                          </span>
+                        ) : (
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => handleAnnulerVersement(f)}
+                            title="Annuler ce versement (la TVA redevient à reverser)"
+                          >
+                            <RotateCcw size={14} />
+                            Annuler
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))
@@ -493,6 +731,83 @@ const Tva = () => {
           </div>
         )}
       </div>
+
+      <Modal
+        isOpen={!!paiementModal}
+        onClose={() => setPaiementModal(null)}
+        title={paiementModal ? `Paiement OTR — ${paiementModal.numero}` : ''}
+        size="small"
+      >
+        {paiementModal && (
+          <form onSubmit={handleAjouterPaiement} className="form">
+            <p style={{ margin: '0 0 12px', fontSize: 14 }}>
+              Total dû : <strong>{formatFCFA(paiementModal.total_du)}</strong> — déjà payé : <strong style={{ color: '#10b981' }}>{formatFCFA(paiementModal.paye)}</strong> — reste : <strong style={{ color: '#dc2626' }}>{formatFCFA(paiementModal.reste)}</strong>
+            </p>
+            <div className="form-row">
+              <div className="form-group">
+                <label>Montant payé (FCFA) *</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={paiementForm.montant}
+                  onChange={(e) => setPaiementForm((p) => ({ ...p, montant: e.target.value }))}
+                  required
+                  autoFocus
+                />
+              </div>
+              <div className="form-group">
+                <label>Date du paiement</label>
+                <input
+                  type="date"
+                  value={paiementForm.date}
+                  onChange={(e) => setPaiementForm((p) => ({ ...p, date: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>N° de quittance OTR</label>
+                <input
+                  type="text"
+                  value={paiementForm.quittance}
+                  onChange={(e) => setPaiementForm((p) => ({ ...p, quittance: e.target.value }))}
+                  placeholder="Ex : Q-2026-004521"
+                />
+              </div>
+              <div className="form-group">
+                <label>Mode de paiement</label>
+                <select
+                  value={paiementForm.mode}
+                  onChange={(e) => setPaiementForm((p) => ({ ...p, mode: e.target.value }))}
+                >
+                  <option value="">-- Choisir --</option>
+                  <option value="Espèces">Espèces</option>
+                  <option value="Chèque">Chèque</option>
+                  <option value="Virement">Virement</option>
+                  <option value="Mobile Money">Mobile Money</option>
+                </select>
+              </div>
+            </div>
+            <div className="form-group">
+              <label>Note</label>
+              <input
+                type="text"
+                value={paiementForm.note}
+                onChange={(e) => setPaiementForm((p) => ({ ...p, note: e.target.value }))}
+                placeholder="Commentaire libre..."
+              />
+            </div>
+            <div className="form-actions">
+              <button type="button" className="btn btn-secondary" onClick={() => setPaiementModal(null)}>
+                Annuler
+              </button>
+              <button type="submit" className="btn btn-primary">
+                Enregistrer le paiement
+              </button>
+            </div>
+          </form>
+        )}
+      </Modal>
     </div>
   );
 };

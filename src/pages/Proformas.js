@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Plus, Eye, Trash2, FileText, DollarSign, Printer, Download, PackagePlus, Edit2, X, Truck, Stamp, Percent, FolderPlus, Copy } from 'lucide-react';
+import { Plus, Eye, Trash2, FileText, DollarSign, Printer, Download, PackagePlus, Edit2, X, Truck, Stamp, Percent, FolderPlus, Copy, AlignLeft } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
@@ -39,10 +39,13 @@ const Proformas = () => {
   const [editingProforma, setEditingProforma] = useState(null);
   const [addProductModalOpen, setAddProductModalOpen] = useState(false);
   const [showLigneForm, setShowLigneForm] = useState(false);
+  const [showLigneDesc, setShowLigneDesc] = useState(false);
+  const [openDescRows, setOpenDescRows] = useState({});
   const [ligneFormData, setLigneFormData] = useState({
     produit_id: '',
     produit_search: '',
     designation: '',
+    description: '',
     unite: 'Unité',
     quantite: 1,
     prix_unitaire: '',
@@ -111,6 +114,7 @@ const Proformas = () => {
         produit_id: '',
         produit_search: l.designation || '',
         designation: l.designation || '',
+        description: '',
         unite: l.unite || 'Unité',
         quantite: Number(l.quantite) || 0,
         prix_unitaire: '',
@@ -135,10 +139,12 @@ const Proformas = () => {
   };
 
   const resetLigneForm = () => {
+    setShowLigneDesc(false);
     setLigneFormData({
       produit_id: '',
       produit_search: '',
       designation: '',
+      description: '',
       unite: 'Unité',
       quantite: 1,
       prix_unitaire: '',
@@ -166,6 +172,7 @@ const Proformas = () => {
         updated.designation = produit.designation;
         updated.unite = produit.unite;
         updated.prix_unitaire = produit.prix_unitaire || '';
+        if (produit.description) updated.description = produit.description;
       }
     }
 
@@ -178,6 +185,7 @@ const Proformas = () => {
         updated.designation = produit.designation;
         updated.unite = produit.unite;
         updated.prix_unitaire = produit.prix_unitaire || '';
+        if (produit.description) updated.description = produit.description;
       } else {
         updated.produit_id = '';
       }
@@ -201,6 +209,7 @@ const Proformas = () => {
         produit_id: ligneFormData.produit_id ? parseInt(ligneFormData.produit_id) : '',
         produit_search: ligneFormData.produit_search || '',
         designation: ligneFormData.designation,
+        description: ligneFormData.description || '',
         unite: ligneFormData.unite,
         quantite,
         prix_unitaire: prixUnitaire,
@@ -324,6 +333,7 @@ const Proformas = () => {
       lignes: lignesAplaties.map(l => ({
         produit_id: parseInt(l.produit_id),
         designation: l.designation,
+        description: l.description || '',
         unite: l.unite,
         quantite: parseFloat(l.quantite),
         prix_unitaire: parseFloat(l.prix_unitaire),
@@ -415,6 +425,7 @@ const Proformas = () => {
           return produit ? produit.designation : (l.designation || '');
         })(),
         designation: l.designation,
+        description: l.description || '',
         unite: l.unite,
         quantite: l.quantite,
         prix_unitaire: l.prix_unitaire,
@@ -453,6 +464,7 @@ const Proformas = () => {
           return produit ? produit.designation : (l.designation || '');
         })(),
         designation: l.designation,
+        description: l.description || '',
         unite: l.unite,
         quantite: l.quantite,
         prix_unitaire: l.prix_unitaire,
@@ -515,6 +527,11 @@ const Proformas = () => {
 
   const handlePrint = async (proforma) => {
     const fullProforma = await window.electronAPI.proformas.getById(proforma.id);
+    if (!fullProforma) {
+      toast.error('Proforma introuvable. La liste va être actualisée.');
+      loadData();
+      return;
+    }
     const withCachet = fullProforma.avec_cachet === 1;
     const doc = await generateProformaPDF(fullProforma, parametres, { withCachet });
     doc.autoPrint();
@@ -523,6 +540,11 @@ const Proformas = () => {
 
   const handleExport = async (proforma) => {
     const fullProforma = await window.electronAPI.proformas.getById(proforma.id);
+    if (!fullProforma) {
+      toast.error('Proforma introuvable. La liste va être actualisée.');
+      loadData();
+      return;
+    }
     const withCachet = fullProforma.avec_cachet === 1;
     const doc = await generateProformaPDF(fullProforma, parametres, { withCachet });
     doc.save(`Proforma_${fullProforma.numero.replace(/\//g, '-')}.pdf`);
@@ -546,6 +568,7 @@ const Proformas = () => {
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingProforma(null);
+    setOpenDescRows({});
   };
 
   const formatPrice = (price) => {
@@ -989,6 +1012,31 @@ const Proformas = () => {
                     />
                   </div>
 
+                  <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                    {!(showLigneDesc || String(ligneFormData.description || '').trim()) ? (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        style={{ width: 'fit-content' }}
+                        onClick={() => setShowLigneDesc(true)}
+                      >
+                        <AlignLeft size={14} />
+                        Ajouter une description détaillée
+                      </button>
+                    ) : (
+                      <>
+                        <label>Description détaillée (optionnel)</label>
+                        <textarea
+                          value={ligneFormData.description}
+                          onChange={(e) => handleLigneFormChange('description', e.target.value)}
+                          rows={4}
+                          autoFocus
+                          placeholder={"Caractéristiques, contenu de la prestation… Chaque retour à la ligne sera respecté sur le PDF.\nEx :\nHPE ProLiant ML350 Gen11\nIntel Xeon-Gold 5515+ 3.2GHz 8-core\nDéploiement et migration des anciennes données"}
+                        />
+                      </>
+                    )}
+                  </div>
+
                   <div className="form-group">
                     <label>Unité</label>
                     <input
@@ -1114,11 +1162,32 @@ const Proformas = () => {
                           />
                         </td>
                         <td>
-                          <input
-                            type="text"
-                            value={ligne.designation}
-                            onChange={(e) => handleLigneChange(index, 'designation', e.target.value)}
-                          />
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <input
+                              type="text"
+                              value={ligne.designation}
+                              onChange={(e) => handleLigneChange(index, 'designation', e.target.value)}
+                            />
+                            {!(openDescRows[index] || String(ligne.description || '').trim()) && (
+                              <button
+                                type="button"
+                                title="Ajouter une description détaillée"
+                                onClick={() => setOpenDescRows((p) => ({ ...p, [index]: true }))}
+                                style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748b', padding: 4, flexShrink: 0 }}
+                              >
+                                <AlignLeft size={15} />
+                              </button>
+                            )}
+                          </div>
+                          {(openDescRows[index] || String(ligne.description || '').trim()) ? (
+                            <textarea
+                              value={ligne.description || ''}
+                              onChange={(e) => handleLigneChange(index, 'description', e.target.value)}
+                              placeholder="Description détaillée (optionnel)"
+                              rows={2}
+                              style={{ marginTop: 4, width: '100%', fontSize: '0.8rem', resize: 'vertical', border: '1px solid #e5e7eb', borderRadius: 6, padding: '0.4rem 0.6rem', color: 'inherit', background: '#fff' }}
+                            />
+                          ) : null}
                         </td>
                         <td>
                           <input
@@ -1247,7 +1316,14 @@ const Proformas = () => {
               <tbody>
                 {selectedProforma.lignes.map((ligne, index) => (
                   <tr key={index}>
-                    <td>{ligne.designation}</td>
+                    <td>
+                      {ligne.designation}
+                      {ligne.description ? (
+                        <div style={{ whiteSpace: 'pre-line', color: '#64748b', fontSize: '0.8rem', marginTop: 2 }}>
+                          {ligne.description}
+                        </div>
+                      ) : null}
+                    </td>
                     <td>{ligne.unite}</td>
                     <td>{ligne.quantite}</td>
                     <td>{formatPrice(ligne.prix_unitaire)}</td>

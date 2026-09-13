@@ -24,6 +24,141 @@ const sectionsOK = {
   bordereau_lignes: hasCol('bordereau_lignes', 'section_titre'),
 };
 
+// `--proformas-desc` : insère uniquement 4 proformas d'exemple avec descriptions détaillées de lignes
+if (process.argv.includes('--proformas-desc')) {
+  if (!hasCol('proforma_lignes', 'description')) {
+    db.exec("ALTER TABLE proforma_lignes ADD COLUMN description TEXT DEFAULT ''");
+  }
+  const clientsRows = db.prepare('SELECT id, nom FROM clients ORDER BY id').all();
+  if (clientsRows.length === 0) {
+    console.error("Aucun client dans la base : lancez d'abord le seed complet.");
+    process.exit(1);
+  }
+  const getCpt = (cle) => {
+    const r = db.prepare('SELECT valeur FROM parametres WHERE cle = ?').get(cle);
+    return r ? parseInt(r.valeur, 10) || 0 : 0;
+  };
+  const setCpt = (cle, val) =>
+    db.prepare('INSERT INTO parametres (cle, valeur) VALUES (?, ?) ON CONFLICT(cle) DO UPDATE SET valeur = excluded.valeur')
+      .run(cle, String(val));
+
+  const exemples = [
+    {
+      // 1. Descriptions courtes (1 à 2 lignes) sur chaque ligne
+      date: `${ANNEE}-04-06`,
+      objet: "Fourniture et installation d'un réseau structuré",
+      tva_applicable: 1,
+      lignes: [
+        {
+          designation: 'Câble réseau Cat6 (rouleau 305m)', unite: 'Rouleau', quantite: 2, prix: 85000,
+          description: '-Câble UTP Cat6 certifié classe E\n-Gaine LSZH faible émission de fumée',
+        },
+        {
+          designation: 'Switch 24 ports Gigabit', unite: 'Unité', quantite: 1, prix: 145000,
+          description: '-Switch manageable niveau 2\n-24 ports Gigabit + 4 ports SFP\n-Configuration des VLAN incluse\n-Supervision incluse',
+        },
+        {
+          designation: 'Installation et configuration', unite: 'Forfait', quantite: 1, prix: 250000,
+          description: '-Pose et brassage\n-Certification des liens\n-Recette avec rapport de tests',
+        },
+      ],
+    },
+    {
+      // 2. Descriptions longues multi-paragraphes
+      date: `${ANNEE}-05-14`,
+      objet: "Mise en place d'un système de vidéosurveillance IP",
+      tva_applicable: 1,
+      lignes: [
+        {
+          designation: 'Caméra IP dôme 4MP', unite: 'Unité', quantite: 8, prix: 78000,
+          description: "Caractéristiques:\n\n-Vision nocturne infrarouge portée 30 m\n-Étanche IP67 (poussière et pluie)\n-Alimentation PoE : un seul câble réseau\n-Objectif grand angle 2,8 mm",
+        },
+        {
+          designation: 'NVR 16 canaux', unite: 'Unité', quantite: 1, prix: 265000,
+          description: "-Disque dur de surveillance 4 To (environ 30 jours d'enregistrement)\n-Accès à distance depuis smartphone et ordinateur\n-Notifications en cas de détection de mouvement\n-Extensible jusqu'à 16 caméras",
+        },
+        {
+          designation: 'Écran de supervision 43"', unite: 'Unité', quantite: 1, prix: 185000,
+          description: '-Moniteur 4K dédié à la supervision\n-Affichage en mosaïque des 8 caméras\n-Zoom sur incident',
+        },
+      ],
+    },
+    {
+      // 3. Avec sections (lots) et mélange lignes avec / sans description
+      date: `${ANNEE}-06-02`,
+      objet: 'Aménagement de la salle serveur — matériel et services',
+      tva_applicable: 1,
+      lignes: [
+        {
+          designation: 'Baie de brassage 42U', unite: 'Unité', quantite: 1, prix: 350000, section: 'LOT 1 : FOURNITURES',
+          description: '-Armoire rack 19" 42U\n-Portes avant vitrée et arrière métal\n-4 ventilateurs de toit\n-2 bandeaux de prises',
+        },
+        {
+          designation: 'Panneau de brassage 24 ports', unite: 'Unité', quantite: 2, prix: 45000, section: 'LOT 1 : FOURNITURES',
+          description: '',
+        },
+        {
+          designation: 'Onduleur 1500VA', unite: 'Unité', quantite: 2, prix: 125000, section: 'LOT 1 : FOURNITURES',
+          description: "-Line-interactive avec régulation automatique de tension\n-Autonomie d'environ 20 minutes à pleine charge",
+        },
+        {
+          designation: 'Installation et configuration', unite: 'Forfait', quantite: 1, prix: 300000, section: 'LOT 2 : TRAVAUX ET SERVICES',
+          description: '-Montage de la baie\n-Reprise du brassage existant\n-Étiquetage complet\n-Remise du dossier de recette',
+        },
+        {
+          designation: 'Maintenance annuelle', unite: 'Forfait', quantite: 1, prix: 300000, section: 'LOT 2 : TRAVAUX ET SERVICES',
+          description: '',
+        },
+      ],
+    },
+    {
+      // 4. Sans TVA : une seule ligne avec description très longue (test extrême)
+      date: `${ANNEE}-07-20`,
+      objet: 'Fourniture d\'un serveur de fichiers clé en main',
+      tva_applicable: 0,
+      lignes: [
+        {
+          designation: 'Serveur tour Xeon 32Go', unite: 'Unité', quantite: 1, prix: 1250000,
+          description: "ServeurPro:\n\n-Processeur Intel Xeon 8 cœurs\n-32 Go de mémoire ECC\n-4 disques de 2 To en RAID 5 (6 To utiles)\n-Système serveur préinstallé et configuré\n-Partages de fichiers avec droits d'accès par service\n-Sauvegarde automatique quotidienne\n\nMise en service : reprise des données (jusqu'à 2 To), création des comptes, formation d'une demi-journée, garantie 3 ans sur site.",
+        },
+      ],
+    },
+  ];
+
+  const insP = db.prepare(`
+    INSERT INTO proformas (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut, avec_cachet, tva_applicable)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insL = sectionsOK.proforma_lignes
+    ? db.prepare('INSERT INTO proforma_lignes (proforma_id, produit_id, designation, description, unite, quantite, prix_unitaire, montant, ordre, section_titre) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    : db.prepare('INSERT INTO proforma_lignes (proforma_id, produit_id, designation, description, unite, quantite, prix_unitaire, montant, ordre) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+
+  let cpt = getCpt('proforma_compteur');
+  exemples.forEach((ex, k) => {
+    cpt += 1;
+    const numero = `${ANNEE}/${pad5(cpt)}-ITS`;
+    const clientId = clientsRows[k % clientsRows.length].id;
+    const totalMateriel = ex.lignes.reduce((s, l) => s + l.quantite * l.prix, 0);
+    const tva = ex.tva_applicable ? Math.round(totalMateriel * 0.18) : 0;
+    const res = insP.run(
+      numero, ex.date, clientId, ex.objet,
+      totalMateriel, 0, 0, totalMateriel, tva, totalMateriel + tva,
+      'en_attente', 1, ex.tva_applicable
+    );
+    const pid = Number(res.lastInsertRowid);
+    ex.lignes.forEach((l, i) => {
+      const args = [pid, null, l.designation, l.description || '', l.unite, l.quantite, l.prix, l.quantite * l.prix, i];
+      if (sectionsOK.proforma_lignes) args.push(l.section || '');
+      insL.run(...args);
+    });
+    console.log(`✔ Proforma ${numero} — ${ex.objet}`);
+  });
+  setCpt('proforma_compteur', cpt);
+  db.close();
+  console.log('\nSeed limité aux proformas avec descriptions :', dbPath);
+  process.exit(0);
+}
+
 // ---------- FICHES D'INTERVENTION TECHNIQUE ----------
 // Crée la table si l'app n'a pas encore démarré avec la nouvelle version
 db.exec(`
@@ -52,120 +187,145 @@ db.exec(`
     travaux_realises TEXT,
     materiels TEXT,
     statut_final TEXT,
+    details TEXT DEFAULT '{}',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `);
+if (!hasCol('interventions', 'details')) {
+  db.exec("ALTER TABLE interventions ADD COLUMN details TEXT DEFAULT '{}'");
+}
 
 const annee = new Date().getFullYear();
+// Fiches modèle V11 : champs de base en colonnes, le reste dans `details` (JSON)
 const fiches = [
   {
-    // Fiche réseaux complète (tests conformes, 2 matériels, résolu)
-    date: `${annee}-03-12`, intervenant: 'Kossi AMEGAN', heure_arrivee: '08:30', heure_depart: '12:15',
-    client_nom: 'ECOBANK TOGO', client_adresse: '20 Avenue Sylvanus Olympio, Lomé',
-    client_contact: '+228 22 21 72 14 / info@ecobank.tg', interlocuteur: 'M. TOGBE (Resp. IT)',
-    options_reseaux: ['Fibre Optique / Cuivre (RJ45)', 'Routeur / Switch / Pare-feu', 'Brassage / Baie / Câblage'],
-    options_maintenance: [],
-    marque_modele: 'Cisco Catalyst 2960', num_serie: 'FOC1932X0K4', systeme_exploitation: '', vol_donnees: '',
-    test_continuite: 'Conforme', ping: '4', debit_desc: '94', debit_mont: '88',
-    description_probleme: 'Coupures intermittentes du réseau au 2e étage. Plusieurs postes perdent la connexion aux heures de pointe.',
-    travaux_realises: "Recertification des liens cuivre, remplacement de 3 jarretières défectueuses, reconfiguration du switch d'étage et équilibrage des VLAN.",
+    // Fiche réseau (résolue) — toutes les zones de texte remplies
+    date: `${annee}-03-12`, intervenant: 'Kossi AMEGAN',
+    client_nom: 'ECOBANK TOGO', client_adresse: 'Agence centrale — Service informatique, 2e étage, Lomé',
+    client_contact: 'M. TOGBE (Resp. IT) — +228 22 21 72 14',
+    marque_modele: 'Cisco Catalyst 2960', num_serie: 'FOC1932X0K4',
+    description_probleme: "Coupures intermittentes du réseau au 2e étage de l'agence. Plusieurs postes de travail perdent la connexion aux heures de pointe et les opérations au guichet sont ralenties. Le problème est apparu après des travaux d'électricité réalisés la semaine précédente dans le local technique.",
+    travaux_realises: "Recertification de l'ensemble des liens cuivre de l'étage, remplacement de trois jarretières écrasées lors des travaux, reprise du brassage de la baie du 2e étage et reconfiguration du switch d'étage (répartition des VLAN, activation du spanning-tree). Nettoyage et ré-étiquetage complet de la baie de brassage.",
     materiels: [
-      { designation: 'Jarretière Cat6 2m', qte: '3', garantie: '12' },
-      { designation: 'Module SFP 1G Cisco', qte: '1', garantie: '24' },
+      { designation: 'Jarretière Cat6 2m', qte: '3', etat: 'Neuf', ref: 'Remplacement des liens écrasés' },
+      { designation: 'Module SFP 1G Cisco', qte: '1', etat: 'Neuf', ref: 'GLC-LH-SMD — garantie 24 mois' },
     ],
     statut_final: 'Résolu',
+    details: {
+      nature: ['Panne', 'Contrôle'],
+      equipements: ['Switch', 'Baie/Brassage', 'Fibre/SFP'],
+      accessoires: 'Câble console, 2 modules SFP de rechange remis par le client',
+      etat_reception: 'Bon',
+      diagnostic: "Trois liens cuivre du 2e étage présentent une continuité défectueuse : les jarretières ont été pincées lors du passage des nouvelles gaines électriques. Le switch d'étage redémarrait par intermittence à cause d'une boucle créée par un brassage provisoire laissé en place. Aucun défaut constaté sur la liaison fibre montante ni sur le routeur principal.",
+      tests: ['Réseau LAN OK', 'Internet OK', 'Accès serveur OK', 'Tests concluants'],
+      backup_before: 'Non nécessaire',
+      donnees: ['Aucune'],
+      donnees_autres: '',
+      securite: ['Comptes/accès vérifiés', 'Mises à jour'],
+      data_obs: "Aucune donnée utilisateur manipulée pendant l'intervention. Les accès d'administration du switch ont été vérifiés et les identifiants consignés auprès du responsable IT.",
+      equip_final: 'En service',
+      fin: `${annee}-03-12`,
+      duree: '3h45',
+      prochaine_action: 'Contrôle préventif du brassage dans 6 mois',
+      recommandations: "Prévoir le remplacement du switch d'étage (fin de support constructeur) et l'étiquetage complet des liens restants de la baie. Faire passer les prochains câbles électriques dans une goulotte séparée des courants faibles pour éviter tout nouvel incident.",
+      obs_client: 'Intervention rapide et soignée, le réseau est de nouveau stable sur tout le 2e étage.',
+    },
   },
   {
-    // Fiche maintenance informatique (OS Windows, partiellement résolu)
-    date: `${annee}-05-04`, intervenant: 'Afi DOSSOU', heure_arrivee: '14:00', heure_depart: '17:45',
-    client_nom: 'PHARMACIE DU GOLFE', client_adresse: 'Rue du Commerce, Lomé',
-    client_contact: '+228 90 11 22 33 / pharmagolfe@gmail.com', interlocuteur: 'Mme AKOSSIWA (Gérante)',
-    options_reseaux: [],
-    options_maintenance: ['Unité Centrale / PC Portable', 'Nettoyage physique / Pâte thermique', 'Sauvegarde & Transfert de données'],
-    marque_modele: 'HP ProDesk 400 G6', num_serie: 'CZC1234ABC', systeme_exploitation: 'Windows', vol_donnees: '250',
-    test_continuite: '', ping: '', debit_desc: '', debit_mont: '',
-    description_probleme: "Poste de caisse très lent au démarrage, surchauffe et extinctions inopinées en fin de journée.",
-    travaux_realises: "Nettoyage complet, remplacement de la pâte thermique, sauvegarde des données de caisse (250 Go) et réinstallation du système. Disque dur vieillissant à remplacer prochainement.",
+    // Fiche maintenance poste de caisse (résolu provisoirement)
+    date: `${annee}-05-04`, intervenant: 'Afi DOSSOU',
+    client_nom: 'PHARMACIE DU GOLFE', client_adresse: 'Comptoir principal — Rue du Commerce, Lomé',
+    client_contact: 'Mme AKOSSIWA (Gérante) — +228 90 11 22 33',
+    marque_modele: 'HP ProDesk 400 G6', num_serie: 'CZC1234ABC',
+    description_probleme: "Poste de caisse très lent au démarrage, surchauffe importante et extinctions inopinées en fin de journée. La gérante signale également des messages d'erreur du logiciel de caisse et craint de perdre l'historique des ventes.",
+    travaux_realises: "Sauvegarde complète des données de caisse (250 Go) sur disque externe, démontage et nettoyage complet de l'unité centrale, remplacement de la pâte thermique et du ventilateur de boîtier, ajout d'une barrette de 8 Go de RAM, réinstallation du système et du logiciel de caisse, puis restauration des données et vérification du bon fonctionnement avec la gérante.",
     materiels: [
-      { designation: 'Pâte thermique Arctic MX-4', qte: '1', garantie: '' },
-      { designation: 'Barrette RAM 8Go DDR4', qte: '1', garantie: '12' },
-      { designation: 'Ventilateur boitier 120mm', qte: '1', garantie: '6' },
+      { designation: 'Pâte thermique Arctic MX-4', qte: '1', etat: 'Neuf', ref: 'Tube 4 g' },
+      { designation: 'Barrette RAM 8Go DDR4', qte: '1', etat: 'Neuf', ref: 'Garantie 12 mois' },
+      { designation: 'Ventilateur boitier 120mm', qte: '1', etat: 'Neuf', ref: 'Garantie 6 mois' },
     ],
-    statut_final: 'Partiellement résolu',
+    statut_final: 'Résolu provisoirement',
+    details: {
+      nature: ['Panne', 'Maintenance préventive'],
+      equipements: ['Ordinateur bureau', 'Windows/Système', 'Sauvegarde'],
+      accessoires: "Câble d'alimentation, clavier, souris, écran HP 22\"",
+      etat_reception: 'Moyen',
+      diagnostic: "Encrassement sévère du dissipateur et pâte thermique desséchée provoquant la surchauffe et les extinctions. Le disque dur présente des secteurs réalloués (SMART dégradé) : il est à l'origine des lenteurs et devra être remplacé rapidement. Mémoire vive insuffisante pour le logiciel de caisse.",
+      tests: ['Démarrage OK', 'Réseau LAN OK', 'Sauvegarde OK', 'Tests concluants'],
+      backup_before: 'Oui',
+      donnees: ['Documents', 'Base de données'],
+      donnees_autres: 'Fichiers du logiciel de caisse (historique des ventes)',
+      securite: ['Antivirus contrôlé', 'Mises à jour', 'Mot de passe modifié par le client'],
+      data_obs: "Sauvegarde intégrale réalisée avant toute manœuvre et vérifiée par restauration d'un échantillon. Le mot de passe de session a été modifié par la gérante en fin d'intervention.",
+      equip_final: 'En service',
+      fin: `${annee}-05-04`,
+      duree: '3h30',
+      prochaine_action: 'Remplacement du disque dur par un SSD dès accord du client',
+      recommandations: "Remplacer le disque dur vieillissant par un SSD de 500 Go sous quinzaine (devis transmis). Mettre en place une sauvegarde automatique quotidienne des données de caisse sur support externe et dépoussiérer l'unité centrale tous les six mois.",
+      obs_client: "Le poste est nettement plus rapide. J'attends le devis pour le remplacement du disque dur.",
+    },
   },
   {
-    // Fiche mixte A + D, textes longs (test des sauts de page), 6 matériels, non résolu
-    date: `${annee}-06-18`, intervenant: 'Yao KPOTUFE', heure_arrivee: '09:00', heure_depart: '18:30',
-    client_nom: 'UNIVERSITÉ DE LOMÉ', client_adresse: 'Boulevard Eyadéma, Lomé',
-    client_contact: '+228 22 25 50 94 / rectorat@univ-lome.tg', interlocuteur: 'Dr KODJO (DSI)',
-    options_reseaux: ['Wi-Fi / Faisceau Radio', 'Téléphonie (IP / PABX)', 'Brassage / Baie / Câblage'],
-    options_maintenance: ['Serveur Physique / Rack', 'Imprimante / Scanner / Périphérique'],
-    marque_modele: 'Dell PowerEdge R740', num_serie: 'SVCTAG-7XK9Q', systeme_exploitation: 'Linux', vol_donnees: '2000',
-    test_continuite: 'Non conforme', ping: '210', debit_desc: '12', debit_mont: '3',
-    description_probleme: "Panne générale du réseau Wi-Fi du campus nord suite à un orage. Le serveur de téléphonie IP ne répond plus, la baie de brassage du bâtiment C présente des traces de surtension. Les débits mesurés sur les liaisons restantes sont très dégradés et le ping vers la passerelle dépasse 200 ms. Plusieurs bornes Wi-Fi ne s'allument plus du tout et l'onduleur principal est en défaut. Les enseignants ne peuvent plus accéder à la plateforme de cours en ligne depuis les salles du campus nord.",
-    travaux_realises: "Diagnostic complet de la chaîne réseau : contrôle des arrivées fibre, tests de continuité sur l'ensemble des liens cuivre du bâtiment C, vérification des alimentations. Remplacement de l'injecteur PoE principal et de deux bornes Wi-Fi détruites. Redémarrage et resynchronisation du PABX IP. Le commutateur cœur de réseau reste instable : un remplacement complet est nécessaire, le matériel de rechange a été commandé. Une nouvelle intervention est planifiée dès réception du commutateur pour rétablir l'ensemble des services.",
+    // Fiche campus (textes longs pour tester les sauts de page, en attente de pièce)
+    date: `${annee}-06-18`, intervenant: 'Yao KPOTUFE',
+    client_nom: 'UNIVERSITÉ DE LOMÉ', client_adresse: 'Campus nord — Bâtiment C, salle serveurs, Lomé',
+    client_contact: 'Dr KODJO (DSI) — +228 22 25 50 94',
+    marque_modele: 'Dell PowerEdge R740', num_serie: 'SVCTAG-7XK9Q',
+    description_probleme: "Panne générale du réseau Wi-Fi du campus nord suite à un orage. Le serveur de téléphonie IP ne répond plus et la baie de brassage du bâtiment C présente des traces de surtension. Plusieurs bornes Wi-Fi ne s'allument plus du tout et l'onduleur principal est en défaut. Les enseignants ne peuvent plus accéder à la plateforme de cours en ligne depuis les salles du campus nord et la scolarité ne peut plus imprimer les attestations.",
+    travaux_realises: "Contrôle des arrivées fibre et tests de continuité sur l'ensemble des liens cuivre du bâtiment C. Remplacement de l'injecteur PoE principal, de deux bornes Wi-Fi détruites et des batteries de l'onduleur. Pose de parafoudres Ethernet sur les liaisons exposées. Redémarrage et resynchronisation du PABX IP : la téléphonie est rétablie. Le commutateur cœur de réseau reste instable malgré la remise à niveau du microcode : son remplacement complet est nécessaire, le matériel a été commandé.",
     materiels: [
-      { designation: 'Borne Wi-Fi 6 plafonnier', qte: '2', garantie: '24' },
-      { designation: 'Injecteur PoE+ 30W', qte: '1', garantie: '12' },
-      { designation: 'Jarretière fibre LC-LC 3m', qte: '4', garantie: '12' },
-      { designation: 'Parafoudre Ethernet', qte: '6', garantie: '12' },
-      { designation: 'Bandeau de prises rackable', qte: '1', garantie: '6' },
-      { designation: 'Batterie onduleur 12V 9Ah', qte: '2', garantie: '12' },
+      { designation: 'Borne Wi-Fi 6 plafonnier', qte: '2', etat: 'Neuf', ref: 'Garantie 24 mois' },
+      { designation: 'Injecteur PoE+ 30W', qte: '1', etat: 'Neuf', ref: 'Garantie 12 mois' },
+      { designation: 'Jarretière fibre LC-LC 3m', qte: '4', etat: 'Neuf', ref: 'Liens baie C vers cœur de réseau' },
+      { designation: 'Parafoudre Ethernet', qte: '6', etat: 'Neuf', ref: 'Pose sur liaisons extérieures' },
+      { designation: 'Bandeau de prises rackable', qte: '1', etat: 'Réutilisé', ref: 'Récupéré de la baie du bâtiment A' },
+      { designation: 'Batterie onduleur 12V 9Ah', qte: '2', etat: 'Neuf', ref: 'Garantie 12 mois' },
     ],
-    statut_final: 'Non résolu',
-  },
-  {
-    // Fiche minimale : imprimable vierge, à remplir à la main sur le terrain
-    date: `${annee}-07-01`, intervenant: '', heure_arrivee: '', heure_depart: '',
-    client_nom: 'HÔTEL SARAKAWA', client_adresse: '', client_contact: '', interlocuteur: '',
-    options_reseaux: [], options_maintenance: [],
-    marque_modele: '', num_serie: '', systeme_exploitation: '', vol_donnees: '',
-    test_continuite: '', ping: '', debit_desc: '', debit_mont: '',
-    description_probleme: '', travaux_realises: '',
-    materiels: [],
-    statut_final: '',
-  },
-  {
-    // Fiche sauvegarde serveur (OS Autre, sans matériel, résolu)
-    date: `${annee}-08-22`, intervenant: 'Kossi AMEGAN', heure_arrivee: '07:45', heure_depart: '10:00',
-    client_nom: 'CLINIQUE BIASA', client_adresse: "Rue de l'OCAM, Lomé",
-    client_contact: '+228 22 21 32 87 / accueil@biasa.tg', interlocuteur: 'M. LAWSON (Administrateur)',
-    options_reseaux: [],
-    options_maintenance: ['Serveur Physique / Rack', 'Sauvegarde & Transfert de données'],
-    marque_modele: 'Synology DS920+', num_serie: 'SYN20AB123', systeme_exploitation: 'Autre', vol_donnees: '850',
-    test_continuite: 'Conforme', ping: '2', debit_desc: '', debit_mont: '',
-    description_probleme: 'Migration demandée des dossiers patients vers le nouveau NAS avec mise en place de sauvegardes automatiques.',
-    travaux_realises: 'Transfert de 850 Go de données, configuration RAID 1, planification des sauvegardes quotidiennes à 22h et test de restauration validé avec le client.',
-    materiels: [],
-    statut_final: 'Résolu',
+    statut_final: 'En attente de pièce',
+    details: {
+      nature: ['Panne', 'Contrôle', 'Mise à niveau'],
+      equipements: ['Serveur', "Point d'accès Wi-Fi", 'Téléphonie IP', 'Baie/Brassage', 'Onduleur/UPS'],
+      accessoires: 'Clés de la salle serveurs, badge d’accès visiteur, plan de câblage du bâtiment C',
+      etat_reception: 'Dégradé',
+      diagnostic: "La surtension provoquée par l'orage a détruit l'injecteur PoE principal et deux bornes Wi-Fi, et endommagé les batteries de l'onduleur. Le commutateur cœur de réseau a subi des redémarrages répétés et présente des ports défectueux : il n'est plus fiable et doit être remplacé. Le serveur de téléphonie n'a pas été endommagé, il était simplement isolé du réseau. Les liaisons fibre inter-bâtiments sont intactes.",
+      tests: ['Wi-Fi OK', 'Internet OK', 'Fonctionnement partiel', 'À poursuivre', 'Équipement à remplacer'],
+      backup_before: 'Impossible',
+      donnees: ['Messagerie', 'Base de données'],
+      donnees_autres: 'Plateforme de cours en ligne (hébergée sur le serveur local)',
+      securite: ['Comptes/accès vérifiés', 'Mises à jour'],
+      data_obs: "Le serveur étant inaccessible à l'arrivée, aucune sauvegarde préalable n'a pu être réalisée. Après rétablissement, l'intégrité des bases de données a été vérifiée et une sauvegarde complète a été lancée immédiatement vers le NAS du rectorat.",
+      equip_final: 'Remplacé temporairement',
+      fin: `${annee}-06-18`,
+      duree: '9h30',
+      prochaine_action: 'Retour dès réception du commutateur cœur de réseau',
+      recommandations: "Installer un parafoudre en tête de tableau électrique du local technique et raccorder l'ensemble des équipements actifs à l'onduleur. Souscrire un contrat de maintenance préventive incluant le contrôle semestriel des protections. Prévoir à moyen terme la redondance du cœur de réseau pour éviter une nouvelle interruption générale du campus.",
+      obs_client: "Service rétabli partiellement dans la journée, la téléphonie fonctionne. Nous attendons le remplacement du commutateur pour valider définitivement l'intervention.",
+    },
   },
 ];
 
 const existeFit = db.prepare('SELECT 1 FROM interventions WHERE numero = ?');
-let cptFit = db.prepare('SELECT COUNT(*) AS count FROM interventions').get().count || 0;
+let cptFit = annee === 2026 ? 16 : 0;
+db.prepare('SELECT numero FROM interventions').all().forEach((r) => {
+  const m = /^(\d{4})\/(\d{5})-ITS$/.exec(r.numero || '');
+  if (m && Number(m[1]) === annee) cptFit = Math.max(cptFit, Number(m[2]));
+});
 const insIntervention = db.prepare(`
-  INSERT INTO interventions (numero, date, intervenant, heure_arrivee, heure_depart,
-    client_nom, client_adresse, client_contact, interlocuteur,
-    options_reseaux, options_maintenance, marque_modele, num_serie, systeme_exploitation, vol_donnees,
-    test_continuite, ping, debit_desc, debit_mont, description_probleme, travaux_realises,
-    materiels, statut_final)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO interventions (numero, date, intervenant, client_nom, client_adresse, client_contact,
+    marque_modele, num_serie, description_probleme, travaux_realises, materiels, statut_final, details)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 fiches.forEach((f) => {
   let numero;
   do {
     cptFit += 1;
-    numero = `FIT-${String(cptFit).padStart(4, '0')}`;
+    numero = `${annee}/${pad5(cptFit)}-ITS`;
   } while (existeFit.get(numero));
   insIntervention.run(
-    numero, f.date, f.intervenant, f.heure_arrivee, f.heure_depart,
-    f.client_nom, f.client_adresse, f.client_contact, f.interlocuteur,
-    JSON.stringify(f.options_reseaux), JSON.stringify(f.options_maintenance),
-    f.marque_modele, f.num_serie, f.systeme_exploitation, f.vol_donnees,
-    f.test_continuite, f.ping, f.debit_desc, f.debit_mont,
-    f.description_probleme, f.travaux_realises,
-    JSON.stringify(f.materiels), f.statut_final
+    numero, f.date, f.intervenant, f.client_nom, f.client_adresse, f.client_contact,
+    f.marque_modele, f.num_serie, f.description_probleme, f.travaux_realises,
+    JSON.stringify(f.materiels), f.statut_final, JSON.stringify(f.details)
   );
 });
 console.log(`✔ ${fiches.length} fiches d'intervention`);
