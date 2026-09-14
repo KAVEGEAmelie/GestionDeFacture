@@ -9,6 +9,7 @@ import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
 import { matchesWordPrefix } from '../utils/search';
+import useObjetSuggestions from '../hooks/useObjetSuggestions';
 import SearchableSelect from '../components/Inputs/SearchableSelect';
 import './Clients.css';
 import './Proformas.css';
@@ -138,6 +139,9 @@ const AttestationServiceFait = () => {
   const [editingId, setEditingId] = useState(null);
   const [formData, setFormData] = useState(() => buildDefaultForm());
   const initialFormRef = useRef(null);
+
+  const objetsExistants = useMemo(() => attestations.map((a) => a.objet), [attestations]);
+  const [objetSuggestions, rememberObjet] = useObjetSuggestions(objetsExistants);
 
   const sortedClients = useMemo(() => {
     return [...clients].sort((a, b) =>
@@ -317,6 +321,7 @@ const AttestationServiceFait = () => {
         await window.electronAPI.attestations.create(payload);
         toast.success('Attestation créée.');
       }
+      rememberObjet(payload.objet);
       const updated = await window.electronAPI.attestations.getAll();
       setAttestations(updated || []);
     } catch (error) {
@@ -497,7 +502,15 @@ const AttestationServiceFait = () => {
               </div>
               <div className="form-group">
                 <label>Objet</label>
-                <input type="text" value={formData.objet} onChange={(e) => handleChange('objet', e.target.value)} placeholder="Ex : Renforcement du pylône paratonnerre" />
+                <SearchableSelect
+                  options={objetSuggestions.map((o) => ({ value: o, label: o }))}
+                  value={formData.objet}
+                  onChange={(objet) => handleChange('objet', objet)}
+                  placeholder="Ex : Renforcement du pylône paratonnerre"
+                  noOptionsText="Aucun objet mémorisé — saisissez librement"
+                  allowCustomValue
+                  commitOnBlur
+                />
               </div>
             </div>
           </section>

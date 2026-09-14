@@ -28,6 +28,7 @@ import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
 import { matchesWordPrefix } from '../utils/search';
 import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
+import useObjetSuggestions from '../hooks/useObjetSuggestions';
 import SearchableSelect from '../components/Inputs/SearchableSelect';
 import './Clients.css';
 import './Proformas.css';
@@ -48,6 +49,9 @@ const Rapports = () => {
   const [dateTo, setDateTo] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingRapport, setEditingRapport] = useState(null);
+
+  const objetsExistants = useMemo(() => rapports.map((r) => r.objet), [rapports]);
+  const [objetSuggestions, rememberObjet] = useObjetSuggestions(objetsExistants);
 
   const [formData, setFormData] = useState({
     date: new Date().toISOString().split('T')[0],
@@ -374,6 +378,7 @@ const Rapports = () => {
         await window.electronAPI.rapports.create(data);
         toast.success('Rapport créé avec succès.');
       }
+      rememberObjet(data.objet);
       await loadData();
       initialFormRef.current = null;
       closeModal();
@@ -678,11 +683,14 @@ const Rapports = () => {
               </div>
               <div className="form-group">
                 <label>Objet</label>
-                <input
-                  type="text"
+                <SearchableSelect
+                  options={objetSuggestions.map((o) => ({ value: o, label: o }))}
                   value={formData.objet}
-                  onChange={(e) => setFormData({ ...formData, objet: e.target.value })}
+                  onChange={(objet) => setFormData((prev) => ({ ...prev, objet }))}
                   placeholder="Ex : Diagnostic du réseau informatique"
+                  noOptionsText="Aucun objet mémorisé — saisissez librement"
+                  allowCustomValue
+                  commitOnBlur
                 />
               </div>
             </div>

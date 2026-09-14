@@ -12,6 +12,7 @@ const SearchableSelect = ({
   placeholder = 'Rechercher...',
   noOptionsText = 'Aucun resultat',
   allowCustomValue = false,
+  commitOnBlur = false,
   disabled = false,
   className = '',
 }) => {
@@ -21,6 +22,10 @@ const SearchableSelect = ({
   const [query, setQuery] = useState('');
   const [highlightIndex, setHighlightIndex] = useState(0);
 
+  // État courant accessible depuis l'écouteur global (monté une seule fois)
+  const blurStateRef = useRef({});
+  blurStateRef.current = { query, isOpen, allowCustomValue, commitOnBlur, onChange };
+
   const selectedOption = useMemo(
     () => options.find((opt) => String(opt.value) === String(value)),
     [options, value]
@@ -29,6 +34,12 @@ const SearchableSelect = ({
   useEffect(() => {
     const onClickOutside = (event) => {
       if (!rootRef.current?.contains(event.target)) {
+        // Texte libre : valide la saisie en cours au lieu de la perdre
+        const s = blurStateRef.current;
+        const saisie = String(s.query || '').trim();
+        if (s.isOpen && s.commitOnBlur && s.allowCustomValue && saisie) {
+          s.onChange?.(saisie, { value: saisie, label: saisie, custom: true });
+        }
         setIsOpen(false);
         setQuery('');
       }

@@ -10,6 +10,7 @@ import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
 import { matchesWordPrefix } from '../utils/search';
 import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
+import useObjetSuggestions from '../hooks/useObjetSuggestions';
 import SearchableSelect from '../components/Inputs/SearchableSelect';
 import './Clients.css';
 import './Proformas.css';
@@ -38,6 +39,9 @@ const AppelsOffres = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [selectedAppelOffre, setSelectedAppelOffre] = useState(null);
+
+  const objetsExistants = useMemo(() => appelsOffres.map((a) => a.objet), [appelsOffres]);
+  const [objetSuggestions, rememberObjet] = useObjetSuggestions(objetsExistants);
   const [editingAppelOffre, setEditingAppelOffre] = useState(null);
   const [addProductModalOpen, setAddProductModalOpen] = useState(false);
   const [showLigneForm, setShowLigneForm] = useState(false);
@@ -251,6 +255,10 @@ const AppelsOffres = () => {
       toast.error('Veuillez ajouter au moins une ligne.');
       return;
     }
+    if (!String(formData.objet || '').trim()) {
+      toast.error("Veuillez renseigner l'objet.");
+      return;
+    }
 
     const { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc } = calculateTotals();
 
@@ -289,6 +297,7 @@ const AppelsOffres = () => {
         await window.electronAPI.appelsOffres.create(data);
         toast.success("Appel d'offre créé avec succès !");
       }
+      rememberObjet(formData.objet);
       loadData();
       closeModal();
     } catch (error) {
@@ -772,12 +781,14 @@ const AppelsOffres = () => {
 
           <div className="form-group">
             <label>Objet *</label>
-            <input
-              type="text"
+            <SearchableSelect
+              options={objetSuggestions.map((o) => ({ value: o, label: o }))}
               value={formData.objet}
-              onChange={(e) => setFormData({ ...formData, objet: e.target.value })}
+              onChange={(objet) => setFormData((prev) => ({ ...prev, objet }))}
               placeholder="Ex: Fourniture et installation de matériel réseau"
-              required
+              noOptionsText="Aucun objet mémorisé — saisissez librement"
+              allowCustomValue
+              commitOnBlur
             />
           </div>
 

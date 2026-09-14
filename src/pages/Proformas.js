@@ -11,6 +11,7 @@ import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
 import { matchesWordPrefix } from '../utils/search';
 import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
+import useObjetSuggestions from '../hooks/useObjetSuggestions';
 import SearchableSelect from '../components/Inputs/SearchableSelect';
 import './Clients.css';
 import './Proformas.css';
@@ -40,7 +41,8 @@ const Proformas = () => {
   const [addProductModalOpen, setAddProductModalOpen] = useState(false);
   const [showLigneForm, setShowLigneForm] = useState(false);
   const [showLigneDesc, setShowLigneDesc] = useState(false);
-  const [openDescRows, setOpenDescRows] = useState({});
+  // Éditeur de description d'une ligne du tableau : { index, value }
+  const [descEditor, setDescEditor] = useState(null);
   const [ligneFormData, setLigneFormData] = useState({
     produit_id: '',
     produit_search: '',
@@ -57,6 +59,9 @@ const Proformas = () => {
     unite: 'Unité',
     description: ''
   });
+
+  const objetsExistants = useMemo(() => proformas.map((p) => p.objet), [proformas]);
+  const [objetSuggestions, rememberObjet] = useObjetSuggestions(objetsExistants);
   
   const [formData, setFormData] = useState({
     date: new Date().toISOString().split('T')[0],
@@ -299,6 +304,10 @@ const Proformas = () => {
       toast.error('Veuillez sélectionner un client valide dans la liste.');
       return;
     }
+    if (!String(formData.objet || '').trim()) {
+      toast.error("Veuillez renseigner l'objet.");
+      return;
+    }
     
     // Aplatir : les séparateurs de section attribuent leur titre aux lignes suivantes
     let currentSection = '';
@@ -351,6 +360,7 @@ const Proformas = () => {
         await window.electronAPI.proformas.create(data);
         toast.success('Proforma créée avec succès !');
       }
+      rememberObjet(formData.objet);
 
       loadData();
       closeModal();
@@ -568,7 +578,7 @@ const Proformas = () => {
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingProforma(null);
-    setOpenDescRows({});
+    setDescEditor(null);
   };
 
   const formatPrice = (price) => {
@@ -874,12 +884,14 @@ const Proformas = () => {
 
           <div className="form-group">
             <label>Objet *</label>
-            <input
-              type="text"
+            <SearchableSelect
+              options={objetSuggestions.map((o) => ({ value: o, label: o }))}
               value={formData.objet}
-              onChange={(e) => setFormData({ ...formData, objet: e.target.value })}
+              onChange={(objet) => setFormData((prev) => ({ ...prev, objet }))}
               placeholder="Ex: Location de consommables informatiques"
-              required
+              noOptionsText="Aucun objet mémorisé — saisissez librement"
+              allowCustomValue
+              commitOnBlur
             />
           </div>
 
@@ -1104,7 +1116,7 @@ const Proformas = () => {
                     <tr>
                       <th style={{ width: '16%' }}>Produit</th>
                       <th>Désignation</th>
-                      <th style={{ width: 90 }}>Unité</th>
+                      <th style={{ width: 105 }}>Unité</th>
                       <th style={{ width: 80 }}>Quantité</th>
                       <th style={{ width: 110 }}>Prix unitaire</th>
                       <th style={{ width: 110 }}>Montant</th>
@@ -1168,25 +1180,28 @@ const Proformas = () => {
                               value={ligne.designation}
                               onChange={(e) => handleLigneChange(index, 'designation', e.target.value)}
                             />
-                            {!(openDescRows[index] || String(ligne.description || '').trim()) && (
-                              <button
-                                type="button"
-                                title="Ajouter une description détaillée"
-                                onClick={() => setOpenDescRows((p) => ({ ...p, [index]: true }))}
-                                style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748b', padding: 4, flexShrink: 0 }}
-                              >
-                                <AlignLeft size={15} />
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              title={String(ligne.description || '').trim() ? 'Modifier la description détaillée' : 'Ajouter une description détaillée'}
+                              onClick={() => setDescEditor({ index, value: ligne.description || '' })}
+                              style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: String(ligne.description || '').trim() ? '#2563eb' : '#64748b', padding: 4, flexShrink: 0 }}
+                            >
+                              <Edit2 size={14} />
+                            </button>
                           </div>
-                          {(openDescRows[index] || String(ligne.description || '').trim()) ? (
-                            <textarea
-                              value={ligne.description || ''}
-                              onChange={(e) => handleLigneChange(index, 'description', e.target.value)}
-                              placeholder="Description détaillée (optionnel)"
-                              rows={Math.min(14, Math.max(4, String(ligne.description || '').split('\n').length + 1))}
-                              style={{ marginTop: 4, width: '100%', fontSize: '0.875rem', lineHeight: 1.5, resize: 'vertical', border: '1px solid #e5e7eb', borderRadius: 6, padding: '0.5rem 0.7rem', color: 'inherit', background: '#fff' }}
-                            />
+                          {String(ligne.description || '').trim() ? (
+                            <div
+                              onClick={() => setDescEditor({ index, value: ligne.description || '' })}
+                              title="Cliquer pour modifier la description"
+                              style={{
+                                marginTop: 2, padding: '0 0.7rem', cursor: 'pointer',
+                                fontSize: '0.75rem', color: '#64748b', lineHeight: 1.4,
+                                display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                                overflow: 'hidden', whiteSpace: 'pre-line'
+                              }}
+                            >
+                              {ligne.description}
+                            </div>
                           ) : null}
                         </td>
                         <td>
@@ -1415,6 +1430,56 @@ const Proformas = () => {
             </button>
           </div>
         </form>
+      </Modal>
+
+      <Modal
+        isOpen={!!descEditor}
+        onClose={() => setDescEditor(null)}
+        title="Description détaillée de la ligne"
+        size="medium"
+      >
+        {descEditor ? (
+          <div>
+            <p style={{ margin: '0 0 0.5rem', fontSize: '0.85rem', color: '#64748b' }}>
+              {formData.lignes[descEditor.index]?.designation || 'Ligne sans désignation'}
+            </p>
+            <textarea
+              value={descEditor.value}
+              onChange={(e) => setDescEditor((p) => ({ ...p, value: e.target.value }))}
+              placeholder={"Détails affichés sous la désignation sur le PDF.\nUne ligne par caractéristique, commencez par un tiret :\n-Processeur Intel Xeon 8 cœurs\n-32 Go de mémoire ECC"}
+              rows={14}
+              autoFocus
+              style={{ width: '100%', fontSize: '0.9rem', lineHeight: 1.6, resize: 'vertical', border: '1px solid #e5e7eb', borderRadius: 8, padding: '0.75rem 0.9rem' }}
+            />
+            <div className="form-actions">
+              <button type="button" className="btn btn-secondary" onClick={() => setDescEditor(null)}>
+                Annuler
+              </button>
+              {String(descEditor.value || '').trim() === '' && String(formData.lignes[descEditor.index]?.description || '').trim() !== '' ? (
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  onClick={() => {
+                    handleLigneChange(descEditor.index, 'description', '');
+                    setDescEditor(null);
+                  }}
+                >
+                  Supprimer la description
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  handleLigneChange(descEditor.index, 'description', descEditor.value);
+                  setDescEditor(null);
+                }}
+              >
+                Enregistrer
+              </button>
+            </div>
+          </div>
+        ) : null}
       </Modal>
 
       <datalist id="proformas-unites-list">
