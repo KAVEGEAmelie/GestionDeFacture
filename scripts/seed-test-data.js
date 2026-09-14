@@ -6,7 +6,10 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 
-const dbPath = path.join(os.homedir(), '.config', 'gestion-facturation', 'facturation.db');
+const configDir = process.platform === 'win32'
+  ? (process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'))
+  : path.join(os.homedir(), '.config');
+const dbPath = path.join(configDir, 'gestion-facturation', 'facturation.db');
 if (!fs.existsSync(dbPath)) {
   console.error('Base introuvable :', dbPath);
   process.exit(1);
@@ -498,7 +501,7 @@ proformasCreees.slice(0, 5).forEach((p, k) => {
     insFactureLigne.run(...args);
   });
   db.prepare("UPDATE proformas SET statut = 'facturee', facture_id = ? WHERE id = ?").run(factureId, p.id);
-  facturesCreees.push({ id: factureId, numero, clientId: p.clientId, lignes: p.lignes });
+  facturesCreees.push({ id: factureId, numero, clientId: p.clientId, lignes: p.lignes, tva: p.tva, totalTTC: p.totalTTC });
 });
 setCompteur('facture_compteur', cptFacture);
 console.log(`✔ ${facturesCreees.length} factures`);
@@ -586,6 +589,116 @@ for (let k = 0; k < 3; k++) {
   );
 }
 console.log('✔ 3 attestations');
+
+// ---------- APPELS D'OFFRES ----------
+let cptAO = getCompteur('appel_offre_compteur');
+const insAO = db.prepare(`
+  INSERT INTO appels_offres (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc,
+    statut, avec_cachet, tva_applicable, reference_externe, autorite, autorite_adresse, validite_offre, delai_execution)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+const insAOLigne = db.prepare(
+  'INSERT INTO appel_offre_lignes (appel_offre_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+);
+const aoData = [
+  {
+    // AO public avec autorité contractante et référence externe
+    objet: 'Fourniture et installation d\'équipements réseau pour 3 directions régionales',
+    reference_externe: `AAO N°012/${ANNEE}/MTP/DGMP`,
+    autorite: 'MINISTÈRE DES TRAVAUX PUBLICS — Direction des Marchés Publics',
+    autorite_adresse: 'Avenue de la Présidence, BP 335, Lomé',
+    validite: 120, delai: '45 jours calendaires', tva_applicable: 1, statut: 'en_attente', nbLignes: 6,
+  },
+  {
+    // AO gagné (statut différent) avec délai court
+    objet: 'Acquisition de matériel de vidéosurveillance pour le siège',
+    reference_externe: `DRP N°034/${ANNEE}/EB-TG`,
+    autorite: 'ECOBANK TOGO — Direction des Achats',
+    autorite_adresse: '20 Avenue Sylvanus Olympio, Lomé',
+    validite: 90, delai: '30 jours', tva_applicable: 1, statut: 'gagne', nbLignes: 4,
+  },
+  {
+    // AO sans TVA, validité courte, peu de lignes
+    objet: 'Câblage informatique de l\'annexe de Kara',
+    reference_externe: '',
+    autorite: 'UNIVERSITÉ DE LOMÉ — Rectorat',
+    autorite_adresse: 'Boulevard Eyadéma, Lomé',
+    validite: 60, delai: '3 semaines', tva_applicable: 0, statut: 'perdu', nbLignes: 3,
+  },
+];
+aoData.forEach((ao, k) => {
+  cptAO += 1;
+  const numero = `AO-${ANNEE}/${pad5(cptAO)}-ITS`;
+  const lignes = construireLignes(ao.nbLignes, false);
+  const totalMateriel = lignes.reduce((s, l) => s + l.montant, 0);
+  const totalHT = totalMateriel;
+  const tva = ao.tva_applicable ? Math.round(totalHT * 0.18) : 0;
+  const res = insAO.run(
+    numero, dateAleatoire(), clientIds[(k + 1) % clientIds.length], ao.objet,
+    totalMateriel, 0, 0, totalHT, tva, totalHT + tva,
+    ao.statut, k % 2, ao.tva_applicable,
+    ao.reference_externe, ao.autorite, ao.autorite_adresse, ao.validite, ao.delai
+  );
+  const aoId = Number(res.lastInsertRowid);
+  lignes.forEach((l, i) =>
+    insAOLigne.run(aoId, l.produit_id, l.designation, l.unite, l.quantite, l.prix_unitaire, l.montant, i)
+  );
+});
+setCompteur('appel_offre_compteur', cptAO);
+console.log(`✔ ${aoData.length} appels d'offres`);
+
+// ---------- PAIEMENTS DE FACTURES (statuts variés pour tester le suivi TVA) ----------
+// Factures 1-3 : payées (éligibles au versement TVA) ; facture 4 : payée + TVA déjà versée ; facture 5 : non payée
+const marquerPayee = db.prepare(
+  "UPDATE factures SET statut_paiement = 'payee', date_paiement = ? WHERE id = ?"
+);
+facturesCreees.slice(0, 4).forEach((f, k) => marquerPayee.run(dateAleatoire(), f.id));
+if (facturesCreees[3]) {
+  db.prepare("UPDATE factures SET tva_versee = 1, date_versement_tva = ? WHERE id = ?")
+    .run(dateAleatoire(), facturesCreees[3].id);
+}
+console.log('✔ Statuts de paiement : 4 payées (dont 1 TVA versée), 1 non payée');
+
+// ---------- VERSEMENT TVA OTR (lot + paiements partiels) ----------
+// Lot avec les 2 premières factures payées : dû = 50 % de la TVA collectée
+const facturesLot = facturesCreees.slice(0, 2).filter((f) => f.tva > 0);
+if (facturesLot.length > 0) {
+  let cptVers = db.prepare('SELECT COUNT(*) AS c FROM tva_versements').get().c || 0;
+  let numVers;
+  do {
+    cptVers += 1;
+    numVers = `VT-${String(cptVers).padStart(4, '0')}`;
+  } while (db.prepare('SELECT 1 FROM tva_versements WHERE numero = ?').get(numVers));
+  const totalTvaLot = facturesLot.reduce((s, f) => s + f.tva, 0);
+  const totalDu = totalTvaLot / 2;
+  const resVers = db.prepare(
+    "INSERT INTO tva_versements (numero, date, total_du, note) VALUES (?, ?, ?, ?)"
+  ).run(numVers, `${ANNEE}-08-05`, totalDu, 'Lot de test — TVA 1er semestre');
+  const versId = Number(resVers.lastInsertRowid);
+  const insVF = db.prepare('INSERT INTO tva_versement_factures (versement_id, facture_id, tva) VALUES (?, ?, ?)');
+  facturesLot.forEach((f) => insVF.run(versId, f.id, f.tva));
+  // Deux paiements partiels (~60 % puis ~25 %) : le lot reste ouvert avec un solde
+  const insPaiement = db.prepare(
+    'INSERT INTO tva_paiements (versement_id, date, montant, quittance, mode, note) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+  insPaiement.run(versId, `${ANNEE}-08-10`, Math.round(totalDu * 0.6), `QUIT-${ANNEE}-0451`, 'Virement', '1er acompte');
+  insPaiement.run(versId, `${ANNEE}-08-25`, Math.round(totalDu * 0.25), `QUIT-${ANNEE}-0502`, 'Chèque', '2e acompte — solde restant à régler');
+  console.log(`✔ Versement TVA ${numVers} (${facturesLot.length} factures, 2 paiements partiels, solde ouvert)`);
+}
+
+// ---------- LISTES DE CHOIX (techniciens, sites/services) ----------
+const insListe = db.prepare('INSERT OR IGNORE INTO listes_choix (categorie, valeur) VALUES (?, ?)');
+const techniciens = ['Kossi AMEGAN', 'Afi DOSSOU', 'Yao KPOTUFE', 'Komlan EDORH', 'Essohanam PALI'];
+const sitesServices = [
+  'Agence centrale — Service informatique, 2e étage, Lomé',
+  'Campus nord — Bâtiment C, salle serveurs, Lomé',
+  'Comptoir principal — Rue du Commerce, Lomé',
+  'Direction régionale de Kara — Service comptabilité',
+  'Zone portuaire — Atelier mécanique, Lomé',
+];
+techniciens.forEach((t) => insListe.run('technicien', t));
+sitesServices.forEach((s) => insListe.run('site_service', s));
+console.log(`✔ Listes de choix : ${techniciens.length} techniciens, ${sitesServices.length} sites/services`);
 
 db.close();
 console.log('\nDonnées de test insérées avec succès dans', dbPath);

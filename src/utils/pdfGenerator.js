@@ -401,17 +401,22 @@ const drawTotals = (doc, x, y, w, data, tauxTVA, compact = false) => {
     doc.text(`${value}`, x + w - 2, ry, { align: 'right' });
     ry += lineH;
   };
-  row('TOTAL MATÉRIEL HT', formatNumber(data.total_materiel_ht || 0));
-  if (data.prestations > 0) {
-    row('PRESTATIONS', formatNumber(data.prestations));
+  // Le détail n'est affiché que s'il apporte de l'information (sinon il
+  // répète le TOTAL HT) : matériel + prestations/remise éventuelles
+  const hasDetail = data.prestations > 0 || data.remise > 0;
+  if (hasDetail) {
+    row('TOTAL MATÉRIEL HT', formatNumber(data.total_materiel_ht || 0));
+    if (data.prestations > 0) {
+      row('PRESTATIONS', formatNumber(data.prestations));
+    }
+    if (data.remise > 0) {
+      row('REMISE', '- ' + formatNumber(data.remise), { color: COLORS.red });
+    }
+    // séparateur
+    doc.setDrawColor(...COLORS.line);
+    doc.setLineWidth(0.4);
+    doc.line(x, ry - lineH + 2.5, x + w, ry - lineH + 2.5);
   }
-  if (data.remise > 0) {
-    row('REMISE', '- ' + formatNumber(data.remise), { color: COLORS.red });
-  }
-  // séparateur
-  doc.setDrawColor(...COLORS.line);
-  doc.setLineWidth(0.4);
-  doc.line(x, ry - lineH + 2.5, x + w, ry - lineH + 2.5);
 
   // Sans TVA : pas de ligne TVA ni de TOTAL TTC, la barre finale affiche le TOTAL HT
   const sansTva = !(parseFloat(data.tva) > 0);
@@ -444,9 +449,12 @@ const drawTotals = (doc, x, y, w, data, tauxTVA, compact = false) => {
 // Hauteur réelle du bloc totaux (doit suivre la logique de drawTotals)
 const totalsHeight = (data, compact = false) => {
   const lineH = compact ? 5.5 : 6.5;
-  let n = 1; // TOTAL MATÉRIEL HT
-  if (data.prestations > 0) n += 1;
-  if (data.remise > 0) n += 1;
+  let n = 0;
+  if (data.prestations > 0 || data.remise > 0) {
+    n += 1; // TOTAL MATÉRIEL HT
+    if (data.prestations > 0) n += 1;
+    if (data.remise > 0) n += 1;
+  }
   if (parseFloat(data.tva) > 0) n += 2; // TOTAL HT + TVA
   return 5 + n * lineH + 10; // offset initial + lignes + barre finale
 };
@@ -917,6 +925,7 @@ const renderProformaPDF = async (proforma, parametres, options, compact) => {
     (l) => parseFloat(l.montant) || 0
   );
   const qteTotal = proforma.lignes.reduce((s, l) => s + (parseFloat(l.quantite) || 0), 0);
+  const montantTotal = proforma.lignes.reduce((s, l) => s + (parseFloat(l.montant) || 0), 0);
 
   doc.autoTable({
     startY: yPos,
@@ -925,7 +934,8 @@ const renderProformaPDF = async (proforma, parametres, options, compact) => {
     foot: [[
       { content: 'TOTAL', colSpan: 3, styles: { halign: 'center' } },
       { content: formatNumber(qteTotal), styles: { halign: 'center' } },
-      '', ''
+      '',
+      { content: formatNumber(montantTotal), styles: { halign: 'right' } }
     ]],
     showHead: 'firstPage',
     showFoot: 'lastPage',
@@ -1054,15 +1064,17 @@ const renderFacturePDF = async (facture, parametres, compact) => {
     (l) => parseFloat(l.montant) || 0
   );
   const qteTotal = facture.lignes.reduce((s, l) => s + (parseFloat(l.quantite) || 0), 0);
+  const montantTotal = facture.lignes.reduce((s, l) => s + (parseFloat(l.montant) || 0), 0);
 
   doc.autoTable({
     startY: yPos,
     head: [['N°', 'DÉSIGNATION', 'UNITÉ', 'QTÉ', 'PRIX UNIT.\n(FCFA)', 'MONTANT\n(FCFA)']],
     body: tableData,
     foot: [[
-      { content: 'TOTAL QUANTITÉ', colSpan: 3, styles: { halign: 'center' } },
+      { content: 'TOTAL', colSpan: 3, styles: { halign: 'center' } },
       { content: formatNumber(qteTotal), styles: { halign: 'center' } },
-      '', ''
+      '',
+      { content: formatNumber(montantTotal), styles: { halign: 'right' } }
     ]],
     showHead: 'firstPage',
     showFoot: 'lastPage',

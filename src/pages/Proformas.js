@@ -331,7 +331,7 @@ const Proformas = () => {
       avec_cachet: formData.avec_cachet,
       tva_applicable: formData.tva_applicable,
       lignes: lignesAplaties.map(l => ({
-        produit_id: parseInt(l.produit_id),
+        produit_id: l.produit_id ? parseInt(l.produit_id) : null,
         designation: l.designation,
         description: l.description || '',
         unite: l.unite,
@@ -419,7 +419,7 @@ const Proformas = () => {
         if (titre) lignesForm.push({ _type: 'section', titre });
       }
       lignesForm.push({
-        produit_id: String(l.produit_id),
+        produit_id: l.produit_id != null ? String(l.produit_id) : '',
         produit_search: (() => {
           const produit = produits.find((p) => p.id === l.produit_id);
           return produit ? produit.designation : (l.designation || '');
@@ -458,7 +458,7 @@ const Proformas = () => {
         if (titre) lignesForm.push({ _type: 'section', titre });
       }
       lignesForm.push({
-        produit_id: String(l.produit_id),
+        produit_id: l.produit_id != null ? String(l.produit_id) : '',
         produit_search: (() => {
           const produit = produits.find((p) => p.id === l.produit_id);
           return produit ? produit.designation : (l.designation || '');
@@ -1102,12 +1102,12 @@ const Proformas = () => {
                 <table className="data-table ligne-table">
                   <thead>
                     <tr>
-                      <th>Produit</th>
+                      <th style={{ width: '16%' }}>Produit</th>
                       <th>Désignation</th>
-                      <th>Unité</th>
-                      <th>Quantité</th>
-                      <th>Prix unitaire</th>
-                      <th>Montant</th>
+                      <th style={{ width: 90 }}>Unité</th>
+                      <th style={{ width: 80 }}>Quantité</th>
+                      <th style={{ width: 110 }}>Prix unitaire</th>
+                      <th style={{ width: 110 }}>Montant</th>
                       <th></th>
                     </tr>
                   </thead>
@@ -1184,8 +1184,8 @@ const Proformas = () => {
                               value={ligne.description || ''}
                               onChange={(e) => handleLigneChange(index, 'description', e.target.value)}
                               placeholder="Description détaillée (optionnel)"
-                              rows={2}
-                              style={{ marginTop: 4, width: '100%', fontSize: '0.8rem', resize: 'vertical', border: '1px solid #e5e7eb', borderRadius: 6, padding: '0.4rem 0.6rem', color: 'inherit', background: '#fff' }}
+                              rows={Math.min(14, Math.max(4, String(ligne.description || '').split('\n').length + 1))}
+                              style={{ marginTop: 4, width: '100%', fontSize: '0.875rem', lineHeight: 1.5, resize: 'vertical', border: '1px solid #e5e7eb', borderRadius: 6, padding: '0.5rem 0.7rem', color: 'inherit', background: '#fff' }}
                             />
                           ) : null}
                         </td>

@@ -272,7 +272,7 @@ const AppelsOffres = () => {
       validite_offre: formData.validite_offre,
       delai_execution: formData.delai_execution,
       lignes: formData.lignes.map(l => ({
-        produit_id: parseInt(l.produit_id),
+        produit_id: l.produit_id ? parseInt(l.produit_id) : null,
         designation: l.designation,
         unite: l.unite,
         quantite: parseFloat(l.quantite),
@@ -340,7 +340,7 @@ const AppelsOffres = () => {
       validite_offre: full.validite_offre || 90,
       delai_execution: full.delai_execution || '',
       lignes: (full.lignes || []).map(l => ({
-        produit_id: String(l.produit_id),
+        produit_id: l.produit_id != null ? String(l.produit_id) : '',
         produit_search: (() => {
           const produit = produits.find((p) => p.id === l.produit_id);
           return produit ? produit.designation : (l.designation || '');
