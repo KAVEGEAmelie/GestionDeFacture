@@ -90,6 +90,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     delete: (id) => ipcRenderer.invoke('attestations:delete', id)
   },
   // FICHES D'INTERVENTION TECHNIQUE
+  listes: {
+    get: (categorie) => ipcRenderer.invoke('listes:get', categorie),
+    add: (categorie, valeur) => ipcRenderer.invoke('listes:add', categorie, valeur)
+  },
   interventions: {
     getAll: () => ipcRenderer.invoke('interventions:getAll'),
     getById: (id) => ipcRenderer.invoke('interventions:getById', id),

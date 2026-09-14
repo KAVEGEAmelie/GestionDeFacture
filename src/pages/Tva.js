@@ -554,9 +554,11 @@ const Tva = () => {
                   <th>N° Versement</th>
                   <th>Date</th>
                   <th>Factures</th>
-                  <th>Total dû (50 %)</th>
+                  <th>Total TVA</th>
+                  <th>TVA à verser (50 %)</th>
+                  <th>Quittance (50 %)</th>
                   <th>Payé</th>
-                  <th>Reste</th>
+                  <th>Reste à payer</th>
                   <th>Statut</th>
                   <th style={{ width: '220px' }}>Actions</th>
                 </tr>
@@ -564,7 +566,7 @@ const Tva = () => {
               <tbody>
                 {(stats.versements || []).length === 0 ? (
                   <tr>
-                    <td colSpan="9" className="empty-state">
+                    <td colSpan="11" className="empty-state">
                       Aucun versement OTR. Sélectionnez des factures dans « TVA à reverser » puis créez un versement.
                     </td>
                   </tr>
@@ -584,7 +586,9 @@ const Tva = () => {
                         <td className="font-semibold">{v.numero}</td>
                         <td>{formatDate(v.date)}</td>
                         <td>{v.nb_factures}</td>
-                        <td>{formatFCFA(v.total_du)}</td>
+                        <td>{formatFCFA(v.total_tva ?? v.total_du * 2)}</td>
+                        <td className="font-semibold" style={{ color: '#dc2626' }}>{formatFCFA(v.total_du)}</td>
+                        <td style={{ color: '#92400e' }}>{formatFCFA(v.quittance ?? v.total_du)}</td>
                         <td style={{ color: '#10b981' }}>{formatFCFA(v.paye)}</td>
                         <td className="font-semibold" style={{ color: v.reste > 0 ? '#dc2626' : '#10b981' }}>{formatFCFA(v.reste)}</td>
                         <td>
@@ -618,7 +622,7 @@ const Tva = () => {
                       </tr>
                       {expandedVersements.includes(v.id) && (
                         <tr>
-                          <td colSpan="9" style={{ backgroundColor: '#f9fafb', padding: '12px 18px' }}>
+                          <td colSpan="11" style={{ backgroundColor: '#f9fafb', padding: '12px 18px' }}>
                             <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
                               <div style={{ minWidth: 260 }}>
                                 <strong style={{ fontSize: 13 }}>Factures du lot</strong>

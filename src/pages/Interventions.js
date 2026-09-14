@@ -150,6 +150,9 @@ const Interventions = () => {
   const [parametres, setParametres] = useState({});
   const [clients, setClients] = useState([]);
   const [interventions, setInterventions] = useState([]);
+  const [produits, setProduits] = useState([]);
+  const [techniciens, setTechniciens] = useState([]);
+  const [sitesServices, setSitesServices] = useState([]);
 
   const [searchTerm, setSearchTerm] = useState('');
   const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
@@ -175,14 +178,20 @@ const Interventions = () => {
           toast.error("Module fiches d'intervention indisponible : fermez complètement l'application puis relancez-la.");
           return;
         }
-        const [params, clientsData, interventionsData] = await Promise.all([
+        const [params, clientsData, interventionsData, produitsData, techniciensData, sitesData] = await Promise.all([
           window.electronAPI.parametres.getAll(),
           window.electronAPI.clients.getAll(),
           window.electronAPI.interventions.getAll(),
+          window.electronAPI.produits.getAll(),
+          window.electronAPI.listes ? window.electronAPI.listes.get('technicien') : Promise.resolve([]),
+          window.electronAPI.listes ? window.electronAPI.listes.get('site_service') : Promise.resolve([]),
         ]);
         setParametres(params || {});
         setClients(clientsData || []);
         setInterventions(interventionsData || []);
+        setProduits(produitsData || []);
+        setTechniciens(techniciensData || []);
+        setSitesServices(sitesData || []);
       } catch (error) {
         toast.error(getErrorMessage(error, 'Impossible de charger les données.'));
       }
@@ -345,6 +354,22 @@ const Interventions = () => {
     });
   };
 
+  // Désignation liée aux produits : création immédiate si le produit n'existe pas
+  const handlePieceDesignation = async (index, value, option) => {
+    const designation = option?.label || value;
+    updateMateriel(index, 'designation', designation);
+    if (option?.custom && window.electronAPI?.produits) {
+      try {
+        await window.electronAPI.produits.create({ designation, prix_unitaire: 0, unite: 'Unité', description: '' });
+        const data = await window.electronAPI.produits.getAll();
+        setProduits(data || []);
+        toast.success(`Produit « ${designation} » créé et ajouté à la liste des produits.`);
+      } catch (error) {
+        toast.error(getErrorMessage(error, 'Impossible de créer le produit.'));
+      }
+    }
+  };
+
   const removeMateriel = (index) => {
     setFormData((prev) => ({
       ...prev,
@@ -388,6 +413,17 @@ const Interventions = () => {
       }
       const updated = await window.electronAPI.interventions.getAll();
       setInterventions(updated || []);
+      // Mémorise technicien et site/service pour les prochaines fiches
+      if (window.electronAPI.listes) {
+        if (payload.intervenant) {
+          await window.electronAPI.listes.add('technicien', payload.intervenant);
+          setTechniciens((prev) => (prev.includes(payload.intervenant) ? prev : [...prev, payload.intervenant].sort((a, b) => a.localeCompare(b, 'fr'))));
+        }
+        if (payload.client_adresse) {
+          await window.electronAPI.listes.add('site_service', payload.client_adresse);
+          setSitesServices((prev) => (prev.includes(payload.client_adresse) ? prev : [...prev, payload.client_adresse].sort((a, b) => a.localeCompare(b, 'fr'))));
+        }
+      }
     } catch (error) {
       toast.error(getErrorMessage(error, 'Erreur lors de l\'enregistrement.'));
       return;
@@ -543,7 +579,14 @@ const Interventions = () => {
               </div>
               <div className="form-group">
                 <label>Technicien(s)</label>
-                <input type="text" value={formData.intervenant} onChange={(e) => handleChange('intervenant', e.target.value)} placeholder="Nom du ou des techniciens" />
+                <SearchableSelect
+                  options={techniciens.map((t) => ({ value: t, label: t }))}
+                  value={formData.intervenant}
+                  onChange={(val, option) => handleChange('intervenant', option?.label || val)}
+                  placeholder="Choisir ou saisir un technicien"
+                  noOptionsText="Aucun technicien — tapez le nom puis Entrée"
+                  allowCustomValue
+                />
               </div>
             </div>
             <div className="form-row">
@@ -559,7 +602,14 @@ const Interventions = () => {
               </div>
               <div className="form-group">
                 <label>Site / Service</label>
-                <input type="text" value={formData.client_adresse} onChange={(e) => handleChange('client_adresse', e.target.value)} placeholder="Site ou service concerné" />
+                <SearchableSelect
+                  options={sitesServices.map((s) => ({ value: s, label: s }))}
+                  value={formData.client_adresse}
+                  onChange={(val, option) => handleChange('client_adresse', option?.label || val)}
+                  placeholder="Choisir ou saisir un site / service"
+                  noOptionsText="Aucun site — tapez-le puis Entrée"
+                  allowCustomValue
+                />
               </div>
               <div className="form-group">
                 <label>Contact client</label>
@@ -620,15 +670,27 @@ const Interventions = () => {
               <div className="form-row" key={index} style={{ alignItems: 'flex-end' }}>
                 <div className="form-group" style={{ flex: 3 }}>
                   <label>Désignation</label>
-                  <input type="text" value={m.designation || ''} onChange={(e) => updateMateriel(index, 'designation', e.target.value)} />
+                  <SearchableSelect
+                    options={produits.map((p) => ({ value: p.designation, label: p.designation }))}
+                    value={m.designation || ''}
+                    onChange={(val, option) => handlePieceDesignation(index, val, option)}
+                    placeholder="Rechercher un produit existant"
+                    noOptionsText="Aucun produit — tapez la désignation puis Entrée pour le créer"
+                    allowCustomValue
+                  />
                 </div>
                 <div className="form-group" style={{ flex: 1 }}>
                   <label>Qté</label>
-                  <input type="text" value={m.qte || ''} onChange={(e) => updateMateriel(index, 'qte', e.target.value)} />
+                  <input type="number" min="0" step="1" value={m.qte || ''} onChange={(e) => updateMateriel(index, 'qte', e.target.value)} />
                 </div>
                 <div className="form-group" style={{ flex: 1 }}>
                   <label>État</label>
-                  <input type="text" value={m.etat || ''} onChange={(e) => updateMateriel(index, 'etat', e.target.value)} placeholder="Neuf / Réutilisé" />
+                  <select value={m.etat || ''} onChange={(e) => updateMateriel(index, 'etat', e.target.value)}>
+                    <option value="">—</option>
+                    <option value="Neuf">Neuf</option>
+                    <option value="Réutilisé">Réutilisé</option>
+                    <option value="Occasion">Occasion</option>
+                  </select>
                 </div>
                 <div className="form-group" style={{ flex: 2 }}>
                   <label>Observation / Référence</label>

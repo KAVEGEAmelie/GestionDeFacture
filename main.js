@@ -320,6 +320,16 @@ function initDatabase() {
     );
   `);
 
+  // Listes de valeurs réutilisables (techniciens, sites/services…)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS listes_choix (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      categorie TEXT NOT NULL,
+      valeur TEXT NOT NULL,
+      UNIQUE(categorie, valeur)
+    );
+  `);
+
   // Migration : choix d'ajouter le cachet + signature sur la proforma.
   const proformaCols = db.prepare("PRAGMA table_info(proformas)").all().map((c) => c.name);
   if (!proformaCols.includes('avec_cachet')) {
@@ -1420,6 +1430,19 @@ ipcMain.handle('factures:markUnpaid', (event, id) => {
 });
 
 // SUIVI DE LA TVA (OTR) — la TVA à verser à l'OTR vaut 50 % de la TVA collectée
+// Listes de valeurs réutilisables (catégories : technicien, site_service…)
+ipcMain.handle('listes:get', (event, categorie) => {
+  return db.prepare('SELECT valeur FROM listes_choix WHERE categorie = ? ORDER BY valeur COLLATE NOCASE')
+    .all(categorie).map((r) => r.valeur);
+});
+
+ipcMain.handle('listes:add', (event, categorie, valeur) => {
+  const v = String(valeur || '').trim();
+  if (!v) return { success: false };
+  db.prepare('INSERT OR IGNORE INTO listes_choix (categorie, valeur) VALUES (?, ?)').run(categorie, v);
+  return { success: true };
+});
+
 ipcMain.handle('tva:getStats', () => {
   const nonVersee = db.prepare(
     "SELECT COALESCE(SUM(tva), 0) as total, COUNT(*) as count FROM factures WHERE statut_paiement = 'payee' AND tva_versee = 0 AND tva > 0"
@@ -1454,11 +1477,13 @@ ipcMain.handle('tva:getStats', () => {
   const versements = db.prepare(`
     SELECT v.id, v.numero, v.date, v.total_du, v.note,
       COALESCE((SELECT SUM(p.montant) FROM tva_paiements p WHERE p.versement_id = v.id), 0) AS paye,
-      (SELECT COUNT(*) FROM tva_versement_factures vf WHERE vf.versement_id = v.id) AS nb_factures
+      (SELECT COUNT(*) FROM tva_versement_factures vf WHERE vf.versement_id = v.id) AS nb_factures,
+      COALESCE((SELECT SUM(vf.tva) FROM tva_versement_factures vf WHERE vf.versement_id = v.id), 0) AS total_tva
     FROM tva_versements v
     ORDER BY v.id DESC
   `).all().map((v) => ({
     ...v,
+    quittance: Math.max(0, v.total_tva - v.total_du),
     reste: Math.max(0, v.total_du - v.paye),
     solde: v.paye >= v.total_du - 0.5 ? 1 : 0,
     factures: db.prepare(`
