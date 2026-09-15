@@ -9,7 +9,7 @@ import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
 import { matchesWordPrefix } from '../utils/search';
-import { generateTvaPDF } from '../utils/pdfGenerator';
+import { generateTvaPDF, generateTvaVersementsPDF } from '../utils/pdfGenerator';
 import './Clients.css';
 import './Proformas.css';
 import './Dashboard.css';
@@ -294,19 +294,51 @@ const Tva = () => {
     };
   };
 
+  // Rapport des versements OTR (onglet Versements) : toutes les colonnes, filtré par période
+  const buildRapportVersements = () => {
+    const source = (stats.versements || []).filter((v) => inDateRange(v.date, dateFrom, dateTo));
+    const lignes = source.map((v) => ({
+      numero: v.numero,
+      date: formatDate(v.date),
+      nb_factures: v.nb_factures || 0,
+      total_tva: v.total_tva ?? (v.total_du * 2),
+      total_du: v.total_du || 0,
+      quittance: v.quittance ?? v.total_du,
+      paye: v.paye || 0,
+      reste: v.reste || 0,
+      solde: v.solde === 1,
+    }));
+    const sum = (key) => lignes.reduce((s, l) => s + (l[key] || 0), 0);
+    return {
+      titre: 'RAPPORT DES VERSEMENTS TVA (OTR)',
+      sousTitre: (dateFrom || dateTo)
+        ? `Période : ${dateFrom ? formatDate(dateFrom) : '...'} au ${dateTo ? formatDate(dateTo) : '...'}`
+        : 'Toutes périodes',
+      lignes,
+      totalTva: sum('total_tva'),
+      totalDu: sum('total_du'),
+      totalQuittance: sum('quittance'),
+      totalPaye: sum('paye'),
+      totalReste: sum('reste'),
+    };
+  };
+
   const handleExportPDF = async (impression = false) => {
-    const rapport = buildRapport();
+    const estVersements = activeTab === 'versements';
+    const rapport = estVersements ? buildRapportVersements() : buildRapport();
     if (rapport.lignes.length === 0) {
       toast.error('Aucune donnée à exporter.');
       return;
     }
     try {
-      const doc = await generateTvaPDF(rapport, parametres);
+      const doc = estVersements
+        ? await generateTvaVersementsPDF(rapport, parametres)
+        : await generateTvaPDF(rapport, parametres);
       if (impression) {
         doc.autoPrint();
         window.open(doc.output('bloburl'), '_blank');
       } else {
-        const suffixe = rapport.estAVerser ? 'a-reverser' : 'versee';
+        const suffixe = estVersements ? 'versements-otr' : (rapport.estAVerser ? 'a-reverser' : 'versee');
         doc.save(`Rapport_TVA_${suffixe}_${new Date().toISOString().slice(0, 10)}.pdf`);
         toast.success('Rapport PDF téléchargé.');
       }
@@ -316,6 +348,45 @@ const Tva = () => {
   };
 
   const handleExportExcel = () => {
+    if (activeTab === 'versements') {
+      const rapport = buildRapportVersements();
+      if (rapport.lignes.length === 0) {
+        toast.error('Aucune donnée à exporter.');
+        return;
+      }
+      try {
+        const rows = rapport.lignes.map((v, i) => ({
+          'N°': i + 1,
+          'N° Versement': v.numero,
+          'Date': v.date,
+          'Factures': v.nb_factures,
+          'Total TVA (FCFA)': Math.round(v.total_tva),
+          'TVA à verser 50 % (FCFA)': Math.round(v.total_du),
+          'Quittance 50 % (FCFA)': Math.round(v.quittance),
+          'Payé (FCFA)': Math.round(v.paye),
+          'Reste à payer (FCFA)': Math.round(v.reste),
+          'Statut': v.solde ? 'Soldé' : (v.paye > 0 ? 'Partiellement payé' : 'Non payé'),
+        }));
+        rows.push({
+          'N°': '', 'N° Versement': '', 'Date': '', 'Factures': 'TOTAL',
+          'Total TVA (FCFA)': Math.round(rapport.totalTva),
+          'TVA à verser 50 % (FCFA)': Math.round(rapport.totalDu),
+          'Quittance 50 % (FCFA)': Math.round(rapport.totalQuittance),
+          'Payé (FCFA)': Math.round(rapport.totalPaye),
+          'Reste à payer (FCFA)': Math.round(rapport.totalReste),
+          'Statut': '',
+        });
+        const ws = XLSX.utils.json_to_sheet(rows);
+        ws['!cols'] = [{ wch: 5 }, { wch: 14 }, { wch: 12 }, { wch: 10 }, { wch: 18 }, { wch: 22 }, { wch: 20 }, { wch: 16 }, { wch: 20 }, { wch: 18 }];
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Versements OTR');
+        XLSX.writeFile(wb, `Rapport_TVA_versements-otr_${new Date().toISOString().slice(0, 10)}.xlsx`);
+        toast.success('Rapport Excel téléchargé.');
+      } catch (error) {
+        toast.error(getErrorMessage(error, 'Erreur lors de la génération du fichier Excel.'));
+      }
+      return;
+    }
     const rapport = buildRapport();
     if (rapport.lignes.length === 0) {
       toast.error('Aucune donnée à exporter.');
@@ -328,7 +399,9 @@ const Tva = () => {
         'Client': l.client,
         [rapport.estAVerser ? 'Date paiement' : 'Date versement']: l.date,
         'Montant TTC (FCFA)': Math.round(l.total_ttc),
-        'TVA (FCFA)': Math.round(l.tva),
+        'Total TVA (FCFA)': Math.round(l.tva),
+        'TVA à verser 50 % (FCFA)': Math.round((l.tva || 0) / 2),
+        'Quittance 50 % (FCFA)': Math.round((l.tva || 0) / 2),
       }));
       // Ligne de total
       rows.push({
@@ -337,10 +410,12 @@ const Tva = () => {
         'Client': '',
         [rapport.estAVerser ? 'Date paiement' : 'Date versement']: 'TOTAL',
         'Montant TTC (FCFA)': Math.round(rapport.totalTtc),
-        'TVA (FCFA)': Math.round(rapport.totalTva),
+        'Total TVA (FCFA)': Math.round(rapport.totalTva),
+        'TVA à verser 50 % (FCFA)': Math.round((rapport.totalTva || 0) / 2),
+        'Quittance 50 % (FCFA)': Math.round((rapport.totalTva || 0) / 2),
       });
       const ws = XLSX.utils.json_to_sheet(rows);
-      ws['!cols'] = [{ wch: 5 }, { wch: 16 }, { wch: 28 }, { wch: 16 }, { wch: 18 }, { wch: 16 }];
+      ws['!cols'] = [{ wch: 5 }, { wch: 16 }, { wch: 28 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 22 }, { wch: 20 }];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, rapport.estAVerser ? 'TVA à reverser' : 'TVA versée');
       const suffixe = rapport.estAVerser ? 'a-reverser' : 'versee';

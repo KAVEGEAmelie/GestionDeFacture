@@ -1918,7 +1918,8 @@ export const generateInterventionPDF = async (fiche, parametres = {}) => {
   const pieces = (Array.isArray(fiche.materiels) ? fiche.materiels : []).filter(
     (m) => m && ['designation', 'qte', 'etat', 'ref', 'garantie'].some((k) => String(m[k] || '').trim())
   );
-  const nbRows = Math.max(3, pieces.length);
+  // Fiche vierge : 3 lignes à remplir à la main ; sinon uniquement les lignes saisies
+  const nbRows = pieces.length > 0 ? pieces.length : 3;
   const tRowH = 6.4;
   const desW = contentW * 0.47;
   const qteW = contentW * 0.11;
@@ -2100,7 +2101,7 @@ export const generateInterventionPDF = async (fiche, parametres = {}) => {
 // Génération PDF Rapport TVA (suivi OTR)
 // rapport = { titre, sousTitre, dateLabel, lignes:[{numero, client, date, total_ttc, tva}], totalTtc, totalTva }
 export const generateTvaPDF = async (rapport, parametres) => {
-  const doc = new jsPDF();
+  const doc = new jsPDF({ orientation: 'landscape' });
   const pageWidth = doc.internal.pageSize.getWidth();
 
   drawPageFrame(doc);
@@ -2134,17 +2135,21 @@ export const generateTvaPDF = async (rapport, parametres) => {
     l.client || '',
     l.date || '-',
     formatNumber(l.total_ttc),
-    formatNumber(l.tva)
+    formatNumber(l.tva),
+    formatNumber((l.tva || 0) / 2),
+    formatNumber((l.tva || 0) / 2)
   ]);
 
   doc.autoTable({
     startY: yPos,
-    head: [['N°', 'N° FACTURE', 'CLIENT', rapport.dateLabel || 'DATE', 'MONTANT TTC\n(FCFA)', 'TVA\n(FCFA)']],
+    head: [['N°', 'N° FACTURE', 'CLIENT', rapport.dateLabel || 'DATE', 'MONTANT TTC\n(FCFA)', 'TOTAL TVA\n(FCFA)', 'TVA À VERSER\n50 % (FCFA)', 'QUITTANCE\n50 % (FCFA)']],
     body: tableData,
     foot: [[
-      { content: 'TOTAL', colSpan: 4, styles: { halign: 'right' } },
+      { content: 'TOTAL', colSpan: 4, styles: { halign: 'center' } },
       { content: formatNumber(rapport.totalTtc), styles: { halign: 'right' } },
-      { content: formatNumber(rapport.totalTva), styles: { halign: 'right' } }
+      { content: formatNumber(rapport.totalTva), styles: { halign: 'right' } },
+      { content: formatNumber((rapport.totalTva || 0) / 2), styles: { halign: 'right' } },
+      { content: formatNumber((rapport.totalTva || 0) / 2), styles: { halign: 'right' } }
     ]],
     showHead: 'firstPage',
     showFoot: 'lastPage',
@@ -2158,12 +2163,14 @@ export const generateTvaPDF = async (rapport, parametres) => {
       fillColor: COLORS.boxBg, textColor: COLORS.navy, fontStyle: 'bold', fontSize: 9.5
     },
     columnStyles: {
-      0: { cellWidth: 12, halign: 'center' },
-      1: { cellWidth: 38 },
-      2: { cellWidth: 56 },
-      3: { cellWidth: 30, halign: 'center' },
-      4: { cellWidth: 26, halign: 'right' },
-      5: { cellWidth: 24, halign: 'right' }
+      0: { cellWidth: 10, halign: 'center' },
+      1: { cellWidth: 34 },
+      2: { cellWidth: 65 },
+      3: { cellWidth: 28, halign: 'center' },
+      4: { cellWidth: 34, halign: 'right' },
+      5: { cellWidth: 30, halign: 'right' },
+      6: { cellWidth: 36, halign: 'right' },
+      7: { cellWidth: 36, halign: 'right' }
     },
     styles: { lineColor: COLORS.line, lineWidth: 0.15 },
     margin: { left: MARGIN, right: MARGIN, bottom: 26 },
@@ -2171,6 +2178,91 @@ export const generateTvaPDF = async (rapport, parametres) => {
   });
 
   // Pied de page commun
+  drawFooter(doc, parametres);
+
+  return doc;
+};
+
+// Rapport des versements OTR — format paysage (nombreuses colonnes)
+export const generateTvaVersementsPDF = async (rapport, parametres) => {
+  const doc = new jsPDF({ orientation: 'landscape' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  drawPageFrame(doc);
+  const { rightX, headerBottom } = await drawHeader(doc, parametres);
+
+  let yPos = drawTitle(doc, rapport.titre || 'RAPPORT DES VERSEMENTS TVA (OTR)', headerBottom + 11);
+
+  if (rapport.sousTitre) {
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(10);
+    doc.setTextColor(...COLORS.grey);
+    doc.text(rapport.sousTitre, pageWidth / 2, yPos + 6, { align: 'center' });
+    yPos += 6;
+  }
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(...COLORS.ink);
+  doc.text(`Édité le : ${formatDateLong(new Date())}`, rightX, yPos + 8, { align: 'right' });
+
+  yPos += 14;
+
+  const lignes = rapport.lignes || [];
+  const tableData = lignes.map((v, i) => [
+    i + 1,
+    v.numero || '',
+    v.date || '-',
+    v.nb_factures || 0,
+    formatNumber(v.total_tva),
+    formatNumber(v.total_du),
+    formatNumber(v.quittance),
+    formatNumber(v.paye),
+    formatNumber(v.reste),
+    v.solde ? 'Soldé' : (v.paye > 0 ? 'Partiellement payé' : 'Non payé'),
+  ]);
+
+  doc.autoTable({
+    startY: yPos,
+    head: [['N°', 'N° VERSEMENT', 'DATE', 'FACTURES', 'TOTAL TVA\n(FCFA)', 'TVA À VERSER\n50 % (FCFA)', 'QUITTANCE\n50 % (FCFA)', 'PAYÉ\n(FCFA)', 'RESTE À PAYER\n(FCFA)', 'STATUT']],
+    body: tableData,
+    foot: [[
+      { content: 'TOTAL', colSpan: 4, styles: { halign: 'center' } },
+      { content: formatNumber(rapport.totalTva), styles: { halign: 'right' } },
+      { content: formatNumber(rapport.totalDu), styles: { halign: 'right' } },
+      { content: formatNumber(rapport.totalQuittance), styles: { halign: 'right' } },
+      { content: formatNumber(rapport.totalPaye), styles: { halign: 'right' } },
+      { content: formatNumber(rapport.totalReste), styles: { halign: 'right' } },
+      ''
+    ]],
+    showHead: 'firstPage',
+    showFoot: 'lastPage',
+    theme: 'grid',
+    headStyles: {
+      fillColor: COLORS.navy, textColor: COLORS.white, fontStyle: 'bold',
+      fontSize: 8.5, halign: 'center', valign: 'middle', cellPadding: 2.5
+    },
+    bodyStyles: { fontSize: 9, cellPadding: 2.2, textColor: COLORS.ink, valign: 'middle' },
+    footStyles: {
+      fillColor: COLORS.boxBg, textColor: COLORS.navy, fontStyle: 'bold', fontSize: 9.5
+    },
+    columnStyles: {
+      0: { cellWidth: 10, halign: 'center' },
+      1: { cellWidth: 30 },
+      2: { cellWidth: 24, halign: 'center' },
+      3: { cellWidth: 20, halign: 'center' },
+      4: { cellWidth: 34, halign: 'right' },
+      5: { cellWidth: 34, halign: 'right' },
+      6: { cellWidth: 34, halign: 'right' },
+      7: { cellWidth: 30, halign: 'right' },
+      8: { cellWidth: 30, halign: 'right' },
+      9: { cellWidth: 27, halign: 'center' }
+    },
+    styles: { lineColor: COLORS.line, lineWidth: 0.15 },
+    margin: { left: MARGIN, right: MARGIN, bottom: 26 },
+    didDrawPage: () => { drawPageFrame(doc); }
+  });
+
   drawFooter(doc, parametres);
 
   return doc;

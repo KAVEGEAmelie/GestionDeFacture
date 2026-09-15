@@ -762,7 +762,14 @@ const Interventions = () => {
               </div>
               <div className="form-group">
                 <label>Durée</label>
-                <input type="text" value={formData.duree} onChange={(e) => handleChange('duree', e.target.value)} placeholder="Ex : 2h30" />
+                <SearchableSelect
+                  options={['30 min', '45 min', '1h', '1h30', '2h', '2h30', '3h', '4h', 'Demi-journée', 'Journée complète', '2 jours', '3 jours', '1 semaine'].map((d) => ({ value: d, label: d }))}
+                  value={formData.duree}
+                  onChange={(val, option) => handleChange('duree', option?.label || val)}
+                  placeholder="Choisir ou saisir une durée"
+                  noOptionsText="Tapez la durée puis Entrée"
+                  allowCustomValue
+                />
               </div>
               <div className="form-group">
                 <label>Prochaine action</label>
