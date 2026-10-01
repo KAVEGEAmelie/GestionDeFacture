@@ -1762,10 +1762,10 @@ export const generateAttestationPDF = async (attestation, parametres = {}) => {
 
 // ===== FICHE D'INTERVENTION TECHNIQUE (modèle simplifié) =====
 
-export const FIT_CATEGORIE_OPTIONS = ['Informatique', 'Réseau informatique', 'Bureautique', 'Autre'];
+export const FIT_CATEGORIE_OPTIONS = ['Informatique', 'Réseau informatique', 'Bureautique'];
 export const FIT_EQUIPEMENT_OPTIONS = [
   'Ordinateur', 'Serveur', 'Imprimante', 'Photocopieur', 'Onduleur',
-  'Routeur', 'Switch', 'Wi-Fi', 'Câblage', 'Autre',
+  'Routeur', 'Switch', 'Wi-Fi', 'Câblage',
 ];
 export const FIT_TRAVAUX_OPTIONS = [
   'Maintenance', 'Réparation', 'Configuration', 'Installation',
@@ -2020,16 +2020,18 @@ export const generateInterventionPDF = async (fiche, parametres = {}) => {
   // === 2. ÉQUIPEMENT CONCERNÉ ===
   const dCategorie = Array.isArray(fiche.categorie) ? fiche.categorie : [];
   const dEquip = Array.isArray(fiche.equipements) ? fiche.equipements : [];
+  // Les choix personnalisés (ajoutés à la volée) s'affichent aussi, même hors liste fixe
+  const categorieAffichees = Array.from(new Set([...FIT_CATEGORIE_OPTIONS, ...dCategorie]));
+  const equipementsAffiches = Array.from(new Set([...FIT_EQUIPEMENT_OPTIONS, ...dEquip]));
   y = ensureSpace(y, 40);
   y = drawFitSectionBar(doc, contentLeft, contentW, y, '2. ÉQUIPEMENT CONCERNÉ');
   flowRow([
     { t: 'b', text: 'Catégorie :' },
-    ...FIT_CATEGORIE_OPTIONS.map((l) => ({ t: 'ck', label: l, on: dCategorie.includes(l) })),
-    { t: 'f', label: 'Autre :', value: fiche.categorie_autre || '', w: 40 },
+    ...categorieAffichees.map((l) => ({ t: 'ck', label: l, on: dCategorie.includes(l) })),
   ]);
   flowRow([
     { t: 'b', text: 'Équipement :' },
-    ...FIT_EQUIPEMENT_OPTIONS.map((l) => ({ t: 'ck', label: l, on: dEquip.includes(l) })),
+    ...equipementsAffiches.map((l) => ({ t: 'ck', label: l, on: dEquip.includes(l) })),
   ]);
   flowRow([
     { t: 'f', label: 'Marque / Modèle :', value: fiche.marque_modele || '', w: 70 },

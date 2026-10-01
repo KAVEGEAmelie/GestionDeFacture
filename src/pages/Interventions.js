@@ -34,7 +34,6 @@ const buildDefaultForm = () => ({
   nom_demandeur: '',
   client_contact: '',
   categorie: [],
-  categorie_autre: '',
   equipements: [],
   marque_modele: '',
   num_serie: '',
@@ -51,7 +50,6 @@ const buildDefaultForm = () => ({
 const toStoredRecord = (form) => {
   const details = {
     categorie: arr(form.categorie),
-    categorie_autre: trim(form.categorie_autre),
     equipements: arr(form.equipements),
     nom_demandeur: trim(form.nom_demandeur),
     diagnostic: trim(form.diagnostic),
@@ -105,6 +103,10 @@ const Interventions = () => {
   const [interventions, setInterventions] = useState([]);
   const [techniciens, setTechniciens] = useState([]);
   const [sitesServices, setSitesServices] = useState([]);
+  const [categorieOptions, setCategorieOptions] = useState(FIT_CATEGORIE_OPTIONS);
+  const [equipementOptions, setEquipementOptions] = useState(FIT_EQUIPEMENT_OPTIONS);
+  const [newCategorie, setNewCategorie] = useState('');
+  const [newEquipement, setNewEquipement] = useState('');
 
   const [searchTerm, setSearchTerm] = useState('');
   const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
@@ -130,18 +132,22 @@ const Interventions = () => {
           toast.error("Module fiches d'intervention indisponible : fermez complètement l'application puis relancez-la.");
           return;
         }
-        const [params, clientsData, interventionsData, techniciensData, sitesData] = await Promise.all([
+        const [params, clientsData, interventionsData, techniciensData, sitesData, categoriesData, equipementsData] = await Promise.all([
           window.electronAPI.parametres.getAll(),
           window.electronAPI.clients.getAll(),
           window.electronAPI.interventions.getAll(),
           window.electronAPI.listes ? window.electronAPI.listes.get('technicien') : Promise.resolve([]),
           window.electronAPI.listes ? window.electronAPI.listes.get('site_service') : Promise.resolve([]),
+          window.electronAPI.listes ? window.electronAPI.listes.get('intervention_categorie') : Promise.resolve([]),
+          window.electronAPI.listes ? window.electronAPI.listes.get('intervention_equipement') : Promise.resolve([]),
         ]);
         setParametres(params || {});
         setClients(clientsData || []);
         setInterventions(interventionsData || []);
         setTechniciens(techniciensData || []);
         setSitesServices(sitesData || []);
+        setCategorieOptions((prev) => Array.from(new Set([...prev, ...(categoriesData || [])])));
+        setEquipementOptions((prev) => Array.from(new Set([...prev, ...(equipementsData || [])])));
       } catch (error) {
         toast.error(getErrorMessage(error, 'Impossible de charger les données.'));
       }
@@ -252,6 +258,24 @@ const Interventions = () => {
         [field]: list.includes(label) ? list.filter((l) => l !== label) : [...list, label],
       };
     });
+  };
+
+  // Ajoute un choix tapé à la volée : coché immédiatement + mémorisé pour les prochaines fiches
+  const addCustomOption = async (field, categorieListe, rawValue, setOptions) => {
+    const v = trim(rawValue);
+    if (!v) return;
+    setFormData((prev) => {
+      const list = Array.isArray(prev[field]) ? prev[field] : [];
+      return list.includes(v) ? prev : { ...prev, [field]: [...list, v] };
+    });
+    setOptions((prev) => (prev.includes(v) ? prev : [...prev, v]));
+    if (window.electronAPI.listes) {
+      try {
+        await window.electronAPI.listes.add(categorieListe, v);
+      } catch {
+        // non bloquant
+      }
+    }
   };
 
   const renderCheckGrid = (field, options) => (
@@ -545,18 +569,63 @@ const Interventions = () => {
             <span className="form-section__eyebrow">2. Équipement concerné</span>
             <div className="form-group">
               <label>Catégorie</label>
-              {renderCheckGrid('categorie', FIT_CATEGORIE_OPTIONS)}
-              <input
-                type="text"
-                value={formData.categorie_autre}
-                onChange={(e) => handleChange('categorie_autre', e.target.value)}
-                placeholder="Autre : préciser..."
-                style={{ marginTop: 6 }}
-              />
+              {renderCheckGrid('categorie', categorieOptions)}
+              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                <input
+                  type="text"
+                  value={newCategorie}
+                  onChange={(e) => setNewCategorie(e.target.value)}
+                  placeholder="Autre catégorie : tapez puis Entrée"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addCustomOption('categorie', 'intervention_categorie', newCategorie, setCategorieOptions);
+                      setNewCategorie('');
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => {
+                    addCustomOption('categorie', 'intervention_categorie', newCategorie, setCategorieOptions);
+                    setNewCategorie('');
+                  }}
+                >
+                  <Plus size={14} />
+                  Ajouter
+                </button>
+              </div>
             </div>
             <div className="form-group">
               <label>Équipement</label>
-              {renderCheckGrid('equipements', FIT_EQUIPEMENT_OPTIONS)}
+              {renderCheckGrid('equipements', equipementOptions)}
+              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                <input
+                  type="text"
+                  value={newEquipement}
+                  onChange={(e) => setNewEquipement(e.target.value)}
+                  placeholder="Autre équipement : tapez puis Entrée"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addCustomOption('equipements', 'intervention_equipement', newEquipement, setEquipementOptions);
+                      setNewEquipement('');
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => {
+                    addCustomOption('equipements', 'intervention_equipement', newEquipement, setEquipementOptions);
+                    setNewEquipement('');
+                  }}
+                >
+                  <Plus size={14} />
+                  Ajouter
+                </button>
+              </div>
             </div>
             <div className="form-row" style={{ marginTop: 10 }}>
               <div className="form-group">
