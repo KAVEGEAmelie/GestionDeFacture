@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Eye, Trash2, FileCheck, Truck, Printer, Download, CheckCircle, RotateCcw, Edit2, Plus, FolderPlus, AlignLeft } from 'lucide-react';
+import { Eye, Trash2, FileCheck, Truck, Printer, Download, CheckCircle, RotateCcw, Edit2, Plus, FolderPlus, AlignLeft, Percent, X } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
 import { inDateRange, inNumberRange } from '../utils/dateFilters';
-import { generateFacturePDF } from '../utils/pdfGenerator';
+import { generateFacturePDF, generateFactureSituationPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
@@ -36,6 +36,10 @@ const Factures = () => {
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [editingFacture, setEditingFacture] = useState(null);
   const [openDescRows, setOpenDescRows] = useState({});
+  const [situationsModalOpen, setSituationsModalOpen] = useState(false);
+  const [situationsFacture, setSituationsFacture] = useState(null);
+  const [situations, setSituations] = useState([]);
+  const [nouveauTaux, setNouveauTaux] = useState('');
   const [editForm, setEditForm] = useState({
     date: '',
     objet: '',
@@ -290,6 +294,89 @@ const Factures = () => {
     }
   };
 
+  // —— Facturation par situation (paiement partiel en %) ——
+  const openSituations = async (facture) => {
+    try {
+      const full = await window.electronAPI.factures.getById(facture.id);
+      const list = await window.electronAPI.factureSituations.getByFacture(facture.id);
+      setSituationsFacture(full);
+      setSituations(list || []);
+      setNouveauTaux('');
+      setSituationsModalOpen(true);
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Impossible de charger les situations de facturation.'));
+    }
+  };
+
+  const tauxDejaEmis = situations.reduce((s, v) => s + (v.taux || 0), 0);
+  const tauxRestant = Math.max(0, Math.round((100 - tauxDejaEmis) * 100) / 100);
+
+  const refreshSituations = async () => {
+    const list = await window.electronAPI.factureSituations.getByFacture(situationsFacture.id);
+    setSituations(list || []);
+  };
+
+  const handleAddSituation = async () => {
+    const taux = parseFloat(nouveauTaux);
+    if (!taux || taux <= 0) {
+      toast.error('Veuillez saisir un pourcentage valide.');
+      return;
+    }
+    try {
+      const res = await window.electronAPI.factureSituations.create(situationsFacture.id, taux);
+      toast.success(`Facture de situation ${res.numero} créée (${formatPrice(res.montant_ttc)} FCFA).`);
+      setNouveauTaux('');
+      await refreshSituations();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la création de la situation.'));
+    }
+  };
+
+  const handlePrintSituation = async (situation, print = false) => {
+    try {
+      const doc = await generateFactureSituationPDF(situation, situationsFacture, parametres);
+      if (print) {
+        doc.autoPrint();
+        window.open(doc.output('bloburl'), '_blank');
+      } else {
+        doc.save(`${situation.numero.replace(/\//g, '-')}.pdf`);
+      }
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la génération du PDF.'));
+    }
+  };
+
+  const handleToggleSituationPaid = async (situation) => {
+    try {
+      if (situation.statut_paiement === 'payee') {
+        await window.electronAPI.factureSituations.markUnpaid(situation.id);
+      } else {
+        await window.electronAPI.factureSituations.markPaid(situation.id);
+      }
+      await refreshSituations();
+      loadData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la mise à jour du paiement.'));
+    }
+  };
+
+  const handleDeleteSituation = async (situation) => {
+    const ok = await confirm({
+      title: 'Supprimer la situation',
+      message: `Supprimer la facture de situation ${situation.numero} ?`,
+      confirmText: 'Supprimer',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await window.electronAPI.factureSituations.delete(situation.id);
+      await refreshSituations();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la suppression.'));
+    }
+  };
+
+
   const formatPrice = (price) => {
     return new Intl.NumberFormat('fr-FR').format(price);
   };
@@ -530,6 +617,16 @@ const Factures = () => {
                         >
                           <Eye size={16} />
                         </button>
+                        {facture.statut_paiement !== 'payee' && (
+                          <button
+                            className="btn-icon"
+                            style={{ color: '#7c3aed' }}
+                            onClick={() => openSituations(facture)}
+                            title="Facturation par situation (paiement partiel en %)"
+                          >
+                            <Percent size={16} />
+                          </button>
+                        )}
                         <button
                           className="btn-icon"
                           style={{ color: '#f59e0b' }}
@@ -961,8 +1058,108 @@ const Factures = () => {
           </div>
         </Modal>
       )}
+
+      {situationsModalOpen && situationsFacture && (
+        <Modal
+          isOpen={situationsModalOpen}
+          onClose={() => setSituationsModalOpen(false)}
+          title={`Facturation par situation — ${situationsFacture.numero}`}
+          size="large"
+        >
+          <div className="form">
+            <p style={{ color: '#64748b', marginTop: 0 }}>
+              Base TTC du marché : <strong>{formatPrice(situationsFacture.total_ttc)} FCFA</strong> — Déjà facturé : <strong>{tauxDejaEmis}%</strong> — Reste à facturer : <strong>{tauxRestant}%</strong>
+            </p>
+
+            {situations.length > 0 && (
+              <table className="data-table" style={{ marginBottom: 16 }}>
+                <thead>
+                  <tr>
+                    <th>N°</th>
+                    <th>Taux</th>
+                    <th>Montant TTC</th>
+                    <th>Statut</th>
+                    <th style={{ textAlign: 'right' }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {situations.map((s) => (
+                    <tr key={s.id}>
+                      <td className="font-semibold">{s.numero}</td>
+                      <td>{s.taux}%</td>
+                      <td>{formatPrice(s.montant_ttc)} FCFA</td>
+                      <td>
+                        {s.statut_paiement === 'payee' ? (
+                          <span className="badge badge-success">Payée</span>
+                        ) : (
+                          <span className="badge badge-warning">Non payée</span>
+                        )}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        <div className="action-buttons">
+                          <button
+                            className="btn-icon"
+                            style={{ color: s.statut_paiement === 'payee' ? '#f59e0b' : '#10b981' }}
+                            onClick={() => handleToggleSituationPaid(s)}
+                            title={s.statut_paiement === 'payee' ? 'Annuler le paiement' : 'Marquer payée'}
+                          >
+                            {s.statut_paiement === 'payee' ? <RotateCcw size={15} /> : <CheckCircle size={15} />}
+                          </button>
+                          <button className="btn-icon btn-icon-success" title="Imprimer" onClick={() => handlePrintSituation(s, true)}>
+                            <Printer size={15} />
+                          </button>
+                          <button className="btn-icon btn-icon-info" title="Télécharger PDF" onClick={() => handlePrintSituation(s, false)}>
+                            <Download size={15} />
+                          </button>
+                          <button className="btn-icon btn-icon-danger" title="Supprimer" onClick={() => handleDeleteSituation(s)}>
+                            <X size={15} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {tauxRestant > 0 ? (
+              <div className="form-row" style={{ alignItems: 'flex-end' }}>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>Nouveau taux à facturer (%)</label>
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                    {[10, 50, 95].filter((t) => t <= tauxRestant).map((t) => (
+                      <button key={t} type="button" className="btn btn-secondary btn-sm" onClick={() => setNouveauTaux(String(t))}>
+                        {t}%
+                      </button>
+                    ))}
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => setNouveauTaux(String(tauxRestant))}>
+                      Solde ({tauxRestant}%)
+                    </button>
+                  </div>
+                  <input
+                    type="number"
+                    min="0.01"
+                    max={tauxRestant}
+                    step="0.01"
+                    value={nouveauTaux}
+                    onChange={(e) => setNouveauTaux(e.target.value)}
+                    placeholder={`Ex : ${tauxRestant}`}
+                  />
+                </div>
+                <button type="button" className="btn btn-primary" onClick={handleAddSituation}>
+                  <Plus size={16} />
+                  Créer la facture de situation
+                </button>
+              </div>
+            ) : (
+              <p style={{ color: '#10b981', fontWeight: 600 }}>100 % du marché a été facturé via les situations ci-dessus.</p>
+            )}
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };
+
 
 export default Factures;

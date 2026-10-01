@@ -330,6 +330,25 @@ function initDatabase() {
     );
   `);
 
+  // Facturation par situation (paiement partiel en %) : plusieurs factures
+  // de situation peuvent être émises pour une même facture jusqu'à 100 %.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS facture_situations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      facture_id INTEGER NOT NULL,
+      numero TEXT NOT NULL,
+      taux REAL NOT NULL,
+      montant_ht REAL DEFAULT 0,
+      tva REAL DEFAULT 0,
+      montant_ttc REAL DEFAULT 0,
+      date DATE,
+      statut_paiement TEXT DEFAULT 'non_payee',
+      date_paiement DATE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (facture_id) REFERENCES factures(id) ON DELETE CASCADE
+    );
+  `);
+
   // Migration : choix d'ajouter le cachet + signature sur la proforma.
   const proformaCols = db.prepare("PRAGMA table_info(proformas)").all().map((c) => c.name);
   if (!proformaCols.includes('avec_cachet')) {
@@ -887,7 +906,7 @@ const interventionToRow = (data) => ([
   data.debit_mont || '',
   data.description_probleme || '',
   data.travaux_realises || '',
-  JSON.stringify(Array.isArray(data.materiels) ? data.materiels : []),
+  data.materiels || '',
   data.statut_final || '',
   JSON.stringify(data.details && typeof data.details === 'object' && !Array.isArray(data.details) ? data.details : {}),
 ]);
@@ -914,7 +933,18 @@ const parseInterventionRow = (row) => {
     details,
     options_reseaux: safeParse(row.options_reseaux),
     options_maintenance: safeParse(row.options_maintenance),
-    materiels: safeParse(row.materiels),
+    // Modèle simplifié : texte libre. Anciennes fiches (tableau JSON) converties en texte lisible.
+    materiels: (() => {
+      try {
+        const parsed = JSON.parse(row.materiels);
+        if (Array.isArray(parsed)) {
+          return parsed.map((m) => [m.designation, m.qte && `(x${m.qte})`, m.etat, m.ref].filter(Boolean).join(' ')).join('\n');
+        }
+      } catch {
+        // pas du JSON : déjà du texte simple
+      }
+      return row.materiels || '';
+    })(),
   };
 };
 
@@ -1428,6 +1458,88 @@ ipcMain.handle('factures:markUnpaid', (event, id) => {
   ).run(id);
   return { success: true };
 });
+
+// FACTURATION PAR SITUATION (paiement partiel par pourcentage du TTC du marché)
+ipcMain.handle('factureSituations:getByFacture', (event, factureId) => {
+  return db.prepare(
+    'SELECT * FROM facture_situations WHERE facture_id = ? ORDER BY created_at, id'
+  ).all(factureId);
+});
+
+ipcMain.handle('factureSituations:create', (event, factureId, taux) => {
+  const facture = db.prepare('SELECT * FROM factures WHERE id = ?').get(factureId);
+  if (!facture) throw new Error('Facture introuvable.');
+  const t = Number(taux);
+  if (!t || t <= 0 || t > 100) throw new Error('Taux invalide (doit être compris entre 0 et 100).');
+
+  const transaction = db.transaction(() => {
+    const dejaEmis = db.prepare(
+      'SELECT COALESCE(SUM(taux), 0) AS total FROM facture_situations WHERE facture_id = ?'
+    ).get(factureId).total;
+    if (dejaEmis + t > 100.01) {
+      throw new Error(`Taux refusé : ${dejaEmis}% déjà facturé(s), il ne reste que ${Math.max(0, 100 - dejaEmis)}% disponible(s).`);
+    }
+    const sansTva = !facture.tva || facture.tva <= 0;
+    const tauxTva = sansTva ? 0 : (parseFloat(db.prepare("SELECT valeur FROM parametres WHERE cle = 'tva_taux'").get()?.valeur) || 18);
+    const montantTtc = Math.round((facture.total_ttc || 0) * t / 100);
+    const montantHt = sansTva ? montantTtc : Math.round(montantTtc / (1 + tauxTva / 100));
+    const tva = montantTtc - montantHt;
+
+    let suffixe = String(Math.round(t)).padStart(2, '0');
+    let numero = `${facture.numero}/${suffixe}`;
+    let n = 2;
+    while (db.prepare('SELECT 1 FROM facture_situations WHERE numero = ?').get(numero)) {
+      numero = `${facture.numero}/${suffixe}-${n}`;
+      n += 1;
+    }
+
+    const result = db.prepare(`
+      INSERT INTO facture_situations (facture_id, numero, taux, montant_ht, tva, montant_ttc, date)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(factureId, numero, t, montantHt, tva, montantTtc, new Date().toISOString().split('T')[0]);
+
+    return { id: result.lastInsertRowid, numero, taux: t, montant_ht: montantHt, tva, montant_ttc: montantTtc };
+  });
+  return { success: true, ...transaction() };
+});
+
+ipcMain.handle('factureSituations:markPaid', (event, id) => {
+  const situation = db.prepare('SELECT * FROM facture_situations WHERE id = ?').get(id);
+  if (!situation) throw new Error('Situation introuvable.');
+  const datePaiement = new Date().toISOString().split('T')[0];
+  const transaction = db.transaction(() => {
+    db.prepare(
+      "UPDATE facture_situations SET statut_paiement = 'payee', date_paiement = ? WHERE id = ?"
+    ).run(datePaiement, id);
+    // Si le cumul des situations payées couvre 100 % du marché, la facture d'origine passe payée
+    const totauxPayes = db.prepare(`
+      SELECT COALESCE(SUM(taux), 0) AS total FROM facture_situations
+      WHERE facture_id = ? AND statut_paiement = 'payee'
+    `).get(situation.facture_id).total;
+    if (totauxPayes >= 99.99) {
+      db.prepare(
+        "UPDATE factures SET statut_paiement = 'payee', date_paiement = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+      ).run(datePaiement, situation.facture_id);
+    }
+  });
+  transaction();
+  return { success: true };
+});
+
+ipcMain.handle('factureSituations:markUnpaid', (event, id) => {
+  const situation = db.prepare('SELECT * FROM facture_situations WHERE id = ?').get(id);
+  if (!situation) throw new Error('Situation introuvable.');
+  db.prepare(
+    "UPDATE facture_situations SET statut_paiement = 'non_payee', date_paiement = NULL WHERE id = ?"
+  ).run(id);
+  return { success: true };
+});
+
+ipcMain.handle('factureSituations:delete', (event, id) => {
+  db.prepare('DELETE FROM facture_situations WHERE id = ?').run(id);
+  return { success: true };
+});
+
 
 // SUIVI DE LA TVA (OTR) — la TVA à verser à l'OTR vaut 50 % de la TVA collectée
 // Listes de valeurs réutilisables (catégories : technicien, site_service…)

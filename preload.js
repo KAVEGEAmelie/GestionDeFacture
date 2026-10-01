@@ -44,6 +44,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     markUnpaid: (id) => ipcRenderer.invoke('factures:markUnpaid', id),
     delete: (id) => ipcRenderer.invoke('factures:delete', id)
   },
+  factureSituations: {
+    getByFacture: (factureId) => ipcRenderer.invoke('factureSituations:getByFacture', factureId),
+    create: (factureId, taux) => ipcRenderer.invoke('factureSituations:create', factureId, taux),
+    markPaid: (id) => ipcRenderer.invoke('factureSituations:markPaid', id),
+    markUnpaid: (id) => ipcRenderer.invoke('factureSituations:markUnpaid', id),
+    delete: (id) => ipcRenderer.invoke('factureSituations:delete', id)
+  },
   
   // LICENCE / PÉRIODE D'ESSAI
   license: {
