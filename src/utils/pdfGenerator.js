@@ -1766,6 +1766,493 @@ export const generateAttestationPDF = async (attestation, parametres = {}) => {
   return doc;
 };
 
+// ===== FICHE D'INTERVENTION TECHNIQUE (mod00e8le complet V11) =====
+
+export const FIT_V11_NATURE_OPTIONS = [
+  'Panne', 'Maintenance préventive', 'Installation', 'Configuration',
+  'Mise à niveau', 'Contrôle', 'Assistance', 'Autre',
+];
+export const FIT_V11_EQUIPEMENT_OPTIONS = [
+  'Ordinateur bureau', 'PC portable', 'Serveur', 'Écran', 'Clavier/Souris',
+  'Onduleur/UPS', 'Stabilisateur', 'Imprimante', 'Photocopieur', 'Scanner',
+  'Multifonction', 'Vidéoprojecteur', 'Destructeur', 'Routeur/MikroTik', 'Switch',
+  "Point d'accès Wi-Fi", 'Modem', 'Fibre/SFP', 'Baie/Brassage', 'Téléphonie IP',
+  'Caméra/NVR/DVR', "Alarme/Contrôle d'accès", 'Logiciel', 'Windows/Système',
+  'Messagerie', 'Sauvegarde', 'Autre',
+];
+export const FIT_V11_TESTS_OPTIONS = [
+  'Démarrage OK', 'Impression/Scan/Copie OK', 'Réseau LAN OK', 'Internet OK',
+  'Wi-Fi OK', 'Accès serveur OK', 'Sauvegarde OK', 'Tests concluants',
+  'Fonctionnement partiel', 'À poursuivre', 'Équipement à remplacer', 'Retour atelier',
+];
+export const FIT_V11_BACKUP_OPTIONS = ['Oui', 'Non', 'Non nécessaire', 'Impossible'];
+export const FIT_V11_DONNEES_OPTIONS = ['Aucune', 'Documents', 'Messagerie', 'Base de données'];
+export const FIT_V11_SECURITE_OPTIONS = [
+  'Antivirus contrôlé', 'Mises à jour', 'Comptes/accès vérifiés',
+  'Mot de passe modifié par le client', 'Non concerné',
+];
+export const FIT_V11_ETAT_FINAL_OPTIONS = [
+  'Résolu', 'Résolu provisoirement', 'Partiellement résolu', 'Non résolu',
+  'En attente de pièce', "En attente d'accord",
+];
+export const FIT_V11_EQUIP_FINAL_OPTIONS = [
+  'En service', 'Hors service', 'Chez le client', 'Pris en atelier', 'Remplacé temporairement',
+];
+export const FIT_V11_ETAT_RECEPTION_OPTIONS = ['Bon', 'Moyen', 'Dégradé'];
+
+// Case à cocher 3 mm (y = ligne de base du texte associé)
+const drawFitCheckboxV11 = (doc, x, y, checked) => {
+  doc.setDrawColor(...COLORS.ink);
+  doc.setLineWidth(0.3);
+  doc.rect(x, y - 2.6, 3, 3, 'S');
+  if (checked) {
+    doc.setDrawColor(...COLORS.navy);
+    doc.setLineWidth(0.55);
+    doc.line(x + 0.55, y - 2.05, x + 2.45, y - 0.15);
+    doc.line(x + 2.45, y - 2.05, x + 0.55, y - 0.15);
+  }
+};
+
+// Barre de section : liseré rouge + titre navy + filet (même esprit que la charte ITS)
+const drawFitSectionBarV11 = (doc, x, w, y, title) => {
+  doc.setFillColor(...COLORS.red);
+  doc.rect(x, y, 1.6, 6.2, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.navy);
+  doc.text(title, x + 4.2, y + 4.4);
+  doc.setDrawColor(...COLORS.navy);
+  doc.setLineWidth(0.7);
+  doc.line(x, y + 6.2, x + w, y + 6.2);
+  return y + 10;
+};
+
+export const generateInterventionV11PDF = async (fiche, parametres = {}) => {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const contentLeft = MARGIN;
+  const rightX = pageWidth - MARGIN;
+  const contentW = rightX - contentLeft;
+  const bottomLimit = pageHeight - 28;
+
+  drawPageFrame(doc);
+  const header = await drawHeader(doc, parametres);
+  drawFooter(doc, parametres);
+
+  const newPage = () => {
+    doc.addPage();
+    drawPageFrame(doc);
+    drawFooter(doc, parametres);
+    return MARGIN + 8;
+  };
+  const ensureSpace = (y, needed) => (y + needed > bottomLimit ? newPage() : y);
+
+  let y = header.headerBottom + 7;
+
+  // Bandeau titre + sous-titre (modèle V11)
+  doc.setFillColor(...COLORS.navy);
+  doc.roundedRect(contentLeft, y, contentW, 13, 1.5, 1.5, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11.5);
+  doc.setTextColor(...COLORS.white);
+  doc.text("FICHE D'INTERVENTION TECHNIQUE INFORMATIQUE & BUREAUTIQUE", pageWidth / 2, y + 5.6, { align: 'center' });
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(7.6);
+  doc.text('Maintenance • Dépannage • Installation • Réseau • Sécurité • Équipements bureautiques', pageWidth / 2, y + 10.4, { align: 'center' });
+  y += 17;
+
+  // Grille d'informations générales : libellé sur fond, valeur à côté (grid4 du modèle)
+  const dateTxt = fiche.date ? new Date(fiche.date).toLocaleDateString('fr-FR') : '';
+  const labW = 31;
+  const valW = contentW / 2 - labW;
+  const rowH = 7.4;
+  const infoRows = [
+    ['N° intervention', fiche.numero || '', 'Date intervention', dateTxt],
+    ['Client / Structure', fiche.client_nom || '', 'Site / Service', fiche.client_adresse || ''],
+    ['Contact client', fiche.client_contact || '', 'Technicien(s)', fiche.intervenant || ''],
+  ];
+  infoRows.forEach((r, i) => {
+    const yy = y + i * rowH;
+    [0, 1].forEach((half) => {
+      const x = contentLeft + half * (labW + valW);
+      doc.setDrawColor(...COLORS.line);
+      doc.setLineWidth(0.35);
+      doc.setFillColor(...COLORS.boxBg);
+      doc.rect(x, yy, labW, rowH, 'FD');
+      doc.rect(x + labW, yy, valW, rowH, 'S');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.4);
+      doc.setTextColor(...COLORS.navy);
+      doc.text(r[half * 2], x + 2, yy + 4.7);
+      const v = String(r[half * 2 + 1] || '');
+      doc.setFont('helvetica', v ? 'bold' : 'normal');
+      doc.setFontSize(8.4);
+      const valColor = r[half * 2] === 'N° intervention' ? COLORS.red : COLORS.ink;
+      doc.setTextColor(...(v ? valColor : COLORS.grey));
+      doc.text(v ? (doc.splitTextToSize(v, valW - 4)[0] || '') : '.'.repeat(48), x + labW + 2, yy + 4.8);
+    });
+  });
+  y += rowH * 3 + 5;
+
+  // Ligne "fluide" bordée : mélange de texte gras, cases à cocher et champs,
+  // avec retour à la ligne automatique (équivalent des checkgrid/statusrow du modèle)
+  const flowRow = (segments, opts = {}) => {
+    const pad = 2.8;
+    const lineH = opts.lineH || 5.4;
+    const gap = opts.gap || 4.5;
+    const segW = (s) => {
+      if (s.t === 'ck') {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.6);
+        return 3 + 1.4 + doc.getTextWidth(s.label);
+      }
+      if (s.t === 'f') {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.9);
+        const lw = doc.getTextWidth(s.label) + 1.5;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.6);
+        return lw + Math.max(doc.getTextWidth(String(s.value || '')) + 2, s.w || 20);
+      }
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.9);
+      return doc.getTextWidth(s.text);
+    };
+    const placed = [];
+    let cx = contentLeft + pad;
+    let line = 0;
+    segments.forEach((s) => {
+      const w = segW(s);
+      if (cx + w > rightX - pad && cx > contentLeft + pad) {
+        line += 1;
+        cx = contentLeft + pad;
+      }
+      placed.push({ ...s, x: cx, line, w });
+      cx += w + gap;
+    });
+    const boxH = (line + 1) * lineH + 3;
+    y = ensureSpace(y, boxH + 2);
+    doc.setDrawColor(...COLORS.line);
+    doc.setLineWidth(0.35);
+    doc.rect(contentLeft, y, contentW, boxH, 'S');
+    placed.forEach((s) => {
+      const by = y + 2 + s.line * lineH + lineH * 0.68;
+      if (s.t === 'ck') {
+        drawFitCheckboxV11(doc, s.x, by, !!s.on);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.6);
+        doc.setTextColor(...COLORS.ink);
+        doc.text(s.label, s.x + 4.4, by);
+      } else if (s.t === 'f') {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.9);
+        doc.setTextColor(...COLORS.ink);
+        doc.text(s.label, s.x, by);
+        const lw = doc.getTextWidth(s.label) + 1.5;
+        const has = String(s.value || '').trim() !== '';
+        doc.setFont('helvetica', has ? 'bold' : 'normal');
+        doc.setFontSize(7.6);
+        doc.setTextColor(...(has ? COLORS.navySoft : COLORS.grey));
+        const raw = has ? String(s.value) : '.'.repeat(60);
+        doc.text(doc.splitTextToSize(raw, Math.max(s.w - lw, 8))[0] || '', s.x + lw, by);
+      } else {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.9);
+        doc.setTextColor(...COLORS.ink);
+        doc.text(s.text, s.x, by);
+      }
+    });
+    y += boxH;
+  };
+
+  // Encadré de texte : bandeau titre + contenu justifié (ou lignes vides à remplir à la main),
+  // avec continuation sur la page suivante si le texte est long
+  const drawTextBox = (label, value, minLines = 2) => {
+    const headH = 6.5;
+    const lineH = 4.8;
+    const textW = contentW - 8;
+    const text = String(value || '').trim();
+    // Découpage par paragraphes : toutes les lignes sauf la dernière de chaque paragraphe sont justifiées
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    let lines = [];
+    if (text) {
+      text.split(/\n/).forEach((para) => {
+        const pl = para.trim() ? doc.splitTextToSize(para.trim(), textW) : [''];
+        pl.forEach((l, i) => lines.push({ t: l, j: i < pl.length - 1 }));
+      });
+    }
+    const drawLine = (line, x, yy) => {
+      if (!line.j) {
+        doc.text(line.t, x, yy);
+        return;
+      }
+      const words = line.t.split(/\s+/).filter(Boolean);
+      const wordsW = words.reduce((s, w) => s + doc.getTextWidth(w), 0);
+      const gap = words.length > 1 ? (textW - wordsW) / (words.length - 1) : 0;
+      if (words.length < 2 || gap <= 0 || gap > 8) {
+        doc.text(line.t, x, yy);
+        return;
+      }
+      let wx = x;
+      words.forEach((w) => {
+        doc.text(w, wx, yy);
+        wx += doc.getTextWidth(w) + gap;
+      });
+    };
+    let first = true;
+    do {
+      y = ensureSpace(y, headH + lineH * 2 + 6);
+      const avail = Math.max(1, Math.floor((bottomLimit - y - headH - 4) / lineH));
+      const chunk = lines.slice(0, avail);
+      const nb = text ? chunk.length : minLines;
+      const boxH = headH + nb * lineH + 3;
+      doc.setFillColor(...COLORS.boxBg);
+      doc.rect(contentLeft + 0.3, y + 0.3, contentW - 0.6, headH, 'F');
+      doc.setDrawColor(...COLORS.line);
+      doc.setLineWidth(0.4);
+      doc.roundedRect(contentLeft, y, contentW, boxH, 1.5, 1.5, 'S');
+      doc.line(contentLeft, y + headH + 0.3, rightX, y + headH + 0.3);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.6);
+      doc.setTextColor(...COLORS.navy);
+      doc.text(first ? label : `${label} (suite)`, contentLeft + 3, y + 4.5);
+      let ty = y + headH + 4.2;
+      if (text) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(...COLORS.ink);
+        chunk.forEach((line) => {
+          drawLine(line, contentLeft + 4, ty);
+          ty += lineH;
+        });
+      } else {
+        doc.setDrawColor(...COLORS.line);
+        doc.setLineWidth(0.25);
+        for (let i = 0; i < minLines; i++) {
+          doc.line(contentLeft + 4, ty, rightX - 4, ty);
+          ty += lineH;
+        }
+      }
+      y += boxH + 4;
+      lines = lines.slice(chunk.length);
+      first = false;
+    } while (lines.length);
+  };
+
+  // === 1. NATURE DE LA DEMANDE ===
+  const dNature = Array.isArray(fiche.nature) ? fiche.nature : [];
+  y = ensureSpace(y, 34);
+  y = drawFitSectionBarV11(doc, contentLeft, contentW, y, '1. NATURE DE LA DEMANDE');
+  flowRow(FIT_V11_NATURE_OPTIONS.map((l) => ({ t: 'ck', label: l, on: dNature.includes(l) })));
+  y += 2.5;
+  drawTextBox('Description de la demande / problème signalé', fiche.description_probleme, 2);
+
+  // === 2. ÉQUIPEMENT(S) / SYSTÈME(S) CONCERNÉ(S) ===
+  const dEquip = Array.isArray(fiche.equipements) ? fiche.equipements : [];
+  y = ensureSpace(y, 48);
+  y = drawFitSectionBarV11(doc, contentLeft, contentW, y, '2. ÉQUIPEMENT(S) / SYSTÈME(S) CONCERNÉ(S)');
+  flowRow(FIT_V11_EQUIPEMENT_OPTIONS.map((l) => ({ t: 'ck', label: l, on: dEquip.includes(l) })));
+  flowRow([
+    { t: 'f', label: 'Marque / Modèle :', value: fiche.marque_modele || '', w: 62 },
+    { t: 'f', label: 'N° série / Inventaire :', value: fiche.num_serie || '', w: 55 },
+  ]);
+  flowRow([
+    { t: 'f', label: 'Accessoires reçus :', value: fiche.accessoires || '', w: 62 },
+    { t: 'b', text: 'État réception :' },
+    ...FIT_V11_ETAT_RECEPTION_OPTIONS.map((l) => ({ t: 'ck', label: l, on: fiche.etat_reception === l })),
+  ]);
+  y += 4;
+
+  // === 3 & 4 : zones de texte ajustables (paragraphes respectés, suite en page suivante) ===
+  drawTextBox('3. DIAGNOSTIC / CONSTAT TECHNIQUE', fiche.diagnostic, 3);
+  drawTextBox('4. TRAVAUX EFFECTUÉS', fiche.travaux_realises, 3);
+
+  // === 5. PIÈCES / CONSOMMABLES / MATÉRIEL UTILISÉS OU REMPLACÉS ===
+  const pieces = (Array.isArray(fiche.materiels) ? fiche.materiels : []).filter(
+    (m) => m && ['designation', 'qte', 'etat', 'ref', 'garantie'].some((k) => String(m[k] || '').trim())
+  );
+  // Fiche vierge : 3 lignes à remplir à la main ; sinon uniquement les lignes saisies
+  const nbRows = pieces.length > 0 ? pieces.length : 3;
+  const tRowH = 6.4;
+  const desW = contentW * 0.47;
+  const qteW = contentW * 0.11;
+  const etatW = contentW * 0.17;
+  const refW = contentW - desW - qteW - etatW;
+  y = ensureSpace(y, 10 + 7 + 3 * tRowH);
+  y = drawFitSectionBarV11(doc, contentLeft, contentW, y, '5. PIÈCES / CONSOMMABLES / MATÉRIEL UTILISÉS OU REMPLACÉS');
+  y -= 2;
+  const drawPiecesHead = () => {
+    doc.setFillColor(...COLORS.navySoft);
+    doc.rect(contentLeft, y, contentW, 6.6, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(...COLORS.white);
+    doc.text('Désignation', contentLeft + 2.5, y + 4.4);
+    doc.text('Qté', contentLeft + desW + qteW / 2, y + 4.4, { align: 'center' });
+    doc.text('État', contentLeft + desW + qteW + etatW / 2, y + 4.4, { align: 'center' });
+    doc.text('Observation / Référence', contentLeft + desW + qteW + etatW + 2.5, y + 4.4);
+    y += 6.6;
+  };
+  drawPiecesHead();
+  for (let i = 0; i < nbRows; i++) {
+    if (y + tRowH > bottomLimit) {
+      y = newPage();
+      drawPiecesHead();
+    }
+    const m = pieces[i] || {};
+    if (i % 2 === 1) {
+      doc.setFillColor(...COLORS.boxBg);
+      doc.rect(contentLeft, y, contentW, tRowH, 'F');
+    }
+    doc.setDrawColor(...COLORS.line);
+    doc.setLineWidth(0.3);
+    doc.rect(contentLeft, y, contentW, tRowH, 'S');
+    doc.line(contentLeft + desW, y, contentLeft + desW, y + tRowH);
+    doc.line(contentLeft + desW + qteW, y, contentLeft + desW + qteW, y + tRowH);
+    doc.line(contentLeft + desW + qteW + etatW, y, contentLeft + desW + qteW + etatW, y + tRowH);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.2);
+    const cellTxt = (txt, x, w, align) => {
+      const has = String(txt || '').trim() !== '';
+      doc.setTextColor(...(has ? COLORS.ink : COLORS.grey));
+      const t = has ? (doc.splitTextToSize(String(txt), w - 4)[0] || '') : '......';
+      if (align === 'center') doc.text(t, x + w / 2, y + 4.3, { align: 'center' });
+      else doc.text(t, x + 2.5, y + 4.3);
+    };
+    cellTxt(m.designation ? `${i + 1}. ${m.designation}` : '', contentLeft, desW);
+    cellTxt(m.qte, contentLeft + desW, qteW, 'center');
+    cellTxt(m.etat, contentLeft + desW + qteW, etatW, 'center');
+    cellTxt(m.ref || (m.garantie ? `Garantie : ${m.garantie} mois` : ''), contentLeft + desW + qteW + etatW, refW);
+    y += tRowH;
+  }
+  y += 5;
+
+  // === 6. CONTRÔLES ET TESTS APRÈS INTERVENTION ===
+  const dTests = Array.isArray(fiche.tests) ? fiche.tests : [];
+  y = ensureSpace(y, 28);
+  y = drawFitSectionBarV11(doc, contentLeft, contentW, y, '6. CONTRÔLES ET TESTS APRÈS INTERVENTION');
+  flowRow(FIT_V11_TESTS_OPTIONS.map((l) => ({ t: 'ck', label: l, on: dTests.includes(l) })));
+  y += 4;
+
+  // === 7. DONNÉES, SAUVEGARDE ET SÉCURITÉ ===
+  const dDonnees = Array.isArray(fiche.donnees) ? fiche.donnees : [];
+  const dSecurite = Array.isArray(fiche.securite) ? fiche.securite : [];
+  y = ensureSpace(y, 42);
+  y = drawFitSectionBarV11(doc, contentLeft, contentW, y, '7. DONNÉES, SAUVEGARDE ET SÉCURITÉ');
+  flowRow([
+    { t: 'b', text: 'Sauvegarde avant intervention :' },
+    ...FIT_V11_BACKUP_OPTIONS.map((l) => ({ t: 'ck', label: l, on: fiche.backup_before === l })),
+  ]);
+  flowRow([
+    { t: 'b', text: 'Données concernées :' },
+    ...FIT_V11_DONNEES_OPTIONS.map((l) => ({ t: 'ck', label: l, on: dDonnees.includes(l) })),
+    { t: 'f', label: 'Autres :', value: fiche.donnees_autres || '', w: 40 },
+  ]);
+  flowRow([
+    { t: 'b', text: 'Sécurité :' },
+    ...FIT_V11_SECURITE_OPTIONS.map((l) => ({ t: 'ck', label: l, on: dSecurite.includes(l) })),
+  ]);
+  y += 2.5;
+  drawTextBox('Observation sur les données / la sécurité', fiche.data_obs, 2);
+
+  // === 8. ÉTAT FINAL DE L'INTERVENTION ===
+  y = ensureSpace(y, 38);
+  y = drawFitSectionBarV11(doc, contentLeft, contentW, y, "8. ÉTAT FINAL DE L'INTERVENTION");
+  flowRow(FIT_V11_ETAT_FINAL_OPTIONS.map((l) => ({ t: 'ck', label: l, on: fiche.statut_final === l })));
+  flowRow([
+    { t: 'b', text: 'Équipement :' },
+    ...FIT_V11_EQUIP_FINAL_OPTIONS.map((l) => ({ t: 'ck', label: l, on: fiche.equip_final === l })),
+  ]);
+  const finDate = fiche.fin ? new Date(fiche.fin) : null;
+  const finTxt = finDate && !Number.isNaN(finDate.getTime()) ? finDate.toLocaleDateString('fr-FR') : (fiche.fin || '');
+  flowRow([
+    { t: 'f', label: 'Fin :', value: finTxt, w: 30 },
+    { t: 'f', label: 'Durée :', value: fiche.duree || '', w: 28 },
+    { t: 'f', label: 'Prochaine action :', value: fiche.prochaine_action || '', w: 70 },
+  ]);
+  y += 4;
+
+  // === 9. RECOMMANDATIONS / TRAVAUX COMPLÉMENTAIRES ===
+  drawTextBox('9. RECOMMANDATIONS / TRAVAUX COMPLÉMENTAIRES', fiche.recommandations, 3);
+
+  // === 10. VALIDATION DU CLIENT / UTILISATEUR ===
+  y = ensureSpace(y, 32);
+  y = drawFitSectionBarV11(doc, contentLeft, contentW, y, '10. VALIDATION DU CLIENT / UTILISATEUR');
+  const mention = "Le client reconnaît que l'intervention décrite ci-dessus a été réalisée et que les contrôles ont été effectués, sous réserve des observations mentionnées.";
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(8.2);
+  doc.setTextColor(...COLORS.grey);
+  const mentionLines = doc.splitTextToSize(mention, contentW);
+  doc.text(mentionLines, contentLeft, y);
+  y += mentionLines.length * 4 + 2.5;
+  drawTextBox('Observation du client', fiche.obs_client, 2);
+
+  // === 11. SIGNATURES (bloc solidaire, 3 colonnes comme le modèle) ===
+  y = ensureSpace(y, 56);
+  y = drawFitSectionBarV11(doc, contentLeft, contentW, y, '11. SIGNATURES');
+  const signH = 36;
+  const signW = contentW / 3;
+  const signTitles = ['TECHNICIEN', 'CLIENT / UTILISATEUR', 'RESPONSABLE / VISA'];
+  const signNames = [fiche.intervenant || '', '', ''];
+  doc.setDrawColor(...COLORS.line);
+  doc.setLineWidth(0.4);
+  doc.roundedRect(contentLeft, y, contentW, signH, 1.5, 1.5, 'S');
+  signTitles.forEach((title, i) => {
+    const x = contentLeft + i * signW;
+    if (i > 0) doc.line(x, y, x, y + signH);
+    doc.setFillColor(...COLORS.navy);
+    doc.rect(x + 0.3, y + 0.3, signW - 0.6, 6, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.8);
+    doc.setTextColor(...COLORS.white);
+    doc.text(title, x + signW / 2, y + 4.3, { align: 'center' });
+    const name = signNames[i];
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.8);
+    doc.setTextColor(...COLORS.ink);
+    doc.text('Nom :', x + 2.5, y + 12.5);
+    doc.setFont('helvetica', name ? 'bold' : 'normal');
+    doc.setTextColor(...(name ? COLORS.navySoft : COLORS.grey));
+    doc.text(name ? (doc.splitTextToSize(name, signW - 16)[0] || '') : '.'.repeat(22), x + 13, y + 12.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...COLORS.ink);
+    doc.text('Date :', x + 2.5, y + 19.5);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(...COLORS.grey);
+    doc.text('.'.repeat(22), x + 13, y + 19.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...COLORS.ink);
+    doc.text('Signature / Cachet :', x + 2.5, y + 26.5);
+  });
+  y += signH + 4;
+
+  // Note de bas de fiche
+  y = ensureSpace(y, 10);
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(7.4);
+  doc.setTextColor(...COLORS.grey);
+  const noteLines = doc.splitTextToSize(
+    "Note : Toute anomalie non constatée lors de l'intervention ou tout travail supplémentaire peut nécessiter un nouveau diagnostic ou une proposition complémentaire.",
+    contentW
+  );
+  doc.text(noteLines, contentLeft, y);
+
+
+  // Numérotation des pages
+  const totalPages = doc.internal.getNumberOfPages();
+  for (let p = 1; p <= totalPages; p++) {
+    doc.setPage(p);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(...COLORS.grey);
+    doc.text(`Page ${p} / ${totalPages}`, pageWidth / 2, pageHeight - 8, { align: 'center' });
+  }
+
+  return doc;
+};
+
 // ===== FICHE D'INTERVENTION TECHNIQUE (modèle simplifié) =====
 
 export const FIT_CATEGORIE_OPTIONS = ['Informatique', 'Réseau informatique', 'Bureautique'];

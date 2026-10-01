@@ -912,7 +912,7 @@ const interventionToRow = (data) => ([
   data.debit_mont || '',
   data.description_probleme || '',
   data.travaux_realises || '',
-  data.materiels || '',
+  Array.isArray(data.materiels) ? JSON.stringify(data.materiels) : (data.materiels || ''),
   data.statut_final || '',
   JSON.stringify(data.details && typeof data.details === 'object' && !Array.isArray(data.details) ? data.details : {}),
 ]);
@@ -939,15 +939,13 @@ const parseInterventionRow = (row) => {
     details,
     options_reseaux: safeParse(row.options_reseaux),
     options_maintenance: safeParse(row.options_maintenance),
-    // Modèle simplifié : texte libre. Anciennes fiches (tableau JSON) converties en texte lisible.
+    // Modèle simplifié : texte libre. Modèle V11 : tableau de pièces (JSON).
     materiels: (() => {
       try {
         const parsed = JSON.parse(row.materiels);
-        if (Array.isArray(parsed)) {
-          return parsed.map((m) => [m.designation, m.qte && `(x${m.qte})`, m.etat, m.ref].filter(Boolean).join(' ')).join('\n');
-        }
+        if (Array.isArray(parsed)) return parsed;
       } catch {
-        // pas du JSON : déjà du texte simple
+        // pas du JSON : texte simple (modèle simplifié)
       }
       return row.materiels || '';
     })(),

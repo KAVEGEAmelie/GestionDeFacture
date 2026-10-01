@@ -1,15 +1,25 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, Eye, Edit2, Trash2, Printer, Download, FileCheck, RotateCcw } from 'lucide-react';
+import { Plus, Eye, Edit2, Trash2, Printer, Download, FileCheck, RotateCcw, X } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
 import { inDateRange } from '../utils/dateFilters';
 import {
   generateInterventionPDF,
+  generateInterventionV11PDF,
   FIT_CATEGORIE_OPTIONS,
   FIT_EQUIPEMENT_OPTIONS,
   FIT_TRAVAUX_OPTIONS,
   FIT_RESULTAT_OPTIONS,
+  FIT_V11_NATURE_OPTIONS,
+  FIT_V11_EQUIPEMENT_OPTIONS,
+  FIT_V11_TESTS_OPTIONS,
+  FIT_V11_BACKUP_OPTIONS,
+  FIT_V11_DONNEES_OPTIONS,
+  FIT_V11_SECURITE_OPTIONS,
+  FIT_V11_ETAT_FINAL_OPTIONS,
+  FIT_V11_EQUIP_FINAL_OPTIONS,
+  FIT_V11_ETAT_RECEPTION_OPTIONS,
 } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
@@ -26,6 +36,7 @@ const trim = (v) => String(v || '').trim();
 const arr = (v) => (Array.isArray(v) ? v : []);
 
 const buildDefaultForm = () => ({
+  modele: 'simplifie', // 'simplifie' (8 sections) ou 'v11' (11 sections, fiche complète)
   date: todayISO(),
   heure_arrivee: '',
   intervenant: '',
@@ -45,10 +56,27 @@ const buildDefaultForm = () => ({
   statut_final: '',
   recommandations: '',
   fin: '',
+  // Champs propres au modèle V11
+  nature: [],
+  accessoires: '',
+  etat_reception: '',
+  tests: [],
+  backup_before: '',
+  donnees: [],
+  donnees_autres: '',
+  securite: [],
+  data_obs: '',
+  equip_final: '',
+  duree: '',
+  prochaine_action: '',
+  obs_client: '',
+  materiels_v11: [],
 });
 
 const toStoredRecord = (form) => {
+  const estV11 = form.modele === 'v11';
   const details = {
+    modele: form.modele || 'simplifie',
     categorie: arr(form.categorie),
     equipements: arr(form.equipements),
     nom_demandeur: trim(form.nom_demandeur),
@@ -56,6 +84,19 @@ const toStoredRecord = (form) => {
     travaux_types: arr(form.travaux_types),
     recommandations: trim(form.recommandations),
     fin: form.fin || '',
+    nature: arr(form.nature),
+    accessoires: trim(form.accessoires),
+    etat_reception: form.etat_reception || '',
+    tests: arr(form.tests),
+    backup_before: form.backup_before || '',
+    donnees: arr(form.donnees),
+    donnees_autres: trim(form.donnees_autres),
+    securite: arr(form.securite),
+    data_obs: trim(form.data_obs),
+    equip_final: form.equip_final || '',
+    duree: trim(form.duree),
+    prochaine_action: trim(form.prochaine_action),
+    obs_client: trim(form.obs_client),
   };
   return {
     date: form.date,
@@ -68,7 +109,9 @@ const toStoredRecord = (form) => {
     num_serie: trim(form.num_serie),
     description_probleme: trim(form.description_probleme),
     travaux_realises: trim(form.travaux_realises),
-    materiels: trim(form.materiels),
+    materiels: estV11
+      ? arr(form.materiels_v11).filter((m) => m && ['designation', 'qte', 'etat', 'ref', 'garantie'].some((k) => trim(m[k])))
+      : trim(form.materiels),
     statut_final: form.statut_final || '',
     ...details,
     details,
@@ -82,6 +125,15 @@ const toForm = (record) => {
     if (record[key] !== undefined && record[key] !== null) form[key] = record[key];
   });
   form.date = record.date || todayISO();
+  form.modele = record.modele === 'v11' ? 'v11' : 'simplifie';
+  // materiels est soit un tableau de pièces (V11) soit un texte (simplifié)
+  if (Array.isArray(record.materiels)) {
+    form.materiels_v11 = record.materiels;
+    form.materiels = '';
+  } else {
+    form.materiels = record.materiels || '';
+    form.materiels_v11 = [];
+  }
   return form;
 };
 
@@ -101,6 +153,7 @@ const Interventions = () => {
   const [parametres, setParametres] = useState({});
   const [clients, setClients] = useState([]);
   const [interventions, setInterventions] = useState([]);
+  const [produits, setProduits] = useState([]);
   const [techniciens, setTechniciens] = useState([]);
   const [sitesServices, setSitesServices] = useState([]);
   const [categorieOptions, setCategorieOptions] = useState(FIT_CATEGORIE_OPTIONS);
@@ -132,10 +185,11 @@ const Interventions = () => {
           toast.error("Module fiches d'intervention indisponible : fermez complètement l'application puis relancez-la.");
           return;
         }
-        const [params, clientsData, interventionsData, techniciensData, sitesData, categoriesData, equipementsData] = await Promise.all([
+        const [params, clientsData, interventionsData, produitsData, techniciensData, sitesData, categoriesData, equipementsData] = await Promise.all([
           window.electronAPI.parametres.getAll(),
           window.electronAPI.clients.getAll(),
           window.electronAPI.interventions.getAll(),
+          window.electronAPI.produits.getAll(),
           window.electronAPI.listes ? window.electronAPI.listes.get('technicien') : Promise.resolve([]),
           window.electronAPI.listes ? window.electronAPI.listes.get('site_service') : Promise.resolve([]),
           window.electronAPI.listes ? window.electronAPI.listes.get('intervention_categorie') : Promise.resolve([]),
@@ -144,6 +198,7 @@ const Interventions = () => {
         setParametres(params || {});
         setClients(clientsData || []);
         setInterventions(interventionsData || []);
+        setProduits(produitsData || []);
         setTechniciens(techniciensData || []);
         setSitesServices(sitesData || []);
         setCategorieOptions((prev) => Array.from(new Set([...prev, ...(categoriesData || [])])));
@@ -310,6 +365,45 @@ const Interventions = () => {
     </div>
   );
 
+  // --- Gestion des pièces / matériel pour le modèle V11 (tableau structuré) ---
+  const addMaterielV11 = () => {
+    setFormData((prev) => ({
+      ...prev,
+      materiels_v11: [...(prev.materiels_v11 || []), { designation: '', qte: '', etat: '', ref: '' }],
+    }));
+  };
+
+  const updateMaterielV11 = (index, key, value) => {
+    setFormData((prev) => {
+      const materiels_v11 = [...(prev.materiels_v11 || [])];
+      materiels_v11[index] = { ...materiels_v11[index], [key]: value };
+      return { ...prev, materiels_v11 };
+    });
+  };
+
+  // Désignation liée aux produits : création immédiate si le produit n'existe pas
+  const handlePieceDesignationV11 = async (index, value, option) => {
+    const designation = option?.label || value;
+    updateMaterielV11(index, 'designation', designation);
+    if (option?.custom && window.electronAPI?.produits) {
+      try {
+        await window.electronAPI.produits.create({ designation, prix_unitaire: 0, unite: 'Unité', description: '' });
+        const data = await window.electronAPI.produits.getAll();
+        setProduits(data || []);
+        toast.success(`Produit « ${designation} » créé et ajouté à la liste des produits.`);
+      } catch (error) {
+        toast.error(getErrorMessage(error, 'Impossible de créer le produit.'));
+      }
+    }
+  };
+
+  const removeMaterielV11 = (index) => {
+    setFormData((prev) => ({
+      ...prev,
+      materiels_v11: (prev.materiels_v11 || []).filter((_, i) => i !== index),
+    }));
+  };
+
   const resetForm = async () => {
     const ok = await confirm({
       title: 'Réinitialiser le formulaire',
@@ -389,7 +483,9 @@ const Interventions = () => {
 
   const exportPdf = async (item, print = false, preview = false) => {
     try {
-      const doc = await generateInterventionPDF(item, parametres);
+      const doc = item.modele === 'v11'
+        ? await generateInterventionV11PDF(item, parametres)
+        : await generateInterventionPDF(item, parametres);
       if (print) {
         doc.autoPrint();
         window.open(doc.output('bloburl'), '_blank');
@@ -501,6 +597,29 @@ const Interventions = () => {
         <form className="form rapports-form" onSubmit={handleSave}>
           <section className="form-section">
             <span className="form-section__eyebrow">Informations générales</span>
+            {!editingId && (
+              <div className="form-group" style={{ marginBottom: 10 }}>
+                <label>Modèle de fiche</label>
+                <div style={{ display: 'flex', gap: 16 }}>
+                  <label style={checkboxRowStyle}>
+                    <input
+                      type="radio"
+                      checked={formData.modele === 'simplifie'}
+                      onChange={() => handleChange('modele', 'simplifie')}
+                    />
+                    Simplifiée (8 sections)
+                  </label>
+                  <label style={checkboxRowStyle}>
+                    <input
+                      type="radio"
+                      checked={formData.modele === 'v11'}
+                      onChange={() => handleChange('modele', 'v11')}
+                    />
+                    Complète V11 (11 sections)
+                  </label>
+                </div>
+              </div>
+            )}
             <div className="form-row">
               <div className="form-group">
                 <label>N° Intervention</label>
@@ -528,6 +647,8 @@ const Interventions = () => {
             </div>
           </section>
 
+          {formData.modele === 'simplifie' && (
+            <>
           <section className="form-section">
             <span className="form-section__eyebrow">1. Client / Service</span>
             <div className="form-row">
@@ -687,6 +808,218 @@ const Interventions = () => {
               <input type="date" value={formData.fin} onChange={(e) => handleChange('fin', e.target.value)} />
             </div>
           </section>
+            </>
+          )}
+
+          {formData.modele === 'v11' && (
+            <>
+          <section className="form-section">
+            <span className="form-section__eyebrow">1. Client / Service</span>
+            <div className="form-row">
+              <div className="form-group">
+                <label>Client / Structure *</label>
+                <SearchableSelect
+                  options={sortedClients.map((client) => ({ value: client.nom, label: client.nom }))}
+                  value={formData.client_nom}
+                  onChange={(clientNom, option) => handleClientSelect(option?.label || clientNom)}
+                  placeholder="Rechercher un client"
+                  noOptionsText="Aucun client correspondant"
+                />
+              </div>
+              <div className="form-group">
+                <label>Site / Service</label>
+                <SearchableSelect
+                  options={sitesServices.map((s) => ({ value: s, label: s }))}
+                  value={formData.client_adresse}
+                  onChange={(val, option) => handleChange('client_adresse', option?.label || val)}
+                  placeholder="Choisir ou saisir un site / service"
+                  noOptionsText="Aucun site — tapez-le puis Entrée"
+                  allowCustomValue
+                />
+              </div>
+              <div className="form-group">
+                <label>Contact client</label>
+                <input type="text" value={formData.client_contact} onChange={(e) => handleChange('client_contact', e.target.value)} placeholder="Ex : +228 90 00 00 00 / client@mail.com" />
+              </div>
+            </div>
+          </section>
+
+          <section className="form-section">
+            <span className="form-section__eyebrow">1. Nature de la demande</span>
+            {renderCheckGrid('nature', FIT_V11_NATURE_OPTIONS)}
+            <div className="form-group" style={{ marginTop: 10 }}>
+              <label>Description de la demande / problème signalé</label>
+              <textarea rows={3} value={formData.description_probleme} onChange={(e) => handleChange('description_probleme', e.target.value)} placeholder="Décrivez la demande ou le problème signalé..." />
+            </div>
+          </section>
+
+          <section className="form-section">
+            <span className="form-section__eyebrow">2. Équipement(s) / système(s) concerné(s)</span>
+            {renderCheckGrid('equipements', FIT_V11_EQUIPEMENT_OPTIONS)}
+            <div className="form-row" style={{ marginTop: 10 }}>
+              <div className="form-group">
+                <label>Marque / Modèle</label>
+                <input type="text" value={formData.marque_modele} onChange={(e) => handleChange('marque_modele', e.target.value)} />
+              </div>
+              <div className="form-group">
+                <label>N° série / Inventaire</label>
+                <input type="text" value={formData.num_serie} onChange={(e) => handleChange('num_serie', e.target.value)} />
+              </div>
+              <div className="form-group">
+                <label>Accessoires reçus</label>
+                <input type="text" value={formData.accessoires} onChange={(e) => handleChange('accessoires', e.target.value)} placeholder="Ex : câble d'alimentation, sacoche..." />
+              </div>
+            </div>
+            <div className="form-group">
+              <label>État réception</label>
+              {renderRadioRow('etat_reception', FIT_V11_ETAT_RECEPTION_OPTIONS)}
+            </div>
+          </section>
+
+          <section className="form-section">
+            <span className="form-section__eyebrow">3. Diagnostic / constat technique</span>
+            <div className="form-group">
+              <textarea rows={4} value={formData.diagnostic} onChange={(e) => handleChange('diagnostic', e.target.value)} placeholder="Constat technique détaillé... Les paragraphes seront respectés sur le PDF." />
+            </div>
+          </section>
+
+          <section className="form-section">
+            <span className="form-section__eyebrow">4. Travaux effectués</span>
+            <div className="form-group">
+              <textarea rows={4} value={formData.travaux_realises} onChange={(e) => handleChange('travaux_realises', e.target.value)} placeholder="Décrivez les travaux effectués..." />
+            </div>
+          </section>
+
+          <section className="form-section">
+            <span className="form-section__eyebrow">5. Pièces / consommables / matériel utilisés ou remplacés</span>
+            {(formData.materiels_v11 || []).map((m, index) => (
+              <div className="form-row" key={index} style={{ alignItems: 'flex-end' }}>
+                <div className="form-group" style={{ flex: 3 }}>
+                  <label>Désignation</label>
+                  <SearchableSelect
+                    options={produits.map((p) => ({ value: p.designation, label: p.designation }))}
+                    value={m.designation || ''}
+                    onChange={(val, option) => handlePieceDesignationV11(index, val, option)}
+                    placeholder="Rechercher un produit existant"
+                    noOptionsText="Aucun produit — tapez la désignation puis Entrée pour le créer"
+                    allowCustomValue
+                  />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>Qté</label>
+                  <input type="number" min="0" step="1" value={m.qte || ''} onChange={(e) => updateMaterielV11(index, 'qte', e.target.value)} />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>État</label>
+                  <select value={m.etat || ''} onChange={(e) => updateMaterielV11(index, 'etat', e.target.value)}>
+                    <option value="">—</option>
+                    <option value="Neuf">Neuf</option>
+                    <option value="Réutilisé">Réutilisé</option>
+                    <option value="Occasion">Occasion</option>
+                  </select>
+                </div>
+                <div className="form-group" style={{ flex: 2 }}>
+                  <label>Observation / Référence</label>
+                  <input type="text" value={m.ref || ''} onChange={(e) => updateMaterielV11(index, 'ref', e.target.value)} />
+                </div>
+                <button
+                  type="button"
+                  className="btn-icon btn-icon-danger"
+                  title="Retirer la ligne"
+                  style={{ marginBottom: 8 }}
+                  onClick={() => removeMaterielV11(index)}
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            ))}
+            <button type="button" className="btn btn-secondary" onClick={addMaterielV11}>
+              <Plus size={16} />
+              Ajouter une pièce / un matériel
+            </button>
+          </section>
+
+          <section className="form-section">
+            <span className="form-section__eyebrow">6. Contrôles et tests après intervention</span>
+            {renderCheckGrid('tests', FIT_V11_TESTS_OPTIONS)}
+          </section>
+
+          <section className="form-section">
+            <span className="form-section__eyebrow">7. Données, sauvegarde et sécurité</span>
+            <div className="form-group">
+              <label>Sauvegarde avant intervention</label>
+              {renderRadioRow('backup_before', FIT_V11_BACKUP_OPTIONS)}
+            </div>
+            <div className="form-group">
+              <label>Données concernées</label>
+              {renderCheckGrid('donnees', FIT_V11_DONNEES_OPTIONS)}
+              <input
+                type="text"
+                value={formData.donnees_autres}
+                onChange={(e) => handleChange('donnees_autres', e.target.value)}
+                placeholder="Autres données : préciser..."
+                style={{ marginTop: 6 }}
+              />
+            </div>
+            <div className="form-group">
+              <label>Sécurité</label>
+              {renderCheckGrid('securite', FIT_V11_SECURITE_OPTIONS)}
+            </div>
+            <div className="form-group">
+              <label>Observation sur les données / la sécurité</label>
+              <textarea rows={3} value={formData.data_obs} onChange={(e) => handleChange('data_obs', e.target.value)} />
+            </div>
+          </section>
+
+          <section className="form-section">
+            <span className="form-section__eyebrow">8. État final de l'intervention</span>
+            <div className="form-group">
+              <label>Statut final</label>
+              {renderRadioRow('statut_final', FIT_V11_ETAT_FINAL_OPTIONS)}
+            </div>
+            <div className="form-group">
+              <label>Équipement</label>
+              {renderRadioRow('equip_final', FIT_V11_EQUIP_FINAL_OPTIONS)}
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>Fin de l'intervention</label>
+                <input type="date" value={formData.fin} onChange={(e) => handleChange('fin', e.target.value)} />
+              </div>
+              <div className="form-group">
+                <label>Durée</label>
+                <SearchableSelect
+                  options={['30 min', '45 min', '1h', '1h30', '2h', '2h30', '3h', '4h', 'Demi-journée', 'Journée complète', '2 jours', '3 jours', '1 semaine'].map((d) => ({ value: d, label: d }))}
+                  value={formData.duree}
+                  onChange={(val, option) => handleChange('duree', option?.label || val)}
+                  placeholder="Choisir ou saisir une durée"
+                  noOptionsText="Tapez la durée puis Entrée"
+                  allowCustomValue
+                />
+              </div>
+              <div className="form-group">
+                <label>Prochaine action</label>
+                <input type="text" value={formData.prochaine_action} onChange={(e) => handleChange('prochaine_action', e.target.value)} placeholder="Ex : retour avec la pièce commandée" />
+              </div>
+            </div>
+          </section>
+
+          <section className="form-section">
+            <span className="form-section__eyebrow">9. Recommandations / travaux complémentaires</span>
+            <div className="form-group">
+              <textarea rows={3} value={formData.recommandations} onChange={(e) => handleChange('recommandations', e.target.value)} placeholder="Recommandations, travaux à prévoir..." />
+            </div>
+          </section>
+
+          <section className="form-section">
+            <span className="form-section__eyebrow">10. Validation du client / utilisateur</span>
+            <div className="form-group">
+              <label>Observation du client</label>
+              <textarea rows={3} value={formData.obs_client} onChange={(e) => handleChange('obs_client', e.target.value)} />
+            </div>
+          </section>
+            </>
+          )}
 
           <div className="form-actions">
             <button type="button" className="btn btn-secondary" onClick={closeModal}>
