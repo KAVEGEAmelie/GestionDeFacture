@@ -334,7 +334,9 @@ const Factures = () => {
 
   const handlePrintSituation = async (situation, print = false) => {
     try {
-      const doc = await generateFactureSituationPDF(situation, situationsFacture, parametres);
+      // La 1ère situation créée porte la TVA à verser (50% de la TVA totale de la facture)
+      const estPremiere = situations.length > 0 && situations[0].id === situation.id;
+      const doc = await generateFactureSituationPDF(situation, situationsFacture, parametres, estPremiere);
       if (print) {
         doc.autoPrint();
         window.open(doc.output('bloburl'), '_blank');
@@ -1083,9 +1085,14 @@ const Factures = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {situations.map((s) => (
+                  {situations.map((s, idx) => (
                     <tr key={s.id}>
-                      <td className="font-semibold">{s.numero}</td>
+                      <td className="font-semibold">
+                        {s.numero}
+                        {idx === 0 && situationsFacture.tva > 0 && (
+                          <div style={{ fontSize: 11, color: '#7c3aed', fontWeight: 500 }}>TVA à verser (50%) incluse</div>
+                        )}
+                      </td>
                       <td>{s.taux}%</td>
                       <td>{formatPrice(s.montant_ttc)} FCFA</td>
                       <td>

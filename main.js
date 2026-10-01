@@ -292,6 +292,12 @@ function initDatabase() {
   if (!factureCols.includes('date_versement_tva')) {
     db.exec("ALTER TABLE factures ADD COLUMN date_versement_tva DATE");
   }
+  // Déclenche l'entrée en "TVA à verser" indépendamment du paiement à 100 % du
+  // marché (facturation par situation : la 1ère situation payée déclenche la
+  // TVA à verser pour toute la facture, sans attendre le solde).
+  if (!factureCols.includes('tva_declenchee')) {
+    db.exec("ALTER TABLE factures ADD COLUMN tva_declenchee INTEGER DEFAULT 0");
+  }
 
   // Suivi des versements de TVA à l'OTR : lots de factures + paiements partiels
   db.exec(`
@@ -1440,7 +1446,7 @@ ipcMain.handle('factures:markPaid', (event, id) => {
     throw new Error('Facture introuvable.');
   }
   db.prepare(
-    "UPDATE factures SET statut_paiement = 'payee', date_paiement = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    "UPDATE factures SET statut_paiement = 'payee', tva_declenchee = 1, date_paiement = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
   ).run(new Date().toISOString().split('T')[0], id);
   return { success: true };
 });
@@ -1454,7 +1460,7 @@ ipcMain.handle('factures:markUnpaid', (event, id) => {
     throw new Error('Impossible d\'annuler le paiement : la TVA de cette facture a déjà été versée à l\'OTR.');
   }
   db.prepare(
-    "UPDATE factures SET statut_paiement = 'non_payee', date_paiement = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    "UPDATE factures SET statut_paiement = 'non_payee', tva_declenchee = 0, date_paiement = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
   ).run(id);
   return { success: true };
 });
@@ -1511,7 +1517,22 @@ ipcMain.handle('factureSituations:markPaid', (event, id) => {
     db.prepare(
       "UPDATE facture_situations SET statut_paiement = 'payee', date_paiement = ? WHERE id = ?"
     ).run(datePaiement, id);
-    // Si le cumul des situations payées couvre 100 % du marché, la facture d'origine passe payée
+
+    // La 1ère situation payee declenche la TVA a verser (50 % de la TVA totale
+    // de la facture) sans attendre que le marche soit regle a 100 %.
+    const premiereId = db.prepare(
+      'SELECT MIN(id) AS id FROM facture_situations WHERE facture_id = ?'
+    ).get(situation.facture_id).id;
+    if (id === premiereId) {
+      const facture = db.prepare('SELECT tva_declenchee FROM factures WHERE id = ?').get(situation.facture_id);
+      if (facture && !facture.tva_declenchee) {
+        db.prepare(
+          'UPDATE factures SET tva_declenchee = 1, date_paiement = ? WHERE id = ?'
+        ).run(datePaiement, situation.facture_id);
+      }
+    }
+
+    // Si le cumul des situations payees couvre 100 % du marche, la facture d'origine passe payee
     const totauxPayes = db.prepare(`
       SELECT COALESCE(SUM(taux), 0) AS total FROM facture_situations
       WHERE facture_id = ? AND statut_paiement = 'payee'
@@ -1529,9 +1550,23 @@ ipcMain.handle('factureSituations:markPaid', (event, id) => {
 ipcMain.handle('factureSituations:markUnpaid', (event, id) => {
   const situation = db.prepare('SELECT * FROM facture_situations WHERE id = ?').get(id);
   if (!situation) throw new Error('Situation introuvable.');
-  db.prepare(
-    "UPDATE facture_situations SET statut_paiement = 'non_payee', date_paiement = NULL WHERE id = ?"
-  ).run(id);
+  const transaction = db.transaction(() => {
+    db.prepare(
+      "UPDATE facture_situations SET statut_paiement = 'non_payee', date_paiement = NULL WHERE id = ?"
+    ).run(id);
+    // Si on annule le paiement de la 1ère situation, on retire aussi le déclenchement
+    // de la TVA à verser (sauf si elle a déjà été versée à l'OTR).
+    const premiereId = db.prepare(
+      'SELECT MIN(id) AS id FROM facture_situations WHERE facture_id = ?'
+    ).get(situation.facture_id).id;
+    if (id === premiereId) {
+      const facture = db.prepare('SELECT tva_versee FROM factures WHERE id = ?').get(situation.facture_id);
+      if (facture && !facture.tva_versee) {
+        db.prepare('UPDATE factures SET tva_declenchee = 0 WHERE id = ?').run(situation.facture_id);
+      }
+    }
+  });
+  transaction();
   return { success: true };
 });
 
@@ -1557,18 +1592,18 @@ ipcMain.handle('listes:add', (event, categorie, valeur) => {
 
 ipcMain.handle('tva:getStats', () => {
   const nonVersee = db.prepare(
-    "SELECT COALESCE(SUM(tva), 0) as total, COUNT(*) as count FROM factures WHERE statut_paiement = 'payee' AND tva_versee = 0 AND tva > 0"
+    "SELECT COALESCE(SUM(tva), 0) as total, COUNT(*) as count FROM factures WHERE tva_declenchee = 1 AND tva_versee = 0 AND tva > 0"
   ).get();
   const versee = db.prepare(
     "SELECT COALESCE(SUM(tva), 0) as total, COUNT(*) as count FROM factures WHERE tva_versee = 1 AND tva > 0"
   ).get();
 
-  // Factures payées dont la TVA n'est pas encore versée ni dans un lot en cours
+  // Factures dont la TVA est déclenchée (payée à 100 %, ou 1ère situation payée) et pas encore versée ni dans un lot en cours
   const aVerser = db.prepare(`
     SELECT f.id, f.numero, f.date, f.date_paiement, f.tva, f.tva / 2.0 AS tva_a_verser, f.total_ttc, c.nom as client_nom
     FROM factures f
     LEFT JOIN clients c ON f.client_id = c.id
-    WHERE f.statut_paiement = 'payee' AND f.tva_versee = 0 AND f.tva > 0
+    WHERE f.tva_declenchee = 1 AND f.tva_versee = 0 AND f.tva > 0
       AND f.id NOT IN (SELECT facture_id FROM tva_versement_factures)
     ORDER BY f.date_paiement
   `).all();
@@ -1630,7 +1665,7 @@ ipcMain.handle('tva:verser', (event, ids) => {
   const transaction = db.transaction((factureIds) => {
     const sel = db.prepare(`
       SELECT id, tva FROM factures
-      WHERE id = ? AND statut_paiement = 'payee' AND tva_versee = 0 AND tva > 0
+      WHERE id = ? AND tva_declenchee = 1 AND tva_versee = 0 AND tva > 0
         AND id NOT IN (SELECT facture_id FROM tva_versement_factures)
     `);
     const rows = factureIds.map((id) => sel.get(id)).filter(Boolean);

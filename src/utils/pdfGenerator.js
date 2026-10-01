@@ -1153,9 +1153,11 @@ const renderFacturePDF = async (facture, parametres, compact) => {
 
 // Génération PDF Facture de situation (paiement partiel par pourcentage)
 // situation = { numero, date, taux, montant_ht, tva, montant_ttc }
-// facture = { numero, objet, client_nom, total_ttc, tva_applicable }
-// reste = pourcentage restant à facturer après cette situation
-export const generateFactureSituationPDF = async (situation, facture, parametres) => {
+// facture = { numero, objet, client_nom, total_ttc, tva }
+// estPremiere = true si c'est la 1ère situation créée pour cette facture :
+// c'est elle qui porte la TVA à verser (50 % de la TVA totale de la facture),
+// les situations suivantes (solde) n'affichent plus de ligne TVA.
+export const generateFactureSituationPDF = async (situation, facture, parametres, estPremiere = true) => {
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
 
@@ -1239,15 +1241,19 @@ export const generateFactureSituationPDF = async (situation, facture, parametres
 
   yPos = doc.lastAutoTable.finalY + 6;
 
-  // Détail HT / TVA / TTC / marché / solde
-  const sansTva = !situation.tva || situation.tva <= 0;
+  // Détail HT / TVA à verser (uniquement sur la 1ère situation) / TTC / marché / solde
+  const sansTva = !facture.tva || facture.tva <= 0;
   const detailRows = [
     ['Montant HT correspondant', formatNumber(situation.montant_ht)],
-    ...(sansTva ? [] : [['TVA (18 %)', formatNumber(situation.tva)]]),
+  ];
+  if (estPremiere && !sansTva) {
+    detailRows.push(['TVA à verser (50 % de la TVA totale)', formatNumber((facture.tva || 0) / 2)]);
+  }
+  detailRows.push(
     ['TOTAL TTC DE LA PRÉSENTE FACTURE', formatNumber(situation.montant_ttc)],
     ['Montant total TTC du marché', formatNumber(facture.total_ttc)],
     ['Solde après cette facture', formatNumber(Math.round((facture.total_ttc || 0) * reste / 100))],
-  ];
+  );
   doc.autoTable({
     startY: yPos,
     body: detailRows,
