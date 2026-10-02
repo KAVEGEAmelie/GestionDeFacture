@@ -278,7 +278,13 @@ const drawTitle = (doc, title, y) => {
   const pageWidth = doc.internal.pageSize.getWidth();
   const cx = pageWidth / 2;
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(24);
+  let fontSize = 24;
+  doc.setFontSize(fontSize);
+  const maxWidth = pageWidth - MARGIN * 2 - 18;
+  while (doc.getTextWidth(title) > maxWidth && fontSize > 16) {
+    fontSize -= 0.5;
+    doc.setFontSize(fontSize);
+  }
   doc.setTextColor(...COLORS.navy);
   doc.text(title, cx, y, { align: 'center' });
   const halfW = doc.getTextWidth(title) / 2;
@@ -1154,10 +1160,11 @@ const renderFacturePDF = async (facture, parametres, compact) => {
 // Génération PDF Facture de situation (paiement partiel par pourcentage)
 // situation = { numero, date, taux, montant_ht, tva, montant_ttc }
 // facture = { numero, objet, client_nom, total_ttc, tva }
-// estPremiere = true si c'est la 1ère situation créée pour cette facture :
-// c'est elle qui porte la TVA à verser (50 % de la TVA totale de la facture),
-// les situations suivantes (solde) n'affichent plus de ligne TVA.
-export const generateFactureSituationPDF = async (situation, facture, parametres, estPremiere = true) => {
+// options = { estPremiere, cumulTaux, cumulTtc }
+//   estPremiere : 1ère situation de la facture -> elle porte toute la TVA de la facture
+//   cumulTaux / cumulTtc : cumul des situations jusqu'à celle-ci incluse (pour le solde)
+// Toujours : Montant HT + TVA = TOTAL TTC de la présente facture.
+export const generateFactureSituationPDF = async (situation, facture, parametres, options = {}) => {
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
 
@@ -1165,9 +1172,30 @@ export const generateFactureSituationPDF = async (situation, facture, parametres
   const { contentLeft, rightX, headerBottom } = await drawHeader(doc, parametres, { vignette: true });
 
   const taux = Number(situation.taux) || 0;
-  const reste = Math.max(0, Math.round((100 - taux) * 100) / 100);
+  const estPremiere = options.estPremiere !== false;
+  const cumulTaux = Number(options.cumulTaux ?? taux) || 0;
+  const totalMarche = Math.round(Number(facture.total_ttc) || 0);
+  const montantTtc = Math.round(Number(situation.montant_ttc) || 0);
+  const cumulTtc = Math.round(Number(options.cumulTtc ?? montantTtc) || 0);
+  const reste = Math.max(0, Math.round((100 - cumulTaux) * 100) / 100);
   const estSolde = reste <= 0.01;
-  const titre = estSolde ? `FACTURE DE SOLDE - ${taux}%` : `FACTURE - RÈGLEMENT DE ${taux}%`;
+  const tauxAvant = Math.max(0, Math.round((cumulTaux - taux) * 100) / 100);
+  const finGarantie = estSolde && taux <= 5.01 && tauxAvant >= 94.99;
+  const sansTva = !facture.tva || facture.tva <= 0;
+  const tvaTotale = estPremiere && !sansTva
+    ? Math.min(Math.round(Number(facture.tva) || 0), montantTtc)
+    : 0;
+  const baseHt = montantTtc - tvaTotale;
+  const tvaReglee = Math.round(tvaTotale / 2);
+  const quittance = tvaTotale - tvaReglee;
+  const netAPayer = Math.max(0, montantTtc - (estPremiere ? quittance : 0));
+  const montantPrecedent = Math.max(0, cumulTtc - montantTtc);
+  const retenueGarantie = Math.max(0, totalMarche - montantTtc);
+  const titre = finGarantie
+    ? `FACTURE - SOLDE DE ${taux}% APRÈS GARANTIE`
+    : estSolde
+      ? `FACTURE - SOLDE DE ${taux}%`
+      : `FACTURE - RÈGLEMENT DE ${taux}%`;
 
   let yPos = drawTitle(doc, titre, headerBottom + 11);
   doc.setFont('helvetica', 'normal');
@@ -1192,11 +1220,11 @@ export const generateFactureSituationPDF = async (situation, facture, parametres
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(...COLORS.navy);
   doc.text('Date :', rightX - 60, yPos);
-  doc.text('Échéance facturée :', rightX - 60, yPos + 7);
+  doc.text('Échéance facturée :', finGarantie ? rightX - 80 : rightX - 60, yPos + 7);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(...COLORS.ink);
-  doc.text(dateTxt, rightX, yPos, { align: 'right' });
-  doc.text(`${taux} %`, rightX, yPos + 7, { align: 'right' });
+  doc.text(finGarantie ? '____/____/______' : dateTxt, rightX, yPos, { align: 'right' });
+  doc.text(finGarantie ? `${taux} % - fin de garantie` : `${taux} %`, rightX, yPos + 7, { align: 'right' });
 
   yPos += 14;
   doc.setDrawColor(...COLORS.line);
@@ -1204,85 +1232,71 @@ export const generateFactureSituationPDF = async (situation, facture, parametres
   doc.line(contentLeft, yPos, rightX, yPos);
   yPos += 8;
 
-  // Tableau "Situation de facturation"
-  const tableData = [[
-    String(facture.objet || ''),
-    formatNumber(facture.total_ttc),
-    `${taux} %`,
-    formatNumber(situation.montant_ttc),
-  ]];
+  // Tableau de situation : ventilation TVA sur la première tranche, puis retenue sans TVA.
+  const lignesSituation = estPremiere
+    ? [
+        ['Montant total TTC du marché', formatNumber(totalMarche)],
+        [`Montant de la tranche de ${taux} % du TTC`, formatNumber(montantTtc)],
+        ['Base HT comprise dans la présente facture', formatNumber(baseHt)],
+        [`TVA totale (${Number(parametres.tva_taux) || 18} %) acquittée sur cette première tranche`, formatNumber(tvaTotale)],
+        ['- 50 % de la TVA à régler à In-Tel Services', formatNumber(tvaReglee)],
+        ["- 50 % de la TVA faisant l'objet d'une quittance", formatNumber(quittance)],
+        [`Montant brut de la facture de ${taux} %`, formatNumber(montantTtc)],
+        ['Déduction : 50 % de la TVA / quittance', `- ${formatNumber(quittance)}`],
+        ['NET À PAYER À IN-TEL SERVICES', formatNumber(netAPayer)],
+        [reste === 5
+          ? 'Retenue de garantie de 5 % à payer après garantie'
+          : `Solde restant à payer après cette tranche (${reste} %)`, formatNumber(retenueGarantie)],
+      ]
+    : [
+        ['Montant total TTC du marché', formatNumber(totalMarche)],
+        [`Première tranche brute facturée (${tauxAvant} %)`, formatNumber(montantPrecedent)],
+        [`Retenue de garantie - solde de ${taux} %`, formatNumber(montantTtc)],
+        ['TVA sur le présent solde', '0'],
+        [finGarantie ? 'TOTAL À PAYER APRÈS GARANTIE' : 'TOTAL À PAYER POUR CETTE SITUATION', formatNumber(netAPayer)],
+      ];
+  const lignesAccentuees = estPremiere ? new Set([1, 3, 6, 8, 9]) : new Set([2, 4]);
+  if (estPremiere) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(...COLORS.navy);
+    doc.text('SITUATION DE FACTURATION - PREMIÈRE TRANCHE', contentLeft, yPos);
+    yPos += 5;
+  }
   doc.autoTable({
     startY: yPos,
-    head: [[`SITUATION DE FACTURATION - ${taux} %`, '', '', '']],
-    body: [['DÉSIGNATION', 'BASE TTC DU MARCHÉ', 'TAUX', 'MONTANT FACTURÉ'], ...tableData],
+    head: [['DÉSIGNATION', 'MONTANT (FCFA)']],
+    body: lignesSituation.map((row, index) => row.map((content) => ({
+      content,
+      styles: lignesAccentuees.has(index) ? { fontStyle: 'bold' } : {},
+    }))),
     theme: 'grid',
     headStyles: {
       fillColor: COLORS.navy, textColor: COLORS.white, fontStyle: 'bold',
       fontSize: 9, halign: 'center', valign: 'middle', cellPadding: 2.5
     },
-    didParseCell: (data) => {
-      if (data.row.index === 0) {
-        data.cell.styles.fillColor = COLORS.boxBg;
-        data.cell.styles.textColor = COLORS.navy;
-        data.cell.styles.fontStyle = 'bold';
-        data.cell.styles.halign = 'center';
-      }
-    },
-    bodyStyles: { fontSize: 9.5, cellPadding: 3, textColor: COLORS.ink, valign: 'middle', halign: 'center' },
+    bodyStyles: { fontSize: 9.2, cellPadding: 1.25, textColor: COLORS.ink, valign: 'middle' },
     columnStyles: {
-      0: { cellWidth: 70, halign: 'left' },
-      1: { cellWidth: 40 },
-      2: { cellWidth: 25 },
-      3: { cellWidth: 51 },
-    },
-    styles: { lineColor: COLORS.line, lineWidth: 0.15 },
-    margin: { left: contentLeft, right: MARGIN },
-  });
-
-  yPos = doc.lastAutoTable.finalY + 6;
-
-  // Détail HT / TVA à verser (uniquement sur la 1ère situation) / TTC / marché / solde
-  const sansTva = !facture.tva || facture.tva <= 0;
-  const detailRows = [
-    ['Montant HT correspondant', formatNumber(situation.montant_ht)],
-  ];
-  if (estPremiere && !sansTva) {
-    detailRows.push(['TVA à verser (50 % de la TVA totale)', formatNumber((facture.tva || 0) / 2)]);
-  }
-  detailRows.push(
-    ['TOTAL TTC DE LA PRÉSENTE FACTURE', formatNumber(situation.montant_ttc)],
-    ['Montant total TTC du marché', formatNumber(facture.total_ttc)],
-    ['Solde après cette facture', formatNumber(Math.round((facture.total_ttc || 0) * reste / 100))],
-  );
-  doc.autoTable({
-    startY: yPos,
-    body: detailRows,
-    theme: 'grid',
-    bodyStyles: { fontSize: 9.5, cellPadding: 3, textColor: COLORS.ink, valign: 'middle' },
-    columnStyles: {
-      0: { cellWidth: 135, fontStyle: 'bold' },
+      0: { cellWidth: 135, halign: 'left' },
       1: { cellWidth: 51, halign: 'right' },
     },
-    didParseCell: (data) => {
-      if (data.row.index === detailRows.length - 3) {
-        data.cell.styles.fillColor = COLORS.boxBg;
-        data.cell.styles.fontStyle = 'bold';
-      }
-    },
     styles: { lineColor: COLORS.line, lineWidth: 0.15 },
     margin: { left: contentLeft, right: MARGIN },
   });
 
-  yPos = doc.lastAutoTable.finalY + 10;
+  yPos = doc.lastAutoTable.finalY + 7;
 
   // Somme en lettres
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(10);
   doc.setTextColor(...COLORS.ink);
-  doc.text('Arrêtée la présente facture à la somme de :', contentLeft, yPos);
+  const lettres = nombreEnLettres(netAPayer);
+  const introSomme = estPremiere
+    ? 'Arrêtée la présente facture nette à payer à la somme de :'
+    : 'Arrêtée la présente facture à la somme de :';
+  doc.text(introSomme, contentLeft, yPos);
   yPos += 6;
-  const lettres = nombreEnLettres(Math.round(situation.montant_ttc));
-  const lettresLines = doc.splitTextToSize(`${lettres} Francs CFA${sansTva ? ' HT' : ' TTC'}.`, rightX - contentLeft);
+  const lettresLines = doc.splitTextToSize(`${lettres} (${formatNumber(netAPayer)}) Francs CFA.`, rightX - contentLeft);
   doc.setFont('helvetica', 'bold');
   doc.text(lettresLines, contentLeft, yPos);
   yPos += lettresLines.length * 5.5 + 6;
@@ -1291,9 +1305,9 @@ export const generateFactureSituationPDF = async (situation, facture, parametres
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9.5);
   doc.setTextColor(...COLORS.ink);
-  const explicatif = estSolde
-    ? `Cette facture correspond au solde de ${taux} % du marché après la période de garantie. Après règlement de cette facture, le montant total facturé au titre de l'opération sera de ${formatNumber(facture.total_ttc)} F CFA${sansTva ? ' HT' : ' TTC'}.`
-    : `Cette facture représente ${taux} % du montant TTC de la facture n° ${facture.numero}. Le solde de ${reste} %, soit ${formatNumber(Math.round((facture.total_ttc || 0) * reste / 100))} F CFA${sansTva ? ' HT' : ' TTC'}, reste à régler à la fin de la période de garantie, conformément aux dispositions contractuelles.`;
+  const explicatif = estPremiere
+    ? `Note fiscale : la TVA totale du marché, soit ${formatNumber(tvaTotale)} F CFA, est entièrement constatée sur la présente facture : ${formatNumber(tvaReglee)} F CFA (50 %) sont réglés à In-Tel Services et ${formatNumber(quittance)} F CFA (50 %) font l'objet d'une quittance. La retenue de garantie de ${reste} % sera donc réglée sans TVA supplémentaire.`
+    : `Mention : Cette facture correspond exclusivement à la libération de la retenue de garantie de ${taux} %. Aucune TVA supplémentaire n'est ajoutée, la TVA totale de ${formatNumber(Number(facture.tva) || 0)} F CFA ayant déjà été constatée et acquittée dans le cadre de la facture de règlement de ${tauxAvant} %.`;
   const explicatifLines = doc.splitTextToSize(explicatif, rightX - contentLeft);
   doc.text(explicatifLines, contentLeft, yPos);
   yPos += explicatifLines.length * 5 + 14;
@@ -2560,7 +2574,7 @@ export const generateInterventionPDF = async (fiche, parametres = {}) => {
   const signH = 32;
   const signW = contentW / 2;
   const signTitles = ['TECHNICIEN', 'CLIENT / RESPONSABLE'];
-  const signNames = [fiche.intervenant || '', fiche.nom_demandeur || ''];
+  const signNames = [fiche.intervenant || '', fiche.responsable_client || ''];
   doc.setDrawColor(...COLORS.line);
   doc.setLineWidth(0.4);
   doc.roundedRect(contentLeft, y, contentW, signH, 1.5, 1.5, 'S');

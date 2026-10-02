@@ -43,6 +43,7 @@ const buildDefaultForm = () => ({
   client_nom: '',
   client_adresse: '',
   nom_demandeur: '',
+  responsable_client: '',
   client_contact: '',
   categorie: [],
   equipements: [],
@@ -80,6 +81,7 @@ const toStoredRecord = (form) => {
     categorie: arr(form.categorie),
     equipements: arr(form.equipements),
     nom_demandeur: trim(form.nom_demandeur),
+    responsable_client: trim(form.responsable_client),
     diagnostic: trim(form.diagnostic),
     travaux_types: arr(form.travaux_types),
     recommandations: trim(form.recommandations),
@@ -156,6 +158,8 @@ const Interventions = () => {
   const [produits, setProduits] = useState([]);
   const [techniciens, setTechniciens] = useState([]);
   const [sitesServices, setSitesServices] = useState([]);
+  const [demandeurs, setDemandeurs] = useState([]);
+  const [responsables, setResponsables] = useState([]);
   const [categorieOptions, setCategorieOptions] = useState(FIT_CATEGORIE_OPTIONS);
   const [equipementOptions, setEquipementOptions] = useState(FIT_EQUIPEMENT_OPTIONS);
   const [newCategorie, setNewCategorie] = useState('');
@@ -185,7 +189,7 @@ const Interventions = () => {
           toast.error("Module fiches d'intervention indisponible : fermez complètement l'application puis relancez-la.");
           return;
         }
-        const [params, clientsData, interventionsData, produitsData, techniciensData, sitesData, categoriesData, equipementsData] = await Promise.all([
+        const [params, clientsData, interventionsData, produitsData, techniciensData, sitesData, categoriesData, equipementsData, demandeursData, responsablesData] = await Promise.all([
           window.electronAPI.parametres.getAll(),
           window.electronAPI.clients.getAll(),
           window.electronAPI.interventions.getAll(),
@@ -194,6 +198,8 @@ const Interventions = () => {
           window.electronAPI.listes ? window.electronAPI.listes.get('site_service') : Promise.resolve([]),
           window.electronAPI.listes ? window.electronAPI.listes.get('intervention_categorie') : Promise.resolve([]),
           window.electronAPI.listes ? window.electronAPI.listes.get('intervention_equipement') : Promise.resolve([]),
+          window.electronAPI.listes ? window.electronAPI.listes.get('demandeur') : Promise.resolve([]),
+          window.electronAPI.listes ? window.electronAPI.listes.get('responsable_client') : Promise.resolve([]),
         ]);
         setParametres(params || {});
         setClients(clientsData || []);
@@ -201,6 +207,8 @@ const Interventions = () => {
         setProduits(produitsData || []);
         setTechniciens(techniciensData || []);
         setSitesServices(sitesData || []);
+        setDemandeurs(demandeursData || []);
+        setResponsables(responsablesData || []);
         setCategorieOptions((prev) => Array.from(new Set([...prev, ...(categoriesData || [])])));
         setEquipementOptions((prev) => Array.from(new Set([...prev, ...(equipementsData || [])])));
       } catch (error) {
@@ -450,6 +458,14 @@ const Interventions = () => {
           await window.electronAPI.listes.add('site_service', payload.client_adresse);
           setSitesServices((prev) => (prev.includes(payload.client_adresse) ? prev : [...prev, payload.client_adresse].sort((a, b) => a.localeCompare(b, 'fr'))));
         }
+        if (payload.nom_demandeur) {
+          await window.electronAPI.listes.add('demandeur', payload.nom_demandeur);
+          setDemandeurs((prev) => (prev.includes(payload.nom_demandeur) ? prev : [...prev, payload.nom_demandeur].sort((a, b) => a.localeCompare(b, 'fr'))));
+        }
+        if (payload.responsable_client) {
+          await window.electronAPI.listes.add('responsable_client', payload.responsable_client);
+          setResponsables((prev) => (prev.includes(payload.responsable_client) ? prev : [...prev, payload.responsable_client].sort((a, b) => a.localeCompare(b, 'fr'))));
+        }
       }
     } catch (error) {
       toast.error(getErrorMessage(error, 'Erreur lors de l\'enregistrement.'));
@@ -620,7 +636,7 @@ const Interventions = () => {
                 </div>
               </div>
             )}
-            <div className="form-row">
+            <div className="form-row" style={{ gridTemplateColumns: '1fr 1fr 0.7fr 1.6fr' }}>
               <div className="form-group">
                 <label>N° Intervention</label>
                 <input type="text" value={editingNumero || 'Généré automatiquement'} readOnly />
@@ -642,6 +658,7 @@ const Interventions = () => {
                   placeholder="Choisir ou saisir un technicien"
                   noOptionsText="Aucun technicien — tapez le nom puis Entrée"
                   allowCustomValue
+                  commitOnBlur
                 />
               </div>
             </div>
@@ -671,13 +688,22 @@ const Interventions = () => {
                   placeholder="Choisir ou saisir un service / département"
                   noOptionsText="Aucun service — tapez-le puis Entrée"
                   allowCustomValue
+                  commitOnBlur
                 />
               </div>
             </div>
             <div className="form-row">
               <div className="form-group">
                 <label>Nom du demandeur</label>
-                <input type="text" value={formData.nom_demandeur} onChange={(e) => handleChange('nom_demandeur', e.target.value)} />
+                <SearchableSelect
+                  options={demandeurs.map((d) => ({ value: d, label: d }))}
+                  value={formData.nom_demandeur}
+                  onChange={(val, option) => handleChange('nom_demandeur', option?.label || val)}
+                  placeholder="Choisir ou saisir le demandeur"
+                  noOptionsText="Nouveau nom — tapez-le puis Entrée"
+                  allowCustomValue
+                  commitOnBlur
+                />
               </div>
               <div className="form-group">
                 <label>Tél.</label>
@@ -803,9 +829,23 @@ const Interventions = () => {
 
           <section className="form-section">
             <span className="form-section__eyebrow">8. Validation</span>
-            <div className="form-group">
-              <label>Date de clôture</label>
-              <input type="date" value={formData.fin} onChange={(e) => handleChange('fin', e.target.value)} />
+            <div className="form-row">
+              <div className="form-group">
+                <label>Client / Responsable (signataire)</label>
+                <SearchableSelect
+                  options={responsables.map((r) => ({ value: r, label: r }))}
+                  value={formData.responsable_client}
+                  onChange={(val, option) => handleChange('responsable_client', option?.label || val)}
+                  placeholder="Choisir ou saisir le responsable"
+                  noOptionsText="Nouveau nom — tapez-le puis Entrée"
+                  allowCustomValue
+                  commitOnBlur
+                />
+              </div>
+              <div className="form-group">
+                <label>Date de clôture</label>
+                <input type="date" value={formData.fin} onChange={(e) => handleChange('fin', e.target.value)} />
+              </div>
             </div>
           </section>
             </>

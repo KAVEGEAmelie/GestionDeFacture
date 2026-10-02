@@ -334,9 +334,14 @@ const Factures = () => {
 
   const handlePrintSituation = async (situation, print = false) => {
     try {
-      // La 1ère situation créée porte la TVA à verser (50% de la TVA totale de la facture)
+      // La 1ère situation créée porte toute la TVA de la facture ;
+      // le solde se calcule sur le cumul des situations jusqu'à celle-ci incluse
       const estPremiere = situations.length > 0 && situations[0].id === situation.id;
-      const doc = await generateFactureSituationPDF(situation, situationsFacture, parametres, estPremiere);
+      const index = situations.findIndex((s) => s.id === situation.id);
+      const jusquIci = index >= 0 ? situations.slice(0, index + 1) : [situation];
+      const cumulTaux = Math.round(jusquIci.reduce((sum, s) => sum + (Number(s.taux) || 0), 0) * 100) / 100;
+      const cumulTtc = jusquIci.reduce((sum, s) => sum + (Number(s.montant_ttc) || 0), 0);
+      const doc = await generateFactureSituationPDF(situation, situationsFacture, parametres, { estPremiere, cumulTaux, cumulTtc });
       if (print) {
         doc.autoPrint();
         window.open(doc.output('bloburl'), '_blank');
@@ -1090,7 +1095,7 @@ const Factures = () => {
                       <td className="font-semibold">
                         {s.numero}
                         {idx === 0 && situationsFacture.tva > 0 && (
-                          <div style={{ fontSize: 11, color: '#7c3aed', fontWeight: 500 }}>TVA à verser (50%) incluse</div>
+                          <div style={{ fontSize: 11, color: '#7c3aed', fontWeight: 500 }}>TVA incluse</div>
                         )}
                       </td>
                       <td>{s.taux}%</td>

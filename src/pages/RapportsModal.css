@@ -103,6 +103,7 @@
   grid-template-columns: 1fr 1fr;
   gap: 1rem;
   margin-bottom: 0;
+  align-items: end;
 }
 
 /* ============================================================
@@ -162,6 +163,7 @@
    ============================================================ */
 .rapports-form .form-group input[type='text'],
 .rapports-form .form-group input[type='date'],
+.rapports-form .form-group input[type='time'],
 .rapports-form .form-group input[type='number'],
 .rapports-form .form-group input[type='email'],
 .rapports-form .form-group select,
@@ -197,6 +199,24 @@
 .rapports-form .form-group input::placeholder,
 .rapports-form .form-group textarea::placeholder {
   color: var(--gray-400, #9ca3af);
+}
+
+/* Liste déroulante avec recherche : même hauteur et même style que les autres champs */
+.rapports-form .form-group .searchable-select__control {
+  border-color: #e5e7eb;
+  background: #fafbfc;
+}
+
+.rapports-form .form-group .searchable-select__control input[type='text'],
+.rapports-form .form-group .searchable-select__control input[type='text']:hover,
+.rapports-form .form-group .searchable-select__control input[type='text']:focus {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0.7rem 0;
+  font-size: 0.93rem;
+  line-height: 1.4;
 }
 
 /* Affinage du sélecteur natif de date */

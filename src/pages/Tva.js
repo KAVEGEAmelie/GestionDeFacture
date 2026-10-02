@@ -444,7 +444,7 @@ const Tva = () => {
           <div className="stat-content">
             <h3 className="stat-label">TVA collectée non versée</h3>
             <p className="stat-value" style={{ fontSize: '1.4rem' }}>{formatFCFA(stats.tvaNonVersee)}</p>
-            <small style={{ color: '#6b7280' }}>{stats.nbNonVersee} facture(s) payée(s)</small>
+            <small style={{ color: '#6b7280' }}>{stats.nbNonVersee} facture(s) concernée(s)</small>
           </div>
         </div>
 
@@ -528,7 +528,7 @@ const Tva = () => {
             className={`tva-tab ${activeTab === 'a_verser' ? 'active' : ''}`}
             onClick={() => setActiveTab('a_verser')}
           >
-            TVA à reverser ({stats.nbNonVersee})
+            TVA à reverser ({(stats.aVerser || []).length})
           </button>
           <button
             className={`tva-tab ${activeTab === 'versements' ? 'active' : ''}`}

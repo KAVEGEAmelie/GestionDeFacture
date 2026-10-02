@@ -298,6 +298,24 @@ function initDatabase() {
   if (!factureCols.includes('tva_declenchee')) {
     db.exec("ALTER TABLE factures ADD COLUMN tva_declenchee INTEGER DEFAULT 0");
   }
+  db.exec(`
+    UPDATE factures
+    SET tva_declenchee = 1
+    WHERE tva > 0 AND (
+      statut_paiement = 'payee'
+      OR tva_versee = 1
+      OR EXISTS (
+        SELECT 1 FROM facture_situations fs
+        WHERE fs.facture_id = factures.id
+          AND fs.id = (
+            SELECT MIN(fs_premiere.id)
+            FROM facture_situations fs_premiere
+            WHERE fs_premiere.facture_id = factures.id
+          )
+          AND fs.statut_paiement = 'payee'
+      )
+    )
+  `);
 
   // Suivi des versements de TVA à l'OTR : lots de factures + paiements partiels
   db.exec(`
@@ -1483,11 +1501,17 @@ ipcMain.handle('factureSituations:create', (event, factureId, taux) => {
     if (dejaEmis + t > 100.01) {
       throw new Error(`Taux refusé : ${dejaEmis}% déjà facturé(s), il ne reste que ${Math.max(0, 100 - dejaEmis)}% disponible(s).`);
     }
-    const sansTva = !facture.tva || facture.tva <= 0;
-    const tauxTva = sansTva ? 0 : (parseFloat(db.prepare("SELECT valeur FROM parametres WHERE cle = 'tva_taux'").get()?.valeur) || 18);
-    const montantTtc = Math.round((facture.total_ttc || 0) * t / 100);
-    const montantHt = sansTva ? montantTtc : Math.round(montantTtc / (1 + tauxTva / 100));
-    const tva = montantTtc - montantHt;
+    const precedentes = db.prepare(
+      'SELECT COUNT(*) AS nb, COALESCE(SUM(montant_ttc), 0) AS ttc FROM facture_situations WHERE facture_id = ?'
+    ).get(factureId);
+    const totalTtc = Math.round(facture.total_ttc || 0);
+    // La dernière situation prend exactement ce qui reste (pas d'écart d'arrondi)
+    const montantTtc = dejaEmis + t >= 99.99
+      ? Math.max(0, totalTtc - precedentes.ttc)
+      : Math.round(totalTtc * t / 100);
+    // Toute la TVA de la facture est portée par la 1ère situation ; HT + TVA = TTC
+    const tva = precedentes.nb === 0 ? Math.min(Math.round(facture.tva || 0), montantTtc) : 0;
+    const montantHt = montantTtc - tva;
 
     let suffixe = String(Math.round(t)).padStart(2, '0');
     let numero = `${facture.numero}/${suffixe}`;
