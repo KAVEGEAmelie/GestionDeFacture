@@ -14,6 +14,12 @@ import './Clients.css';
 import './Proformas.css';
 import { useNavigate } from 'react-router-dom';
 
+const getLocalISODate = () => {
+  const date = new Date();
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 10);
+};
+
 const Factures = () => {
   const navigate = useNavigate();
   const toast = useToast();
@@ -40,6 +46,8 @@ const Factures = () => {
   const [situationsFacture, setSituationsFacture] = useState(null);
   const [situations, setSituations] = useState([]);
   const [nouveauTaux, setNouveauTaux] = useState('');
+  const [paymentTarget, setPaymentTarget] = useState(null);
+  const [paymentDate, setPaymentDate] = useState(getLocalISODate());
   const [editForm, setEditForm] = useState({
     date: '',
     objet: '',
@@ -261,16 +269,29 @@ const Factures = () => {
     }
   };
 
-  const handleMarkPaid = async (facture) => {
-    const ok = await confirm({
-      title: 'Valider le paiement',
-      message: `Confirmer que la facture ${facture.numero} a été payée par le client ? Sa TVA passera en « TVA à reverser à l'OTR ».`,
-      confirmText: 'Valider le paiement',
-    });
-    if (!ok) return;
+  const openPaymentDateModal = (type, item) => {
+    setPaymentDate(getLocalISODate());
+    setPaymentTarget({ type, item });
+  };
+
+  const handleMarkPaid = (facture) => openPaymentDateModal('facture', facture);
+
+  const handleConfirmPayment = async (event) => {
+    event.preventDefault();
+    if (!paymentTarget || !paymentDate) {
+      toast.error('Veuillez choisir la date du paiement.');
+      return;
+    }
     try {
-      await window.electronAPI.factures.markPaid(facture.id);
-      toast.success('Paiement enregistré. La TVA est désormais à reverser à l\'OTR.');
+      if (paymentTarget.type === 'facture') {
+        await window.electronAPI.factures.markPaid(paymentTarget.item.id, paymentDate);
+        toast.success('Paiement enregistré. La TVA est désormais à reverser à l\'OTR.');
+      } else {
+        await window.electronAPI.factureSituations.markPaid(paymentTarget.item.id, paymentDate);
+        await refreshSituations();
+        toast.success('Paiement de la situation enregistré.');
+      }
+      setPaymentTarget(null);
       loadData();
     } catch (error) {
       toast.error(getErrorMessage(error, 'Erreur lors de la validation du paiement.'));
@@ -358,7 +379,8 @@ const Factures = () => {
       if (situation.statut_paiement === 'payee') {
         await window.electronAPI.factureSituations.markUnpaid(situation.id);
       } else {
-        await window.electronAPI.factureSituations.markPaid(situation.id);
+        openPaymentDateModal('situation', situation);
+        return;
       }
       await refreshSituations();
       loadData();
@@ -394,7 +416,16 @@ const Factures = () => {
 
   const getPaiementBadge = (facture) => {
     if (facture.statut_paiement === 'payee') {
-      return <span className="badge badge-success">Payée</span>;
+      return (
+        <div>
+          <span className="badge badge-success">Payée</span>
+          {facture.date_paiement && (
+            <div style={{ marginTop: 3, fontSize: 11, color: '#64748b' }}>
+              Le {formatDate(facture.date_paiement)}
+            </div>
+          )}
+        </div>
+      );
     }
     return <span className="badge badge-warning">Non payée</span>;
   };
@@ -1086,6 +1117,7 @@ const Factures = () => {
                     <th>Taux</th>
                     <th>Montant TTC</th>
                     <th>Statut</th>
+                    <th>Date de paiement</th>
                     <th style={{ textAlign: 'right' }}>Actions</th>
                   </tr>
                 </thead>
@@ -1107,6 +1139,7 @@ const Factures = () => {
                           <span className="badge badge-warning">Non payée</span>
                         )}
                       </td>
+                      <td>{s.date_paiement ? formatDate(s.date_paiement) : '-'}</td>
                       <td style={{ textAlign: 'right' }}>
                         <div className="action-buttons">
                           <button
@@ -1167,6 +1200,41 @@ const Factures = () => {
               <p style={{ color: '#10b981', fontWeight: 600 }}>100 % du marché a été facturé via les situations ci-dessus.</p>
             )}
           </div>
+        </Modal>
+      )}
+
+      {paymentTarget && (
+        <Modal
+          isOpen={!!paymentTarget}
+          onClose={() => setPaymentTarget(null)}
+          title="Date du paiement"
+          size="small"
+        >
+          <form className="form" onSubmit={handleConfirmPayment}>
+            <p style={{ margin: '0 0 12px', color: '#64748b' }}>
+              Paiement de {paymentTarget.type === 'facture' ? 'la facture' : 'la situation'}{' '}
+              <strong>{paymentTarget.item.numero}</strong>
+            </p>
+            <div className="form-group">
+              <label htmlFor="facture-payment-date">Date effective du paiement *</label>
+              <input
+                id="facture-payment-date"
+                type="date"
+                value={paymentDate}
+                onChange={(event) => setPaymentDate(event.target.value)}
+                required
+              />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+              <button type="button" className="btn btn-secondary" onClick={() => setPaymentTarget(null)}>
+                Annuler
+              </button>
+              <button type="submit" className="btn btn-primary">
+                <CheckCircle size={16} />
+                Enregistrer le paiement
+              </button>
+            </div>
+          </form>
         </Modal>
       )}
     </div>

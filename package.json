@@ -1,6 +1,6 @@
 {
   "name": "gestion-facturation",
-  "version": "1.4.1",
+  "version": "1.4.3",
   "description": "Application de gestion de facturation pour In-Tel Services",
   "main": "main.js",
   "homepage": "./",

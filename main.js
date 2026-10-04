@@ -1456,14 +1456,24 @@ ipcMain.handle('factures:delete', (event, id) => {
 });
 
 // PAIEMENT DES FACTURES
-ipcMain.handle('factures:markPaid', (event, id) => {
+const normalizePaymentDate = (value) => {
+  const date = String(value || new Date().toISOString().split('T')[0]).trim();
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(`${date}T00:00:00.000Z`) : null;
+  if (!parsed || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+    throw new Error('Date de paiement invalide.');
+  }
+  return date;
+};
+
+ipcMain.handle('factures:markPaid', (event, id, date) => {
   const facture = db.prepare('SELECT statut_paiement FROM factures WHERE id = ?').get(id);
   if (!facture) {
     throw new Error('Facture introuvable.');
   }
+  const datePaiement = normalizePaymentDate(date);
   db.prepare(
     "UPDATE factures SET statut_paiement = 'payee', tva_declenchee = 1, date_paiement = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-  ).run(new Date().toISOString().split('T')[0], id);
+  ).run(datePaiement, id);
   return { success: true };
 });
 
@@ -1531,10 +1541,10 @@ ipcMain.handle('factureSituations:create', (event, factureId, taux) => {
   return { success: true, ...transaction() };
 });
 
-ipcMain.handle('factureSituations:markPaid', (event, id) => {
+ipcMain.handle('factureSituations:markPaid', (event, id, date) => {
   const situation = db.prepare('SELECT * FROM facture_situations WHERE id = ?').get(id);
   if (!situation) throw new Error('Situation introuvable.');
-  const datePaiement = new Date().toISOString().split('T')[0];
+  const datePaiement = normalizePaymentDate(date);
   const transaction = db.transaction(() => {
     db.prepare(
       "UPDATE facture_situations SET statut_paiement = 'payee', date_paiement = ? WHERE id = ?"

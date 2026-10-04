@@ -40,14 +40,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getById: (id) => ipcRenderer.invoke('factures:getById', id),
     createFromProforma: (proformaId, dateFacture) => ipcRenderer.invoke('factures:createFromProforma', proformaId, dateFacture),
     update: (id, data) => ipcRenderer.invoke('factures:update', id, data),
-    markPaid: (id) => ipcRenderer.invoke('factures:markPaid', id),
+    markPaid: (id, datePaiement) => ipcRenderer.invoke('factures:markPaid', id, datePaiement),
     markUnpaid: (id) => ipcRenderer.invoke('factures:markUnpaid', id),
     delete: (id) => ipcRenderer.invoke('factures:delete', id)
   },
   factureSituations: {
     getByFacture: (factureId) => ipcRenderer.invoke('factureSituations:getByFacture', factureId),
     create: (factureId, taux) => ipcRenderer.invoke('factureSituations:create', factureId, taux),
-    markPaid: (id) => ipcRenderer.invoke('factureSituations:markPaid', id),
+    markPaid: (id, datePaiement) => ipcRenderer.invoke('factureSituations:markPaid', id, datePaiement),
     markUnpaid: (id) => ipcRenderer.invoke('factureSituations:markUnpaid', id),
     delete: (id) => ipcRenderer.invoke('factureSituations:delete', id)
   },

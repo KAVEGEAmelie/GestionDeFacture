@@ -1,8 +1,8 @@
-version: 1.4.1
+version: 1.4.3
 files:
-  - url: Gestion-Facturation-Setup-1.4.1.exe
-    sha512: SzyH9XDgP0BvIy/FvbwgVTgVLql1CvN7erBoR6WrR6T7w0vkou2RldvJeaMU0m4QNM5R85OlnQKV4ffH3HU3ng==
-    size: 94734728
-path: Gestion-Facturation-Setup-1.4.1.exe
-sha512: SzyH9XDgP0BvIy/FvbwgVTgVLql1CvN7erBoR6WrR6T7w0vkou2RldvJeaMU0m4QNM5R85OlnQKV4ffH3HU3ng==
-releaseDate: '2026-10-02T14:48:08.252Z'
+  - url: Gestion-Facturation-Setup-1.4.3.exe
+    sha512: +qzw5t+4TIEqAGdQIjjwb8oNWv2XGhpyPA1ZVagtwInWwSIJUQ1dTHIj8Im97HcYs/FSAIc32tpKdJpo4VfJQA==
+    size: 94733629
+path: Gestion-Facturation-Setup-1.4.3.exe
+sha512: +qzw5t+4TIEqAGdQIjjwb8oNWv2XGhpyPA1ZVagtwInWwSIJUQ1dTHIj8Im97HcYs/FSAIc32tpKdJpo4VfJQA==
+releaseDate: '2026-10-04T14:14:12.394Z'

@@ -1216,14 +1216,18 @@ export const generateFactureSituationPDF = async (situation, facture, parametres
   const objetLines = doc.splitTextToSize(String(facture.objet || ''), 110);
   doc.text(objetLines, contentLeft + 16, yPos + 7);
 
-  const dateTxt = situation.date ? new Date(situation.date).toLocaleDateString('fr-FR') : '';
+  const dateISO = String(situation.date || '').slice(0, 10);
+  const dateParts = dateISO.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const dateTxt = dateParts
+    ? `${dateParts[3]}/${dateParts[2]}/${dateParts[1]}`
+    : situation.date ? new Date(situation.date).toLocaleDateString('fr-FR') : '';
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(...COLORS.navy);
   doc.text('Date :', rightX - 60, yPos);
   doc.text('Échéance facturée :', finGarantie ? rightX - 80 : rightX - 60, yPos + 7);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(...COLORS.ink);
-  doc.text(finGarantie ? '____/____/______' : dateTxt, rightX, yPos, { align: 'right' });
+  doc.text(dateTxt || '____/____/______', rightX, yPos, { align: 'right' });
   doc.text(finGarantie ? `${taux} % - fin de garantie` : `${taux} %`, rightX, yPos + 7, { align: 'right' });
 
   yPos += 14;
@@ -1256,6 +1260,7 @@ export const generateFactureSituationPDF = async (situation, facture, parametres
         [finGarantie ? 'TOTAL À PAYER APRÈS GARANTIE' : 'TOTAL À PAYER POUR CETTE SITUATION', formatNumber(netAPayer)],
       ];
   const lignesAccentuees = estPremiere ? new Set([1, 3, 6, 8, 9]) : new Set([2, 4]);
+  const indexNetAPayer = estPremiere ? 8 : 4;
   if (estPremiere) {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(10);
@@ -1266,9 +1271,11 @@ export const generateFactureSituationPDF = async (situation, facture, parametres
   doc.autoTable({
     startY: yPos,
     head: [['DÉSIGNATION', 'MONTANT (FCFA)']],
-    body: lignesSituation.map((row, index) => row.map((content) => ({
+    body: lignesSituation.map((row, index) => row.map((content, columnIndex) => ({
       content,
-      styles: lignesAccentuees.has(index) ? { fontStyle: 'bold' } : {},
+      styles: index === indexNetAPayer && columnIndex === 1
+        ? { fontStyle: 'bold', fillColor: [219, 234, 254], textColor: COLORS.navy }
+        : lignesAccentuees.has(index) ? { fontStyle: 'bold' } : {},
     }))),
     theme: 'grid',
     headStyles: {
