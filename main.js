@@ -298,25 +298,9 @@ function initDatabase() {
   if (!factureCols.includes('tva_declenchee')) {
     db.exec("ALTER TABLE factures ADD COLUMN tva_declenchee INTEGER DEFAULT 0");
   }
-  db.exec(`
-    UPDATE factures
-    SET tva_declenchee = 1
-    WHERE tva > 0 AND (
-      statut_paiement = 'payee'
-      OR tva_versee = 1
-      OR EXISTS (
-        SELECT 1 FROM facture_situations fs
-        WHERE fs.facture_id = factures.id
-          AND fs.id = (
-            SELECT MIN(fs_premiere.id)
-            FROM facture_situations fs_premiere
-            WHERE fs_premiere.facture_id = factures.id
-          )
-          AND fs.statut_paiement = 'payee'
-      )
-    )
-  `);
-
+  if (!factureCols.includes('mode_tva_situations')) {
+    db.exec("ALTER TABLE factures ADD COLUMN mode_tva_situations TEXT DEFAULT 'premiere'");
+  }
   // Suivi des versements de TVA à l'OTR : lots de factures + paiements partiels
   db.exec(`
     CREATE TABLE IF NOT EXISTS tva_versements (
@@ -371,6 +355,46 @@ function initDatabase() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (facture_id) REFERENCES factures(id) ON DELETE CASCADE
     );
+  `);
+
+  const situationCols = db.prepare("PRAGMA table_info(facture_situations)").all().map((c) => c.name);
+  if (!situationCols.includes('tva_versee')) {
+    db.exec('ALTER TABLE facture_situations ADD COLUMN tva_versee INTEGER DEFAULT 0');
+  }
+  if (!situationCols.includes('date_versement_tva')) {
+    db.exec('ALTER TABLE facture_situations ADD COLUMN date_versement_tva DATE');
+  }
+  if (!situationCols.includes('tva_a_verser')) {
+    db.exec('ALTER TABLE facture_situations ADD COLUMN tva_a_verser REAL DEFAULT 0');
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tva_versement_situations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      versement_id INTEGER NOT NULL,
+      situation_id INTEGER NOT NULL UNIQUE,
+      tva REAL DEFAULT 0,
+      tva_a_verser REAL DEFAULT 0,
+      FOREIGN KEY (versement_id) REFERENCES tva_versements(id) ON DELETE CASCADE,
+      FOREIGN KEY (situation_id) REFERENCES facture_situations(id) ON DELETE CASCADE
+    )
+  `);
+  db.exec(`
+    UPDATE factures
+    SET tva_declenchee = 1
+    WHERE tva > 0 AND mode_tva_situations != 'prorata' AND (
+      statut_paiement = 'payee'
+      OR tva_versee = 1
+      OR EXISTS (
+        SELECT 1 FROM facture_situations fs
+        WHERE fs.facture_id = factures.id
+          AND fs.id = (
+            SELECT MIN(fs_premiere.id)
+            FROM facture_situations fs_premiere
+            WHERE fs_premiere.facture_id = factures.id
+          )
+          AND fs.statut_paiement = 'payee'
+      )
+    )
   `);
 
   // Migration : choix d'ajouter le cachet + signature sur la proforma.
@@ -1470,6 +1494,10 @@ ipcMain.handle('factures:markPaid', (event, id, date) => {
   if (!facture) {
     throw new Error('Facture introuvable.');
   }
+  const situations = db.prepare('SELECT COUNT(*) AS nb FROM facture_situations WHERE facture_id = ?').get(id);
+  if (situations.nb > 0) {
+    throw new Error('Cette facture est réglée par situations. Validez ses situations séparément.');
+  }
   const datePaiement = normalizePaymentDate(date);
   db.prepare(
     "UPDATE factures SET statut_paiement = 'payee', tva_declenchee = 1, date_paiement = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
@@ -1485,6 +1513,10 @@ ipcMain.handle('factures:markUnpaid', (event, id) => {
   if (facture.tva_versee) {
     throw new Error('Impossible d\'annuler le paiement : la TVA de cette facture a déjà été versée à l\'OTR.');
   }
+  const situations = db.prepare('SELECT COUNT(*) AS nb FROM facture_situations WHERE facture_id = ?').get(id);
+  if (situations.nb > 0) {
+    throw new Error('Cette facture est réglée par situations. Annulez le paiement de chaque situation séparément.');
+  }
   db.prepare(
     "UPDATE factures SET statut_paiement = 'non_payee', tva_declenchee = 0, date_paiement = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
   ).run(id);
@@ -1498,11 +1530,14 @@ ipcMain.handle('factureSituations:getByFacture', (event, factureId) => {
   ).all(factureId);
 });
 
-ipcMain.handle('factureSituations:create', (event, factureId, taux) => {
+ipcMain.handle('factureSituations:create', (event, factureId, taux, modeTva) => {
   const facture = db.prepare('SELECT * FROM factures WHERE id = ?').get(factureId);
   if (!facture) throw new Error('Facture introuvable.');
   const t = Number(taux);
   if (!t || t <= 0 || t > 100) throw new Error('Taux invalide (doit être compris entre 0 et 100).');
+  if (modeTva !== undefined && !['premiere', 'prorata'].includes(modeTva)) {
+    throw new Error('Méthode de calcul de la TVA invalide.');
+  }
 
   const transaction = db.transaction(() => {
     const dejaEmis = db.prepare(
@@ -1512,15 +1547,32 @@ ipcMain.handle('factureSituations:create', (event, factureId, taux) => {
       throw new Error(`Taux refusé : ${dejaEmis}% déjà facturé(s), il ne reste que ${Math.max(0, 100 - dejaEmis)}% disponible(s).`);
     }
     const precedentes = db.prepare(
-      'SELECT COUNT(*) AS nb, COALESCE(SUM(montant_ttc), 0) AS ttc FROM facture_situations WHERE facture_id = ?'
+      'SELECT COUNT(*) AS nb, COALESCE(SUM(montant_ttc), 0) AS ttc, COALESCE(SUM(tva), 0) AS tva, COALESCE(SUM(tva_a_verser), 0) AS tva_a_verser FROM facture_situations WHERE facture_id = ?'
     ).get(factureId);
+    const modeEnregistre = facture.mode_tva_situations === 'prorata' ? 'prorata' : 'premiere';
+    if (precedentes.nb > 0 && modeTva && modeTva !== modeEnregistre) {
+      throw new Error('La méthode de TVA est déjà fixée par la première situation.');
+    }
+    const mode = precedentes.nb > 0 ? modeEnregistre : (modeTva || modeEnregistre);
+    if (precedentes.nb === 0) {
+      db.prepare('UPDATE factures SET mode_tva_situations = ? WHERE id = ?').run(mode, factureId);
+    }
     const totalTtc = Math.round(facture.total_ttc || 0);
+    const totalTva = Math.round(facture.tva || 0);
+    const derniereSituation = dejaEmis + t >= 99.99;
     // La dernière situation prend exactement ce qui reste (pas d'écart d'arrondi)
-    const montantTtc = dejaEmis + t >= 99.99
+    const montantTtc = derniereSituation
       ? Math.max(0, totalTtc - precedentes.ttc)
       : Math.round(totalTtc * t / 100);
-    // Toute la TVA de la facture est portée par la 1ère situation ; HT + TVA = TTC
-    const tva = precedentes.nb === 0 ? Math.min(Math.round(facture.tva || 0), montantTtc) : 0;
+    // Dans les deux modes, les sommes des lignes HT + TVA doivent égaler le TTC.
+    const tva = mode === 'prorata'
+      ? Math.max(0, derniereSituation ? totalTva - precedentes.tva : Math.round(totalTva * t / 100))
+      : precedentes.nb === 0 ? Math.min(totalTva, montantTtc) : 0;
+    const tvaAverser = mode === 'prorata'
+      ? Math.max(0, (derniereSituation
+        ? Math.round(totalTva / 2)
+        : Math.round((precedentes.tva + tva) / 2)) - precedentes.tva_a_verser)
+      : 0;
     const montantHt = montantTtc - tva;
 
     let suffixe = String(Math.round(t)).padStart(2, '0');
@@ -1532,11 +1584,11 @@ ipcMain.handle('factureSituations:create', (event, factureId, taux) => {
     }
 
     const result = db.prepare(`
-      INSERT INTO facture_situations (facture_id, numero, taux, montant_ht, tva, montant_ttc, date)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(factureId, numero, t, montantHt, tva, montantTtc, new Date().toISOString().split('T')[0]);
+      INSERT INTO facture_situations (facture_id, numero, taux, montant_ht, tva, tva_a_verser, montant_ttc, date)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(factureId, numero, t, montantHt, tva, tvaAverser, montantTtc, new Date().toISOString().split('T')[0]);
 
-    return { id: result.lastInsertRowid, numero, taux: t, montant_ht: montantHt, tva, montant_ttc: montantTtc };
+    return { id: result.lastInsertRowid, numero, taux: t, montant_ht: montantHt, tva, tva_a_verser: tvaAverser, montant_ttc: montantTtc, mode_tva_situations: mode };
   });
   return { success: true, ...transaction() };
 });
@@ -1545,6 +1597,7 @@ ipcMain.handle('factureSituations:markPaid', (event, id, date) => {
   const situation = db.prepare('SELECT * FROM facture_situations WHERE id = ?').get(id);
   if (!situation) throw new Error('Situation introuvable.');
   const datePaiement = normalizePaymentDate(date);
+  const facture = db.prepare('SELECT mode_tva_situations FROM factures WHERE id = ?').get(situation.facture_id);
   const transaction = db.transaction(() => {
     db.prepare(
       "UPDATE facture_situations SET statut_paiement = 'payee', date_paiement = ? WHERE id = ?"
@@ -1555,7 +1608,7 @@ ipcMain.handle('factureSituations:markPaid', (event, id, date) => {
     const premiereId = db.prepare(
       'SELECT MIN(id) AS id FROM facture_situations WHERE facture_id = ?'
     ).get(situation.facture_id).id;
-    if (id === premiereId) {
+    if (id === premiereId && facture?.mode_tva_situations !== 'prorata') {
       const facture = db.prepare('SELECT tva_declenchee FROM factures WHERE id = ?').get(situation.facture_id);
       if (facture && !facture.tva_declenchee) {
         db.prepare(
@@ -1582,6 +1635,12 @@ ipcMain.handle('factureSituations:markPaid', (event, id, date) => {
 ipcMain.handle('factureSituations:markUnpaid', (event, id) => {
   const situation = db.prepare('SELECT * FROM facture_situations WHERE id = ?').get(id);
   if (!situation) throw new Error('Situation introuvable.');
+  if (situation.tva_versee) {
+    throw new Error('Impossible d\'annuler le paiement : la TVA de cette situation a déjà été versée à l\'OTR.');
+  }
+  if (db.prepare('SELECT 1 FROM tva_versement_situations WHERE situation_id = ?').get(id)) {
+    throw new Error('Annulez d\'abord le lot OTR associé avant d\'annuler le paiement de cette situation.');
+  }
   const transaction = db.transaction(() => {
     db.prepare(
       "UPDATE facture_situations SET statut_paiement = 'non_payee', date_paiement = NULL WHERE id = ?"

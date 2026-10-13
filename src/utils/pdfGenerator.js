@@ -1181,14 +1181,19 @@ export const generateFactureSituationPDF = async (situation, facture, parametres
   const estSolde = reste <= 0.01;
   const tauxAvant = Math.max(0, Math.round((cumulTaux - taux) * 100) / 100);
   const finGarantie = estSolde && taux <= 5.01 && tauxAvant >= 94.99;
+  const modeTva = options.modeTva === 'prorata' ? 'prorata' : 'premiere';
   const sansTva = !facture.tva || facture.tva <= 0;
-  const tvaTotale = estPremiere && !sansTva
-    ? Math.min(Math.round(Number(facture.tva) || 0), montantTtc)
+  const tvaTotale = modeTva === 'prorata'
+    ? Math.min(Math.round(Number(situation.tva) || 0), montantTtc)
+    : estPremiere && !sansTva
+      ? Math.min(Math.round(Number(facture.tva) || 0), montantTtc)
     : 0;
   const baseHt = montantTtc - tvaTotale;
-  const tvaReglee = Math.round(tvaTotale / 2);
+  const tvaReglee = modeTva === 'prorata'
+    ? Math.min(tvaTotale, Math.round(Number(situation.tva_a_verser) || tvaTotale / 2))
+    : Math.round(tvaTotale / 2);
   const quittance = tvaTotale - tvaReglee;
-  const netAPayer = Math.max(0, montantTtc - (estPremiere ? quittance : 0));
+  const netAPayer = Math.max(0, montantTtc - (modeTva === 'prorata' || estPremiere ? quittance : 0));
   const montantPrecedent = Math.max(0, cumulTtc - montantTtc);
   const retenueGarantie = Math.max(0, totalMarche - montantTtc);
   const titre = finGarantie
@@ -1237,7 +1242,20 @@ export const generateFactureSituationPDF = async (situation, facture, parametres
   yPos += 8;
 
   // Tableau de situation : ventilation TVA sur la première tranche, puis retenue sans TVA.
-  const lignesSituation = estPremiere
+  const lignesSituation = modeTva === 'prorata'
+    ? [
+        ['Montant total TTC du marché', formatNumber(totalMarche)],
+        [`Montant de la tranche de ${taux} % du TTC`, formatNumber(montantTtc)],
+        ['Base HT comprise dans la présente facture', formatNumber(baseHt)],
+        [`TVA de la tranche (${Number(parametres.tva_taux) || 18} %)`, formatNumber(tvaTotale)],
+        ['- 50 % de la TVA à régler à In-Tel Services', formatNumber(tvaReglee)],
+        ["- 50 % de la TVA faisant l'objet d'une quittance", formatNumber(quittance)],
+        [`Montant brut de la facture de ${taux} %`, formatNumber(montantTtc)],
+        ['Déduction : 50 % de la TVA / quittance', `- ${formatNumber(quittance)}`],
+        ['NET À PAYER À IN-TEL SERVICES', formatNumber(netAPayer)],
+        [`Solde restant après cette tranche (${reste} %)`, formatNumber(Math.max(0, totalMarche - cumulTtc))],
+      ]
+    : estPremiere
     ? [
         ['Montant total TTC du marché', formatNumber(totalMarche)],
         [`Montant de la tranche de ${taux} % du TTC`, formatNumber(montantTtc)],
@@ -1259,9 +1277,12 @@ export const generateFactureSituationPDF = async (situation, facture, parametres
         ['TVA sur le présent solde', '0'],
         [finGarantie ? 'TOTAL À PAYER APRÈS GARANTIE' : 'TOTAL À PAYER POUR CETTE SITUATION', formatNumber(netAPayer)],
       ];
-  const lignesAccentuees = estPremiere ? new Set([1, 3, 6, 8, 9]) : new Set([2, 4]);
-  const indexNetAPayer = estPremiere ? 8 : 4;
-  if (estPremiere) {
+  const affichePremiereTranche = modeTva === 'premiere' && estPremiere;
+  const lignesAccentuees = affichePremiereTranche || modeTva === 'prorata'
+    ? new Set([1, 3, 6, 8, 9])
+    : new Set([2, 4]);
+  const indexNetAPayer = modeTva === 'premiere' && !estPremiere ? 4 : 8;
+  if (affichePremiereTranche) {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(10);
     doc.setTextColor(...COLORS.navy);
@@ -1312,9 +1333,11 @@ export const generateFactureSituationPDF = async (situation, facture, parametres
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9.5);
   doc.setTextColor(...COLORS.ink);
-  const explicatif = estPremiere
-    ? `Note fiscale : la TVA totale du marché, soit ${formatNumber(tvaTotale)} F CFA, est entièrement constatée sur la présente facture : ${formatNumber(tvaReglee)} F CFA (50 %) sont réglés à In-Tel Services et ${formatNumber(quittance)} F CFA (50 %) font l'objet d'une quittance. La retenue de garantie de ${reste} % sera donc réglée sans TVA supplémentaire.`
-    : `Mention : Cette facture correspond exclusivement à la libération de la retenue de garantie de ${taux} %. Aucune TVA supplémentaire n'est ajoutée, la TVA totale de ${formatNumber(Number(facture.tva) || 0)} F CFA ayant déjà été constatée et acquittée dans le cadre de la facture de règlement de ${tauxAvant} %.`;
+  const explicatif = modeTva === 'prorata'
+    ? `Note fiscale : la TVA est répartie au prorata des tranches. Pour cette facture de ${taux} %, ${formatNumber(tvaReglee)} F CFA (50 %) sont à régler à In-Tel Services et ${formatNumber(quittance)} F CFA (50 %) font l'objet d'une quittance.`
+    : estPremiere
+      ? `Note fiscale : la TVA totale du marché, soit ${formatNumber(tvaTotale)} F CFA, est entièrement constatée sur la présente facture : ${formatNumber(tvaReglee)} F CFA (50 %) sont réglés à In-Tel Services et ${formatNumber(quittance)} F CFA (50 %) font l'objet d'une quittance. La retenue de garantie de ${reste} % sera donc réglée sans TVA supplémentaire.`
+      : `Mention : Cette facture correspond exclusivement à la libération de la retenue de garantie de ${taux} %. Aucune TVA supplémentaire n'est ajoutée, la TVA totale de ${formatNumber(Number(facture.tva) || 0)} F CFA ayant déjà été constatée et acquittée dans le cadre de la facture de règlement de ${tauxAvant} %.`;
   const explicatifLines = doc.splitTextToSize(explicatif, rightX - contentLeft);
   doc.text(explicatifLines, contentLeft, yPos);
   yPos += explicatifLines.length * 5 + 14;
