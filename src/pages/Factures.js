@@ -333,8 +333,12 @@ const Factures = () => {
   const tauxRestant = Math.max(0, Math.round((100 - tauxDejaEmis) * 100) / 100);
 
   const refreshSituations = async () => {
-    const list = await window.electronAPI.factureSituations.getByFacture(situationsFacture.id);
+    const [list, facture] = await Promise.all([
+      window.electronAPI.factureSituations.getByFacture(situationsFacture.id),
+      window.electronAPI.factures.getById(situationsFacture.id),
+    ]);
     setSituations(list || []);
+    setSituationsFacture(facture);
   };
 
   const handleAddSituation = async () => {
@@ -377,6 +381,13 @@ const Factures = () => {
   const handleToggleSituationPaid = async (situation) => {
     try {
       if (situation.statut_paiement === 'payee') {
+        const ok = await confirm({
+          title: 'Annuler le paiement de la situation',
+          message: `Annuler le paiement de ${situation.numero} ? Le statut de la facture sera recalculé.`,
+          confirmText: 'Annuler le paiement',
+          danger: true,
+        });
+        if (!ok) return;
         await window.electronAPI.factureSituations.markUnpaid(situation.id);
       } else {
         openPaymentDateModal('situation', situation);
@@ -390,6 +401,10 @@ const Factures = () => {
   };
 
   const handleDeleteSituation = async (situation) => {
+    if (situation.statut_paiement === 'payee') {
+      toast.error("Annulez d'abord le paiement de cette situation avant de la supprimer.");
+      return;
+    }
     const ok = await confirm({
       title: 'Supprimer la situation',
       message: `Supprimer la facture de situation ${situation.numero} ?`,
@@ -400,6 +415,7 @@ const Factures = () => {
     try {
       await window.electronAPI.factureSituations.delete(situation.id);
       await refreshSituations();
+      await loadData();
     } catch (error) {
       toast.error(getErrorMessage(error, 'Erreur lors de la suppression.'));
     }
@@ -655,7 +671,7 @@ const Factures = () => {
                         >
                           <Eye size={16} />
                         </button>
-                        {facture.statut_paiement !== 'payee' && (
+                        {(facture.statut_paiement !== 'payee' || facture.nb_situations > 0) && (
                           <button
                             className="btn-icon"
                             style={{ color: '#7c3aed' }}

@@ -2819,6 +2819,92 @@ export const generateTvaVersementsPDF = async (rapport, parametres) => {
   return doc;
 };
 
+export const generateTvaVersementDetailPDF = async (versement, parametres = {}, paiementId = null) => {
+  const doc = new jsPDF();
+  const { contentLeft, rightX, headerBottom } = await drawHeader(doc, parametres);
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const contentWidth = rightX - contentLeft;
+  const paiements = versement.paiements || [];
+  const paiement = paiementId === null ? null : paiements.find((item) => item.id === paiementId);
+  if (paiementId !== null && !paiement) throw new Error('Paiement introuvable dans ce versement.');
+  let yPos = drawTitle(doc, paiement ? 'DÉTAIL DU PAIEMENT OTR' : 'DÉTAIL DU VERSEMENT OTR', headerBottom + 11);
+
+  const table = (title, head, body, columnStyles = {}) => {
+    if (yPos + 24 > pageHeight - 28) {
+      doc.addPage();
+      yPos = 22;
+    }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(...COLORS.navy);
+    doc.text(title, contentLeft, yPos);
+    doc.autoTable({
+      startY: yPos + 3,
+      head: [head],
+      body,
+      theme: 'grid',
+      headStyles: { fillColor: COLORS.navy, textColor: COLORS.white, fontStyle: 'bold', fontSize: 9 },
+      bodyStyles: { fontSize: 9, textColor: COLORS.ink, valign: 'top', cellPadding: 2.5 },
+      columnStyles,
+      styles: { lineColor: COLORS.line, lineWidth: 0.15, overflow: 'linebreak' },
+      rowPageBreak: 'avoid',
+      margin: { left: MARGIN, right: MARGIN, top: 18, bottom: 28 },
+    });
+    yPos = doc.lastAutoTable.finalY + 10;
+  };
+
+  yPos += 5;
+  table('Références', ['Champ', 'Valeur'], [
+    ['Versement', String(versement.numero || '')],
+    ['Date du versement', formatDateLong(versement.date)],
+    ...(paiement ? [
+      ['Référence interne du paiement', `${versement.numero || ''} / paiement ${paiement.id}`],
+      ['Date du paiement', formatDateLong(paiement.date)],
+    ] : []),
+    ["Date d'édition", formatDateLong(new Date())],
+    ["Nature du document", 'Relevé interne de suivi, ne remplace pas une quittance officielle OTR.'],
+    ...(versement.note ? [['Note du versement', String(versement.note)]] : []),
+  ], { 0: { cellWidth: 65, fontStyle: 'bold' }, 1: { cellWidth: contentWidth - 65 } });
+
+  table('Situation actuelle du lot (FCFA)', ['Total TVA', 'TVA à reverser', 'Part quittance', 'Cumul payé', 'Reste à payer', 'Statut'], [[
+    formatNumber(versement.total_tva ?? Number(versement.total_du || 0) * 2),
+    formatNumber(versement.total_du),
+    formatNumber(versement.quittance ?? versement.total_du),
+    formatNumber(versement.paye),
+    formatNumber(versement.reste),
+    versement.solde ? 'Soldé' : Number(versement.paye) > 0 ? 'Partiellement payé' : 'Non payé',
+  ]], Object.fromEntries([0, 1, 2, 3, 4].map((index) => [index, { halign: 'right' }])));
+
+  table('Factures rattachées au lot', ['N° facture', 'Client', 'TVA (FCFA)', 'À reverser (FCFA)'],
+    (versement.factures || []).length ? versement.factures.map((facture) => [
+      String(facture.numero || ''), String(facture.client_nom || '-'),
+      formatNumber(facture.tva), formatNumber(facture.tva_a_verser ?? Number(facture.tva || 0) / 2),
+    ]) : [['-', 'Aucune facture rattachée', '-', '-']],
+    { 0: { cellWidth: 48 }, 1: { cellWidth: contentWidth - 128 }, 2: { cellWidth: 40, halign: 'right' }, 3: { cellWidth: 40, halign: 'right' } });
+
+  const paiementsImprimes = paiement ? [paiement] : paiements;
+  table(paiement ? 'Paiement sélectionné' : 'Historique des paiements',
+    ['Date', 'Montant (FCFA)', 'N° quittance OTR', 'Mode', 'Note'],
+    paiementsImprimes.length ? paiementsImprimes.map((item) => [
+      formatDateLong(item.date), formatNumber(item.montant),
+      String(item.quittance || '-'), String(item.mode || '-'), String(item.note || '-'),
+    ]) : [['-', '-', '-', '-', 'Aucun paiement enregistré']],
+    { 0: { cellWidth: 31 }, 1: { cellWidth: 30, halign: 'right', fontStyle: 'bold' }, 2: { cellWidth: 40 }, 3: { cellWidth: 28 }, 4: { cellWidth: contentWidth - 129 } });
+
+  const totalPages = doc.internal.getNumberOfPages();
+  for (let page = 1; page <= totalPages; page++) {
+    doc.setPage(page);
+    drawPageFrame(doc);
+    drawFooter(doc, parametres);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(...COLORS.grey);
+    doc.text(`${versement.numero || ''} - Page ${page} / ${totalPages}`, pageWidth / 2, pageHeight - 8, { align: 'center' });
+  }
+  return doc;
+};
+
 // =====================================================================
 //  LETTRE DE SOUMISSION (appel d'offre)
 // =====================================================================

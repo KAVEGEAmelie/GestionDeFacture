@@ -27,6 +27,77 @@ const sectionsOK = {
   bordereau_lignes: hasCol('bordereau_lignes', 'section_titre'),
 };
 
+if (process.argv.includes('--proformas-sections')) {
+  if (!sectionsOK.proforma_lignes || !hasCol('proforma_lignes', 'description')) {
+    throw new Error("Ouvrez d'abord l'application à jour pour initialiser les sections.");
+  }
+  const backupPath = `${dbPath}.avant-test-sections-${Date.now()}.bak`;
+  db.prepare('VACUUM INTO ?').run(backupPath);
+  const exemples = [
+    {
+      numero: `TEST-SECTIONS-${ANNEE}-001`,
+      objet: 'TEST SECTIONS - Maison du directeur et caisse principale',
+      avecTva: true,
+      lignes: [
+        ['', 'Diagnostic general', 'Forfait', 1, 5000],
+        ['Reparation du Wi-Fi de la maison du directeur', 'Remplacement du routeur Wi-Fi', 'Unite', 1, 35000],
+        ['Reparation du Wi-Fi de la maison du directeur', 'Configuration du reseau', 'Forfait', 1, 15000],
+        ["Reparation de l'ordinateur de la caisse principale", 'Remplacement du disque SSD', 'Unite', 1, 45000],
+        ["Reparation de l'ordinateur de la caisse principale", 'Installation du systeme', 'Forfait', 1, 20000],
+        ['Maintenance des imprimantes', 'Nettoyage des imprimantes', 'Unite', 2, 7500],
+      ],
+    },
+    {
+      numero: `TEST-SECTIONS-${ANNEE}-002`,
+      objet: 'TEST SECTIONS - Bureaux et salle de reunion sans TVA',
+      avecTva: false,
+      lignes: [
+        ['Reseau des bureaux', 'Prises reseau', 'Unite', 4, 5000],
+        ['Reseau des bureaux', 'Pose de cable', 'Metre', 20, 1000],
+        ['Salle de reunion', 'Installation du videoprojecteur', 'Forfait', 1, 30000],
+        ['Accueil', 'Configuration du poste accueil', 'Forfait', 1, 10000],
+      ],
+    },
+  ];
+  const insertProforma = db.prepare(`
+    INSERT INTO proformas (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut, avec_cachet, tva_applicable)
+    VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 'en_attente', 0, ?)
+  `);
+  const insertLigne = db.prepare(`
+    INSERT INTO proforma_lignes (proforma_id, produit_id, designation, description, unite, quantite, prix_unitaire, montant, ordre, section_titre)
+    VALUES (?, NULL, ?, '', ?, ?, ?, ?, ?, ?)
+  `);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const clientNom = 'CLIENT DEMONSTRATION - TEST SECTIONS';
+    let client = db.prepare('SELECT id FROM clients WHERE nom = ?').get(clientNom);
+    if (!client) {
+      client = { id: Number(db.prepare('INSERT INTO clients (nom) VALUES (?)').run(clientNom).lastInsertRowid) };
+    }
+    for (const exemple of exemples) {
+      if (db.prepare('SELECT id FROM proformas WHERE numero = ?').get(exemple.numero)) {
+        console.log(`Deja presente, conservee : ${exemple.numero}`);
+        continue;
+      }
+      const totalHt = exemple.lignes.reduce((total, ligne) => total + ligne[3] * ligne[4], 0);
+      const tva = exemple.avecTva ? Math.round(totalHt * 0.18) : 0;
+      const result = insertProforma.run(exemple.numero, new Date().toISOString().slice(0, 10), client.id, exemple.objet,
+        totalHt, totalHt, tva, totalHt + tva, exemple.avecTva ? 1 : 0);
+      exemple.lignes.forEach(([section, designation, unite, quantite, prix], ordre) => {
+        insertLigne.run(Number(result.lastInsertRowid), designation, unite, quantite, prix, quantite * prix, ordre, section);
+      });
+      console.log(`Creee : ${exemple.numero} - HT ${totalHt}, TVA ${tva}, total ${totalHt + tva} FCFA`);
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  db.close();
+  console.log(`Sauvegarde : ${backupPath}`);
+  process.exit(0);
+}
+
 // `--proformas-desc` : insère uniquement 4 proformas d'exemple avec descriptions détaillées de lignes
 if (process.argv.includes('--proformas-desc')) {
   if (!hasCol('proforma_lignes', 'description')) {

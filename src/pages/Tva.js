@@ -9,7 +9,7 @@ import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
 import { matchesWordPrefix } from '../utils/search';
-import { generateTvaPDF, generateTvaVersementsPDF } from '../utils/pdfGenerator';
+import { generateTvaPDF, generateTvaVersementsPDF, generateTvaVersementDetailPDF } from '../utils/pdfGenerator';
 import './Clients.css';
 import './Proformas.css';
 import './Dashboard.css';
@@ -321,6 +321,22 @@ const Tva = () => {
       totalPaye: sum('paye'),
       totalReste: sum('reste'),
     };
+  };
+
+  const handlePrintVersement = async (versement, paiementId = null) => {
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      toast.error("Impossible d'ouvrir l'impression. Autorisez les fenêtres contextuelles.");
+      return;
+    }
+    try {
+      const doc = await generateTvaVersementDetailPDF(versement, parametres, paiementId);
+      doc.autoPrint();
+      printWindow.location.href = doc.output('bloburl');
+    } catch (error) {
+      printWindow.close();
+      toast.error(getErrorMessage(error, "Erreur lors de l'impression du détail OTR."));
+    }
   };
 
   const handleExportPDF = async (impression = false) => {
@@ -681,7 +697,15 @@ const Tva = () => {
                           </span>
                         </td>
                         <td>
-                          <div style={{ display: 'flex', gap: 6 }}>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            <button
+                              className="btn-icon btn-icon-primary"
+                              onClick={() => handlePrintVersement(v)}
+                              title="Imprimer ce versement et ses détails"
+                              aria-label="Imprimer ce versement et ses détails"
+                            >
+                              <Printer size={16} />
+                            </button>
                             {!v.solde && (
                               <button className="btn btn-primary btn-sm" onClick={() => openPaiement(v)} title="Enregistrer un paiement à l'OTR">
                                 <Plus size={14} />
@@ -734,6 +758,14 @@ const Tva = () => {
                                           <td style={{ padding: '4px 8px' }}>{p.mode || '-'}</td>
                                           <td style={{ padding: '4px 8px' }}>{p.note || '-'}</td>
                                           <td style={{ padding: '4px 8px' }}>
+                                            <button
+                                              className="btn-icon btn-icon-primary"
+                                              title="Imprimer ce paiement"
+                                              aria-label="Imprimer ce paiement"
+                                              onClick={() => handlePrintVersement(v, p.id)}
+                                            >
+                                              <Printer size={14} />
+                                            </button>
                                             <button
                                               className="btn-icon btn-icon-danger"
                                               title="Supprimer ce paiement"

@@ -18,7 +18,8 @@
     "postinstall": "electron-builder install-app-deps",
     "package": "npm run build && electron-builder",
     "postpackage": "npm run rebuild:native",
-    "license:generate": "node scripts/generate-license.js"
+    "license:generate": "node scripts/generate-license.js",
+    "test:regression": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/tests/regression.cjs"
   },
   "build": {
     "appId": "com.intelservices.facturation",

@@ -15,8 +15,19 @@ let db;
 // Initialisation de la base de données
 function initDatabase() {
   const dbPath = path.join(app.getPath('userData'), 'facturation.db');
-  db = new Database(dbPath);
-  
+  const database = new Database(dbPath);
+  try {
+    migrateDatabase(database);
+  } catch (error) {
+    database.close();
+    throw error;
+  }
+  db = database;
+  console.log('Base de données initialisée:', dbPath);
+}
+
+// Utilisable sur une copie de sauvegarde, sans changer la connexion active.
+function migrateDatabase(db) {
   // Création des tables
   db.exec(`
     CREATE TABLE IF NOT EXISTS clients (
@@ -474,6 +485,8 @@ function initDatabase() {
             prix_unitaire REAL NOT NULL,
             montant REAL NOT NULL,
             ordre INTEGER DEFAULT 0,
+            section_titre TEXT DEFAULT '',
+            description TEXT DEFAULT '',
             FOREIGN KEY (proforma_id) REFERENCES proformas(id) ON DELETE CASCADE,
             FOREIGN KEY (produit_id) REFERENCES produits(id)
           )
@@ -490,6 +503,8 @@ function initDatabase() {
             prix_unitaire REAL NOT NULL,
             montant REAL NOT NULL,
             ordre INTEGER DEFAULT 0,
+            section_titre TEXT DEFAULT '',
+            description TEXT DEFAULT '',
             FOREIGN KEY (facture_id) REFERENCES factures(id) ON DELETE CASCADE,
             FOREIGN KEY (produit_id) REFERENCES produits(id)
           )
@@ -498,8 +513,11 @@ function initDatabase() {
       db.exec(`INSERT INTO ${table} (${cols}) SELECT ${cols} FROM ${table}_old`);
       db.exec(`DROP TABLE ${table}_old`);
     });
-    migrer();
-    db.pragma('foreign_keys = ON');
+    try {
+      migrer();
+    } finally {
+      db.pragma('foreign_keys = ON');
+    }
   };
   rendreProduitIdNullable('proforma_lignes');
   rendreProduitIdNullable('facture_lignes');
@@ -565,7 +583,6 @@ function initDatabase() {
     insertSecu.run('salt', '');
   }
 
-  console.log('Base de données initialisée:', dbPath);
 }
 
 // Fonction pour attendre que le serveur React soit prêt
@@ -749,6 +766,82 @@ function genererNumero(table, compteurCle, annee, prefixe = '') {
 }
 
 // ===== IPC Handlers pour les opérations de base de données =====
+
+function assertProformaConvertible(proforma) {
+  if (proforma.statut === 'facturee' || proforma.facture_id ||
+      db.prepare('SELECT 1 FROM factures WHERE proforma_id = ?').get(proforma.id)) {
+    throw new Error('Cette proforma a déjà été convertie en facture.');
+  }
+}
+
+function assertFactureSansEngagementTva(factureId) {
+  const engagement = db.prepare(`
+    SELECT 1 FROM factures f WHERE f.id = ? AND (
+      f.tva_versee = 1
+      OR EXISTS (SELECT 1 FROM tva_versement_factures vf WHERE vf.facture_id = f.id)
+      OR EXISTS (SELECT 1 FROM facture_situations s WHERE s.facture_id = f.id AND s.tva_versee = 1)
+      OR EXISTS (
+        SELECT 1 FROM tva_versement_situations vs
+        JOIN facture_situations s ON s.id = vs.situation_id
+        WHERE s.facture_id = f.id
+      )
+    )
+  `).get(factureId);
+  if (engagement) {
+    throw new Error("Cette facture est liée à une TVA versée ou à un lot OTR. Annulez d'abord le versement OTR concerné.");
+  }
+}
+
+function calculerMontantSituation(facture, taux, precedentes) {
+  const totalTtc = Math.round(facture.total_ttc || 0);
+  const totalTva = Math.round(facture.tva || 0);
+  const prorata = facture.mode_tva_situations === 'prorata';
+  const derniere = precedentes.taux + taux >= 99.99;
+  const montantTtc = derniere
+    ? Math.max(0, totalTtc - precedentes.ttc)
+    : Math.round(totalTtc * taux / 100);
+  const tva = prorata
+    ? Math.max(0, derniere ? totalTva - precedentes.tva : Math.round(totalTva * taux / 100))
+    : precedentes.nb === 0 ? Math.min(totalTva, montantTtc) : 0;
+  const tvaAverser = prorata
+    ? Math.max(0, (derniere ? Math.round(totalTva / 2) : Math.round((precedentes.tva + tva) / 2)) - precedentes.tva_a_verser)
+    : 0;
+  return { montant_ht: montantTtc - tva, tva, tva_a_verser: tvaAverser, montant_ttc: montantTtc };
+}
+
+function recalculerMontantsSituations(factureId) {
+  const facture = db.prepare('SELECT * FROM factures WHERE id = ?').get(factureId);
+  const situations = db.prepare('SELECT * FROM facture_situations WHERE facture_id = ? ORDER BY id').all(factureId);
+  const precedentes = { nb: 0, taux: 0, ttc: 0, tva: 0, tva_a_verser: 0 };
+  const champs = ['montant_ht', 'tva', 'tva_a_verser', 'montant_ttc'];
+  const update = db.prepare('UPDATE facture_situations SET montant_ht = ?, tva = ?, tva_a_verser = ?, montant_ttc = ? WHERE id = ?');
+  situations.forEach((situation) => {
+    const montant = calculerMontantSituation(facture, situation.taux, precedentes);
+    if (situation.statut_paiement === 'payee' && champs.some((champ) => montant[champ] !== situation[champ])) {
+      throw new Error("Annulez d'abord le paiement des situations concernées avant de recalculer leurs montants.");
+    }
+    update.run(...champs.map((champ) => montant[champ]), situation.id);
+    precedentes.nb += 1;
+    precedentes.taux += situation.taux;
+    precedentes.ttc += montant.montant_ttc;
+    precedentes.tva += montant.tva;
+    precedentes.tva_a_verser += montant.tva_a_verser;
+  });
+}
+
+function recalculerStatutFacture(factureId) {
+  const facture = db.prepare('SELECT * FROM factures WHERE id = ?').get(factureId);
+  const situations = db.prepare('SELECT * FROM facture_situations WHERE facture_id = ? ORDER BY id').all(factureId);
+  const payees = situations.filter((situation) => situation.statut_paiement === 'payee');
+  const payee = payees.reduce((somme, situation) => somme + situation.taux, 0) >= 99.99;
+  const premiere = situations[0];
+  const tvaDeclenchee = facture.tva > 0 && facture.mode_tva_situations !== 'prorata' && premiere?.statut_paiement === 'payee';
+  const dates = payees.map((situation) => situation.date_paiement).filter(Boolean).sort();
+  const datePaiement = payee ? (dates[dates.length - 1] || null) : tvaDeclenchee ? premiere.date_paiement : null;
+  db.prepare(`
+    UPDATE factures SET statut_paiement = ?, date_paiement = ?, tva_declenchee = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+  `).run(payee ? 'payee' : 'non_payee', datePaiement, tvaDeclenchee ? 1 : 0, factureId);
+}
 
 // CLIENTS
 ipcMain.handle('clients:getAll', () => {
@@ -1314,7 +1407,8 @@ ipcMain.handle('proformas:delete', (event, id) => {
 // FACTURES
 ipcMain.handle('factures:getAll', () => {
   const factures = db.prepare(`
-    SELECT f.*, c.nom as client_nom 
+    SELECT f.*, c.nom as client_nom,
+      (SELECT COUNT(*) FROM facture_situations s WHERE s.facture_id = f.id) AS nb_situations
     FROM factures f
     LEFT JOIN clients c ON f.client_id = c.id
     ORDER BY f.created_at DESC
@@ -1348,6 +1442,7 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId, dateFacture) =
     if (!proforma) {
       throw new Error('Proforma introuvable.');
     }
+    assertProformaConvertible(proforma);
     const lignes = db.prepare('SELECT * FROM proforma_lignes WHERE proforma_id = ?').all(pId);
     
     // Générer le numéro de facture (année courante), en sautant les numéros déjà utilisés.
@@ -1407,7 +1502,7 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId, dateFacture) =
     return { id: factureId, numero };
   });
   
-  return transaction(proformaId);
+  return transaction.immediate(proformaId);
 });
 
 // Modification d'une facture (date, objet, montants, lignes).
@@ -1464,11 +1559,16 @@ ipcMain.handle('factures:update', (event, id, data) => {
 });
 
 ipcMain.handle('factures:delete', (event, id) => {
-  const facture = db.prepare('SELECT bordereau_id, proforma_id FROM factures WHERE id = ?').get(id);
-  if (facture && facture.bordereau_id) {
-    throw new Error('Impossible de supprimer cette facture : un bordereau de livraison y est rattaché. Supprimez d\'abord le bordereau.');
-  }
   const transaction = db.transaction((factureId) => {
+    const facture = db.prepare('SELECT bordereau_id, proforma_id FROM factures WHERE id = ?').get(factureId);
+    if (!facture) throw new Error('Facture introuvable.');
+    assertFactureSansEngagementTva(factureId);
+    if (facture.bordereau_id || db.prepare('SELECT 1 FROM bordereaux WHERE facture_id = ?').get(factureId)) {
+      throw new Error('Impossible de supprimer cette facture : un bordereau de livraison y est rattaché. Supprimez d\'abord le bordereau.');
+    }
+    if (db.prepare("SELECT 1 FROM facture_situations WHERE facture_id = ? AND statut_paiement = 'payee'").get(factureId)) {
+      throw new Error("Annulez d'abord le paiement des situations avant de supprimer cette facture.");
+    }
     // Réinitialiser la proforma liée pour qu'elle puisse être reconvertie
     if (facture && facture.proforma_id) {
       db.prepare('UPDATE proformas SET statut = ?, facture_id = NULL WHERE id = ?').run('en_attente', facture.proforma_id);
@@ -1506,20 +1606,19 @@ ipcMain.handle('factures:markPaid', (event, id, date) => {
 });
 
 ipcMain.handle('factures:markUnpaid', (event, id) => {
-  const facture = db.prepare('SELECT tva_versee FROM factures WHERE id = ?').get(id);
-  if (!facture) {
-    throw new Error('Facture introuvable.');
-  }
-  if (facture.tva_versee) {
-    throw new Error('Impossible d\'annuler le paiement : la TVA de cette facture a déjà été versée à l\'OTR.');
-  }
-  const situations = db.prepare('SELECT COUNT(*) AS nb FROM facture_situations WHERE facture_id = ?').get(id);
-  if (situations.nb > 0) {
-    throw new Error('Cette facture est réglée par situations. Annulez le paiement de chaque situation séparément.');
-  }
-  db.prepare(
-    "UPDATE factures SET statut_paiement = 'non_payee', tva_declenchee = 0, date_paiement = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-  ).run(id);
+  const transaction = db.transaction(() => {
+    const facture = db.prepare('SELECT id FROM factures WHERE id = ?').get(id);
+    if (!facture) throw new Error('Facture introuvable.');
+    assertFactureSansEngagementTva(id);
+    const situations = db.prepare('SELECT COUNT(*) AS nb FROM facture_situations WHERE facture_id = ?').get(id);
+    if (situations.nb > 0) {
+      throw new Error('Cette facture est réglée par situations. Annulez le paiement de chaque situation séparément.');
+    }
+    db.prepare(
+      "UPDATE factures SET statut_paiement = 'non_payee', tva_declenchee = 0, date_paiement = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    ).run(id);
+  });
+  transaction.immediate();
   return { success: true };
 });
 
@@ -1549,6 +1648,9 @@ ipcMain.handle('factureSituations:create', (event, factureId, taux, modeTva) => 
     const precedentes = db.prepare(
       'SELECT COUNT(*) AS nb, COALESCE(SUM(montant_ttc), 0) AS ttc, COALESCE(SUM(tva), 0) AS tva, COALESCE(SUM(tva_a_verser), 0) AS tva_a_verser FROM facture_situations WHERE facture_id = ?'
     ).get(factureId);
+    if (precedentes.nb === 0 && facture.statut_paiement === 'payee') {
+      throw new Error("Annulez d'abord le paiement global de cette facture avant de créer des situations.");
+    }
     const modeEnregistre = facture.mode_tva_situations === 'prorata' ? 'prorata' : 'premiere';
     if (precedentes.nb > 0 && modeTva && modeTva !== modeEnregistre) {
       throw new Error('La méthode de TVA est déjà fixée par la première situation.');
@@ -1557,23 +1659,10 @@ ipcMain.handle('factureSituations:create', (event, factureId, taux, modeTva) => 
     if (precedentes.nb === 0) {
       db.prepare('UPDATE factures SET mode_tva_situations = ? WHERE id = ?').run(mode, factureId);
     }
-    const totalTtc = Math.round(facture.total_ttc || 0);
-    const totalTva = Math.round(facture.tva || 0);
-    const derniereSituation = dejaEmis + t >= 99.99;
-    // La dernière situation prend exactement ce qui reste (pas d'écart d'arrondi)
-    const montantTtc = derniereSituation
-      ? Math.max(0, totalTtc - precedentes.ttc)
-      : Math.round(totalTtc * t / 100);
-    // Dans les deux modes, les sommes des lignes HT + TVA doivent égaler le TTC.
-    const tva = mode === 'prorata'
-      ? Math.max(0, derniereSituation ? totalTva - precedentes.tva : Math.round(totalTva * t / 100))
-      : precedentes.nb === 0 ? Math.min(totalTva, montantTtc) : 0;
-    const tvaAverser = mode === 'prorata'
-      ? Math.max(0, (derniereSituation
-        ? Math.round(totalTva / 2)
-        : Math.round((precedentes.tva + tva) / 2)) - precedentes.tva_a_verser)
-      : 0;
-    const montantHt = montantTtc - tva;
+    const montant = calculerMontantSituation(
+      { ...facture, mode_tva_situations: mode }, t, { ...precedentes, taux: dejaEmis }
+    );
+    const { montant_ht: montantHt, tva, tva_a_verser: tvaAverser, montant_ttc: montantTtc } = montant;
 
     let suffixe = String(Math.round(t)).padStart(2, '0');
     let numero = `${facture.numero}/${suffixe}`;
@@ -1597,36 +1686,15 @@ ipcMain.handle('factureSituations:markPaid', (event, id, date) => {
   const situation = db.prepare('SELECT * FROM facture_situations WHERE id = ?').get(id);
   if (!situation) throw new Error('Situation introuvable.');
   const datePaiement = normalizePaymentDate(date);
-  const facture = db.prepare('SELECT mode_tva_situations FROM factures WHERE id = ?').get(situation.facture_id);
   const transaction = db.transaction(() => {
+    if (situation.statut_paiement === 'payee' && situation.date_paiement !== datePaiement) {
+      assertFactureSansEngagementTva(situation.facture_id);
+    }
     db.prepare(
       "UPDATE facture_situations SET statut_paiement = 'payee', date_paiement = ? WHERE id = ?"
     ).run(datePaiement, id);
 
-    // La 1ère situation payee declenche la TVA a verser (50 % de la TVA totale
-    // de la facture) sans attendre que le marche soit regle a 100 %.
-    const premiereId = db.prepare(
-      'SELECT MIN(id) AS id FROM facture_situations WHERE facture_id = ?'
-    ).get(situation.facture_id).id;
-    if (id === premiereId && facture?.mode_tva_situations !== 'prorata') {
-      const facture = db.prepare('SELECT tva_declenchee FROM factures WHERE id = ?').get(situation.facture_id);
-      if (facture && !facture.tva_declenchee) {
-        db.prepare(
-          'UPDATE factures SET tva_declenchee = 1, date_paiement = ? WHERE id = ?'
-        ).run(datePaiement, situation.facture_id);
-      }
-    }
-
-    // Si le cumul des situations payees couvre 100 % du marche, la facture d'origine passe payee
-    const totauxPayes = db.prepare(`
-      SELECT COALESCE(SUM(taux), 0) AS total FROM facture_situations
-      WHERE facture_id = ? AND statut_paiement = 'payee'
-    `).get(situation.facture_id).total;
-    if (totauxPayes >= 99.99) {
-      db.prepare(
-        "UPDATE factures SET statut_paiement = 'payee', date_paiement = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-      ).run(datePaiement, situation.facture_id);
-    }
+    recalculerStatutFacture(situation.facture_id);
   });
   transaction();
   return { success: true };
@@ -1635,34 +1703,30 @@ ipcMain.handle('factureSituations:markPaid', (event, id, date) => {
 ipcMain.handle('factureSituations:markUnpaid', (event, id) => {
   const situation = db.prepare('SELECT * FROM facture_situations WHERE id = ?').get(id);
   if (!situation) throw new Error('Situation introuvable.');
-  if (situation.tva_versee) {
-    throw new Error('Impossible d\'annuler le paiement : la TVA de cette situation a déjà été versée à l\'OTR.');
-  }
-  if (db.prepare('SELECT 1 FROM tva_versement_situations WHERE situation_id = ?').get(id)) {
-    throw new Error('Annulez d\'abord le lot OTR associé avant d\'annuler le paiement de cette situation.');
-  }
   const transaction = db.transaction(() => {
+    assertFactureSansEngagementTva(situation.facture_id);
     db.prepare(
       "UPDATE facture_situations SET statut_paiement = 'non_payee', date_paiement = NULL WHERE id = ?"
     ).run(id);
-    // Si on annule le paiement de la 1ère situation, on retire aussi le déclenchement
-    // de la TVA à verser (sauf si elle a déjà été versée à l'OTR).
-    const premiereId = db.prepare(
-      'SELECT MIN(id) AS id FROM facture_situations WHERE facture_id = ?'
-    ).get(situation.facture_id).id;
-    if (id === premiereId) {
-      const facture = db.prepare('SELECT tva_versee FROM factures WHERE id = ?').get(situation.facture_id);
-      if (facture && !facture.tva_versee) {
-        db.prepare('UPDATE factures SET tva_declenchee = 0 WHERE id = ?').run(situation.facture_id);
-      }
-    }
+    recalculerStatutFacture(situation.facture_id);
   });
   transaction();
   return { success: true };
 });
 
 ipcMain.handle('factureSituations:delete', (event, id) => {
-  db.prepare('DELETE FROM facture_situations WHERE id = ?').run(id);
+  const transaction = db.transaction(() => {
+    const situation = db.prepare('SELECT * FROM facture_situations WHERE id = ?').get(id);
+    if (!situation) throw new Error('Situation introuvable.');
+    assertFactureSansEngagementTva(situation.facture_id);
+    if (situation.statut_paiement === 'payee') {
+      throw new Error("Annulez d'abord le paiement de cette situation avant de la supprimer.");
+    }
+    db.prepare('DELETE FROM facture_situations WHERE id = ?').run(id);
+    recalculerMontantsSituations(situation.facture_id);
+    recalculerStatutFacture(situation.facture_id);
+  });
+  transaction();
   return { success: true };
 });
 
@@ -2241,6 +2305,7 @@ ipcMain.handle('bordereaux:createFromProforma', (event, proformaId, createFactur
 
     let factureResult = null;
     if (withFacture) {
+      assertProformaConvertible(proforma);
       const { numero: factureNumero, compteur: factureCompteur } = genererNumero('factures', 'facture_compteur', new Date().getFullYear());
       const factureStmt = db.prepare(`
         INSERT INTO factures (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, proforma_id)
@@ -2331,7 +2396,7 @@ ipcMain.handle('bordereaux:createFromProforma', (event, proformaId, createFactur
     };
   });
 
-  return transaction(proformaId, createFacture);
+  return transaction.immediate(proformaId, createFacture);
 });
 
 ipcMain.handle('bordereaux:delete', (event, id) => {
@@ -2399,6 +2464,107 @@ ipcMain.handle('stats:getDashboard', () => {
 
 // ===== SAUVEGARDE / RESTAURATION DE LA BASE =====
 
+let expectedDatabaseSchema;
+function getExpectedDatabaseSchema() {
+  if (!expectedDatabaseSchema) {
+    const reference = new Database(':memory:');
+    try {
+      migrateDatabase(reference);
+      expectedDatabaseSchema = Object.fromEntries(reference.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+      ).all().map(({ name }) => [name, reference.prepare(`PRAGMA table_info(${name})`).all().map((col) => col.name)]));
+    } finally {
+      reference.close();
+    }
+  }
+  return expectedDatabaseSchema;
+}
+
+function validateBackupDatabase(database, legacy = false) {
+  const schema = getExpectedDatabaseSchema();
+  // Les anciennes sauvegardes peuvent omettre uniquement les tables et
+  // colonnes que migrateDatabase sait créer, jamais les données de base.
+  const migratableColumns = {
+    clients: ['tva_applicable'],
+    proformas: ['avec_cachet', 'tva_applicable'],
+    proforma_lignes: ['section_titre', 'description'],
+    factures: ['statut_paiement', 'date_paiement', 'tva_versee', 'date_versement_tva', 'tva_declenchee', 'mode_tva_situations'],
+    facture_lignes: ['section_titre', 'description'],
+    bordereau_lignes: ['section_titre'],
+  };
+  const tables = legacy
+    ? ['clients', 'produits', 'proformas', 'proforma_lignes', 'factures', 'facture_lignes', 'bordereaux', 'bordereau_lignes', 'parametres']
+    : Object.keys(schema);
+  for (const table of tables) {
+    const actual = new Set(database.prepare(`PRAGMA table_info(${table})`).all().map((col) => col.name));
+    const required = schema[table].filter((col) => !legacy || !(migratableColumns[table] || []).includes(col));
+    const missing = required.filter((col) => !actual.has(col));
+    if (missing.length) throw new Error(`Table ${table} absente ou colonnes manquantes : ${missing.join(', ')}.`);
+  }
+  if (database.pragma('quick_check').some((row) => row.quick_check !== 'ok')) {
+    throw new Error('La base SQLite est endommagée.');
+  }
+  if (database.pragma('foreign_key_check').length) {
+    throw new Error('La base contient des références vers des données absentes.');
+  }
+}
+
+async function restoreDatabase(source) {
+  const dbPath = path.join(app.getPath('userData'), 'facturation.db');
+  const stagingDir = fs.mkdtempSync(path.join(app.getPath('userData'), 'restore-'));
+  const stagedPath = path.join(stagingDir, 'validated.db');
+  const previousPath = path.join(stagingDir, 'previous.db');
+  let candidate;
+  let staged;
+  let preserveRecovery = false;
+  try {
+    try {
+      candidate = new Database(source, { readonly: true, fileMustExist: true });
+      validateBackupDatabase(candidate, true);
+      // L'API SQLite inclut les écritures d'un éventuel journal WAL.
+      await candidate.backup(stagedPath);
+      candidate.close();
+      candidate = null;
+      staged = new Database(stagedPath);
+      migrateDatabase(staged);
+      validateBackupDatabase(staged);
+      staged.close();
+      staged = null;
+    } catch (error) {
+      throw new Error(`Sauvegarde invalide ou incompatible : ${error.message}`);
+    }
+
+    // Aucun await pendant le remplacement : les autres appels IPC ne peuvent
+    // pas utiliser une connexion fermée. La base précédente permet un retour
+    // arrière même si le déplacement ou l'ouverture de la nouvelle échoue.
+    db.close();
+    let previousMoved = false;
+    try {
+      fs.renameSync(dbPath, previousPath);
+      previousMoved = true;
+      fs.renameSync(stagedPath, dbPath);
+      db = new Database(dbPath);
+    } catch (error) {
+      try {
+        if (previousMoved) fs.renameSync(previousPath, dbPath);
+        db = new Database(dbPath);
+      } catch (recoveryError) {
+        preserveRecovery = true;
+        throw new Error(`Restauration interrompue. Copie de récupération conservée dans ${previousMoved ? previousPath : dbPath}. ${recoveryError.message}`);
+      }
+      throw new Error(`La restauration a échoué ; la base précédente a été conservée. ${error.message}`);
+    }
+    return { success: true };
+  } finally {
+    if (candidate?.open) candidate.close();
+    if (staged?.open) staged.close();
+    if (!preserveRecovery) {
+      try { fs.rmSync(stagingDir, { recursive: true, force: true }); }
+      catch (error) { console.error('Nettoyage de la restauration impossible :', error); }
+    }
+  }
+}
+
 ipcMain.handle('database:backup', async () => {
   const defaultName = `sauvegarde-facturation-${new Date().toISOString().split('T')[0]}.db`;
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
@@ -2426,25 +2592,7 @@ ipcMain.handle('database:restore', async () => {
     return { success: false, canceled: true };
   }
 
-  const source = filePaths[0];
-
-  // Vérifier que le fichier est une base SQLite valide avant de remplacer
-  try {
-    const test = new Database(source, { readonly: true });
-    test.prepare('SELECT COUNT(*) FROM parametres').get();
-    test.close();
-  } catch (e) {
-    throw new Error('Le fichier sélectionné n\'est pas une sauvegarde valide.');
-  }
-
-  const dbPath = path.join(app.getPath('userData'), 'facturation.db');
-
-  // Fermer la base courante, remplacer le fichier puis rouvrir
-  db.close();
-  fs.copyFileSync(source, dbPath);
-  db = new Database(dbPath);
-
-  return { success: true };
+  return restoreDatabase(filePaths[0]);
 });
 
 // ===== SECURITE (mot de passe de l'application) =====

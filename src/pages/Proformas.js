@@ -157,8 +157,15 @@ const Proformas = () => {
     });
   };
 
-  const handleOpenLigneForm = () => {
+  const handleOpenLigneForm = (sectionIndex) => {
     resetLigneForm();
+    const lastSection = formData.lignes.reduce((last, ligne, index) => (
+      ligne._type === 'section' ? index : last
+    ), -1);
+    setLigneFormData((prev) => ({
+      ...prev,
+      sectionIndex: Number.isInteger(sectionIndex) ? sectionIndex : lastSection,
+    }));
     setShowLigneForm(true);
   };
 
@@ -208,9 +215,14 @@ const Proformas = () => {
     const prixUnitaire = parseFloat(ligneFormData.prix_unitaire) || 0;
     const montant = quantite * prixUnitaire;
 
-    setFormData({
-      ...formData,
-      lignes: [...formData.lignes, {
+    setFormData((prev) => {
+      const sectionIndex = Number(ligneFormData.sectionIndex ?? -1);
+      const nextSection = prev.lignes.findIndex((ligne, index) => (
+        index > sectionIndex && ligne._type === 'section'
+      ));
+      const insertionIndex = nextSection === -1 ? prev.lignes.length : nextSection;
+      const lignes = [...prev.lignes];
+      lignes.splice(insertionIndex, 0, {
         produit_id: ligneFormData.produit_id ? parseInt(ligneFormData.produit_id) : '',
         produit_search: ligneFormData.produit_search || '',
         designation: ligneFormData.designation,
@@ -219,7 +231,8 @@ const Proformas = () => {
         quantite,
         prix_unitaire: prixUnitaire,
         montant
-      }]
+      });
+      return { ...prev, lignes };
     });
     handleCloseLigneForm();
   };
@@ -1004,6 +1017,22 @@ const Proformas = () => {
                 </div>
 
                 <div className="ligne-form-grid">
+                  {formData.lignes.some((ligne) => ligne._type === 'section') && (
+                    <div className="form-group">
+                      <label>Section</label>
+                      <select
+                        value={ligneFormData.sectionIndex ?? -1}
+                        onChange={(event) => handleLigneFormChange('sectionIndex', Number(event.target.value))}
+                      >
+                        <option value={-1}>Sans section</option>
+                        {formData.lignes.map((ligne, index) => ligne._type === 'section' && (
+                          <option key={index} value={index}>
+                            {ligne.titre || 'Section sans titre'}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <div className="form-group">
                     <label>Produit (recherche)</label>
                     <SearchableSelect
@@ -1150,6 +1179,15 @@ const Proformas = () => {
                               {formatPrice(sousTotal)}
                             </td>
                             <td style={{ background: '#eef2ff' }}>
+                              <button
+                                type="button"
+                                className="btn-icon btn-icon-primary"
+                                onClick={() => handleOpenLigneForm(index)}
+                                title="Ajouter une ligne à cette section"
+                                aria-label="Ajouter une ligne à cette section"
+                              >
+                                <Plus size={18} />
+                              </button>
                               <button
                                 type="button"
                                 className="btn-remove-ligne"
