@@ -339,6 +339,32 @@ const Tva = () => {
     }
   };
 
+  const handleExportFacturePDF = async (facture, estAVerser) => {
+    const rapport = {
+      titre: `${estAVerser ? 'TVA À REVERSER' : 'TVA VERSÉE'} - FACTURE ${facture.numero}`,
+      sousTitre: `Client : ${facture.client_nom || '-'}`,
+      dateLabel: estAVerser ? 'DATE PAIEMENT' : 'DATE VERSEMENT',
+      lignes: [{
+        numero: facture.numero,
+        client: facture.client_nom,
+        date: formatDate(estAVerser ? facture.date_paiement : facture.date_versement_tva),
+        total_ttc: facture.total_ttc || 0,
+        tva: facture.tva || 0,
+      }],
+      totalTtc: facture.total_ttc || 0,
+      totalTva: facture.tva || 0,
+    };
+    try {
+      const doc = await generateTvaPDF(rapport, parametres);
+      const numero = String(facture.numero || facture.id).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const suffixe = estAVerser ? 'a-reverser' : 'versee';
+      doc.save(`TVA_${suffixe}_${numero}.pdf`);
+      toast.success(`Document TVA de la facture ${facture.numero} téléchargé.`);
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la génération du PDF.'));
+    }
+  };
+
   const handleExportPDF = async (impression = false) => {
     const estVersements = activeTab === 'versements';
     const rapport = estVersements ? buildRapportVersements() : buildRapport();
@@ -604,12 +630,13 @@ const Tva = () => {
                     <th onClick={() => toggleSortAVerser('total_ttc')} style={{ cursor: 'pointer' }}>Montant TTC{sortMarkAVerser('total_ttc')}</th>
                     <th onClick={() => toggleSortAVerser('tva')} style={{ cursor: 'pointer' }}>TVA{sortMarkAVerser('tva')}</th>
                     <th>TVA à verser (50 %)</th>
+                    <th style={{ width: '56px' }}>PDF</th>
                   </tr>
                 </thead>
                 <tbody>
                   {sortedAVerser.length === 0 ? (
                     <tr>
-                      <td colSpan="7" className="empty-state">
+                      <td colSpan="8" className="empty-state">
                         Aucune TVA en attente de versement
                       </td>
                     </tr>
@@ -629,6 +656,16 @@ const Tva = () => {
                         <td>{formatFCFA(f.total_ttc)}</td>
                         <td>{formatFCFA(f.tva)}</td>
                         <td className="font-semibold" style={{ color: '#dc2626' }}>{formatFCFA(f.tva / 2)}</td>
+                        <td>
+                          <button
+                            className="btn-icon btn-icon-primary"
+                            onClick={() => handleExportFacturePDF(f, true)}
+                            title={`Télécharger le document TVA de la facture ${f.numero}`}
+                            aria-label={`Télécharger le document TVA de la facture ${f.numero}`}
+                          >
+                            <FileDown size={16} />
+                          </button>
+                        </td>
                       </tr>
                     ))
                   )}
@@ -800,7 +837,7 @@ const Tva = () => {
                   <th onClick={() => toggleSortVersees('date_versement_tva')} style={{ cursor: 'pointer' }}>Date versement{sortMarkVersees('date_versement_tva')}</th>
                   <th onClick={() => toggleSortVersees('total_ttc')} style={{ cursor: 'pointer' }}>Montant TTC{sortMarkVersees('total_ttc')}</th>
                   <th onClick={() => toggleSortVersees('tva')} style={{ cursor: 'pointer' }}>TVA versée{sortMarkVersees('tva')}</th>
-                  <th style={{ width: '110px' }}>Actions</th>
+                  <th style={{ width: '150px' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -819,6 +856,15 @@ const Tva = () => {
                       <td>{formatFCFA(f.total_ttc)}</td>
                       <td className="font-semibold">{formatFCFA(f.tva)}</td>
                       <td>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                          <button
+                            className="btn-icon btn-icon-primary"
+                            onClick={() => handleExportFacturePDF(f, false)}
+                            title={`Télécharger le document TVA de la facture ${f.numero}`}
+                            aria-label={`Télécharger le document TVA de la facture ${f.numero}`}
+                          >
+                            <FileDown size={16} />
+                          </button>
                         {f.numero_versement ? (
                           <span style={{ fontSize: 13, color: '#6b7280' }} title="Gérée via ce versement — annulez le versement pour revenir en arrière">
                             {f.numero_versement}
@@ -833,6 +879,7 @@ const Tva = () => {
                             Annuler
                           </button>
                         )}
+                        </div>
                       </td>
                     </tr>
                   ))
