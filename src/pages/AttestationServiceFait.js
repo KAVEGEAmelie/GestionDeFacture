@@ -3,7 +3,7 @@ import { Plus, Eye, Edit2, Trash2, Printer, Download, FileCheck, RotateCcw } fro
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
-import { inDateRange } from '../utils/dateFilters';
+import { inDateRange, today } from '../utils/dateFilters';
 import { generateAttestationPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
@@ -17,8 +17,8 @@ import './RapportsModal.css';
 
 const LEGACY_STORAGE_KEY = 'attestations_service_fait_v1';
 
-const todayISO = () => new Date().toISOString().split('T')[0];
-const makeRef = () => `ASF-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now().toString().slice(-4)}`;
+const todayISO = () => today();
+const makeRef = () => `ASF-${today().replace(/-/g, '')}-${Date.now().toString().slice(-4)}`;
 const ALIGN_OPTIONS = [
   { value: 'left', label: 'Gauche' },
   { value: 'center', label: 'Centré' },

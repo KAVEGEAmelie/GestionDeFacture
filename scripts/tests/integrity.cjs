@@ -209,7 +209,7 @@ module.exports = async ({ test, h, assert, fs, path, situations, paidInvoice, co
     assert.equal(parent.statut_paiement, 'non_payee'); assert.equal(parent.date_paiement, null); assert.equal(parent.tva_declenchee, 0);
   });
   await test('Mode prorata : montants et arrondis conservés lors des suppressions', a => {
-    const inv = h.facture(a, h.fixture(a), { total_ht: 101, tva: 18, total_ttc: 119 });
+    const inv = h.facture(a, h.fixture(a), h.petitMontant);
     const first = a.call('factureSituations:create', inv.id, 33.33, 'prorata');
     a.call('factureSituations:create', inv.id, 33.33); a.call('factureSituations:create', inv.id, 33.34);
     const before = a.call('factureSituations:getByFacture', inv.id);

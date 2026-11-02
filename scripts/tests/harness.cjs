@@ -20,7 +20,7 @@ function createApp(options = {}) {
   const app = {
     disableHardwareAcceleration() {}, getPath: name => name === 'documents' ? documents : dir,
     getVersion: () => req('./package.json').version,
-    whenReady: () => ({ then() {} }), on() {}, quit() {}
+    whenReady: () => ({ then() {} }), on() {}, quit() {}, requestSingleInstanceLock: () => true
   };
   const electron = { app, BrowserWindow: function () {},
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
@@ -74,4 +74,6 @@ function proforma(a, f, overrides = {}) {
   });
 }
 function facture(a, f, overrides = {}) { return a.call('factures:createFromProforma', proforma(a, f, overrides).id, '2026-10-18'); }
-module.exports = { root, req, base, Database, createApp, createLicense, fixture, proforma, facture, clientData };
+// Une ligne de 101 FCFA : HT 101, TVA 18 % arrondie à 18, TTC 119.
+const petitMontant = { prestations: 0, lignes: [{ produit_id: null, designation: 'Petite ligne', unite: 'Unité', quantite: 1, prix_unitaire: 101, montant: 101 }] };
+module.exports = { root, req, base, Database, createApp, createLicense, fixture, proforma, facture, clientData, petitMontant };

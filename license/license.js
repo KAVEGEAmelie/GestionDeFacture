@@ -51,9 +51,9 @@ const HMAC_SECRET = 'its-facturation-2026-Kv9#mR2pLx7@qW4z';
 //  EMPREINTE MACHINE
 // ═══════════════════════════════════════════════════════════════════
 
-function safeExec(cmd) {
+function safeExec(cmd, timeout = 4000) {
   try {
-    return execSync(cmd, { timeout: 4000, windowsHide: true }).toString().trim();
+    return execSync(cmd, { timeout, windowsHide: true }).toString().trim();
   } catch {
     return '';
   }
@@ -74,9 +74,18 @@ function getRawHardwareId() {
     const m = guid.match(/MachineGuid\s+REG_SZ\s+(.+)/i);
     if (m) parts.push(m[1].trim());
 
-    // Numéro de série du BIOS (complémentaire)
+    // Numéro de série du BIOS (complémentaire). wmic est retiré des versions
+    // récentes de Windows 11 : PowerShell lit la même valeur, ce qui garde
+    // l'ID machine identique (et les codes d'activation valides) après la
+    // disparition de wmic.
     const bios = safeExec('wmic bios get serialnumber');
-    const biosLine = bios.split('\n').map((l) => l.trim()).filter((l) => l && !/serialnumber/i.test(l))[0];
+    let biosLine = bios.split('\n').map((l) => l.trim()).filter((l) => l && !/serialnumber/i.test(l))[0];
+    if (!biosLine) {
+      biosLine = safeExec(
+        'powershell.exe -NoProfile -NonInteractive -Command "(Get-CimInstance -ClassName Win32_BIOS).SerialNumber"',
+        15000
+      ).split('\n').map((l) => l.trim()).filter(Boolean)[0];
+    }
     if (biosLine && biosLine !== 'To be filled by O.E.M.') parts.push(biosLine);
   } else if (process.platform === 'linux') {
     try {

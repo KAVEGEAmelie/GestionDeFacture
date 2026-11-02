@@ -3,7 +3,7 @@ import { Plus, Eye, Edit2, Trash2, Printer, Download, FileCheck, RotateCcw, X } 
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
-import { inDateRange } from '../utils/dateFilters';
+import { inDateRange, today } from '../utils/dateFilters';
 import {
   generateInterventionPDF,
   generateInterventionV11PDF,
@@ -30,7 +30,7 @@ import './Clients.css';
 import './Proformas.css';
 import './RapportsModal.css';
 
-const todayISO = () => new Date().toISOString().split('T')[0];
+const todayISO = () => today();
 
 const trim = (v) => String(v || '').trim();
 const arr = (v) => (Array.isArray(v) ? v : []);

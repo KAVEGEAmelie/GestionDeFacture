@@ -4,7 +4,7 @@ import { Eye, Trash2, Printer, Download, Plus, X, FileText, Edit2 } from 'lucide
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
-import { inDateRange } from '../utils/dateFilters';
+import { inDateRange, today } from '../utils/dateFilters';
 import { generateBordereauPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
@@ -33,7 +33,7 @@ const Bordereaux = () => {
   const [editingBordereau, setEditingBordereau] = useState(null);
   const emptyLigne = { designation: '', quantite: '' };
   const [createForm, setCreateForm] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: today(),
     client_id: '',
     lignes: [{ ...emptyLigne }]
   });
@@ -64,7 +64,7 @@ const Bordereaux = () => {
   const openCreateModal = () => {
     setEditingBordereau(null);
     setCreateForm({
-      date: new Date().toISOString().split('T')[0],
+      date: today(),
       client_id: '',
       lignes: [{ ...emptyLigne }]
     });

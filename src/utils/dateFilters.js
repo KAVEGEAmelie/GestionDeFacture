@@ -8,6 +8,9 @@ export const toISO = (d) => {
   return `${year}-${month}-${day}`;
 };
 
+// Date du jour 'YYYY-MM-DD' en heure locale (toISOString() donne la date UTC)
+export const today = () => toISO(new Date());
+
 // Retourne une plage de dates { from, to } pour un raccourci de période donné.
 export const getPresetRange = (preset) => {
   const now = new Date();

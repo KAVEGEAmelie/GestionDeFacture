@@ -89,7 +89,7 @@ async function main() {
     assert.throws(()=>a.call('factureSituations:create',inv.id,1)); assert.throws(()=>a.call('factures:markPaid',inv.id));
   });
   await test('Situations : arrondi de la dernière tranche exact',a=>{
-    const inv=h.facture(a,h.fixture(a),{total_ht:101,tva:18,total_ttc:119}); const parts=[33.33,33.33,33.34].map(t=>a.call('factureSituations:create',inv.id,t));
+    const inv=h.facture(a,h.fixture(a),h.petitMontant); const parts=[33.33,33.33,33.34].map(t=>a.call('factureSituations:create',inv.id,t));
     assert.equal(parts.reduce((s,p)=>s+p.montant_ttc,0),119); assert.equal(parts.reduce((s,p)=>s+p.tva,0),18);
   });
   await test('Situations : première tranche déclenche TVA, solde marque facture payée',a=>{
@@ -183,6 +183,7 @@ async function main() {
     l.advance(-2*86400000); l.license.recordRun(); assert.equal(l.license.getStatus().clockTampered,true);
   });
   await require('./integrity.cjs')({test,h,assert,fs,path,situations,paidInvoice,count});
+  await require('./corrections.cjs')({test,h,assert,paidInvoice,count});
   const report=path.join(h.base,'results.json');
   fs.writeFileSync(report,JSON.stringify({date:new Date().toISOString(),base:h.base,runtime:process.versions,results},null,2));
   console.log('Rapport:',report);

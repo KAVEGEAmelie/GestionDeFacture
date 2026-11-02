@@ -3,7 +3,7 @@ import { Plus, Eye, Trash2, FileText, Printer, Download, PackagePlus, Edit2, X, 
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
-import { inDateRange, inNumberRange } from '../utils/dateFilters';
+import { inDateRange, inNumberRange, today } from '../utils/dateFilters';
 import { generateProformaPDF, generateLettreSoumissionPDF, generateEnveloppesPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
@@ -62,7 +62,7 @@ const AppelsOffres = () => {
   });
 
   const [formData, setFormData] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: today(),
     client_id: '',
     objet: '',
     prestations: 0,
@@ -232,13 +232,15 @@ const AppelsOffres = () => {
   };
 
   const calculateTotals = () => {
-    const total_materiel_ht = formData.lignes.reduce((sum, ligne) => sum + (ligne.montant || 0), 0);
-    const prestations = parseFloat(formData.prestations) || 0;
-    const remise = parseFloat(formData.remise) || 0;
+    // Mêmes arrondis que le serveur (main.js, calculerDocument).
+    const total_materiel_ht = formData.lignes.reduce((sum, ligne) => sum + Math.round(ligne.montant || 0), 0);
+    const prestations = Math.round(parseFloat(formData.prestations) || 0);
+    const remise = Math.round(parseFloat(formData.remise) || 0);
     const total_ht = total_materiel_ht + prestations - remise;
     const tvaApplicable = formData.tva_applicable !== false;
-    const tauxTVA = parseFloat(parametres.tva_taux) || 18;
-    const tva = tvaApplicable ? total_ht * (tauxTVA / 100) : 0;
+    const tauxParametre = parseFloat(parametres.tva_taux);
+    const tauxTVA = Number.isFinite(tauxParametre) && tauxParametre >= 0 ? tauxParametre : 18;
+    const tva = tvaApplicable ? Math.round(total_ht * (tauxTVA / 100)) : 0;
     const total_ttc = total_ht + tva;
     return { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, tvaApplicable, tauxTVA };
   };
@@ -444,7 +446,7 @@ const AppelsOffres = () => {
   const openModal = () => {
     setEditingAppelOffre(null);
     setFormData({
-      date: new Date().toISOString().split('T')[0],
+      date: today(),
       client_id: '',
       objet: '',
       prestations: 0,
@@ -902,7 +904,7 @@ const AppelsOffres = () => {
               </span>
               <span className="option-card__body">
                 <span className="option-card__title">
-                  TVA ({parseFloat(parametres.tva_taux) || 18}%)
+                  TVA ({calculateTotals().tauxTVA}%)
                 </span>
                 <span className="option-card__desc">
                   {formData.tva_applicable

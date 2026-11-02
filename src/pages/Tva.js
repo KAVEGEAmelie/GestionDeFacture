@@ -4,7 +4,7 @@ import * as XLSX from 'xlsx';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
 import Modal from '../components/modals/Modal';
-import { inDateRange, inNumberRange } from '../utils/dateFilters';
+import { inDateRange, inNumberRange, today } from '../utils/dateFilters';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
@@ -182,7 +182,7 @@ const Tva = () => {
   const openPaiement = (v) => {
     setPaiementForm({
       montant: String(Math.round(v.reste) || ''),
-      date: new Date().toISOString().split('T')[0],
+      date: today(),
       quittance: '',
       mode: '',
       note: '',
@@ -381,7 +381,7 @@ const Tva = () => {
         window.open(doc.output('bloburl'), '_blank');
       } else {
         const suffixe = estVersements ? 'versements-otr' : (rapport.estAVerser ? 'a-reverser' : 'versee');
-        doc.save(`Rapport_TVA_${suffixe}_${new Date().toISOString().slice(0, 10)}.pdf`);
+        doc.save(`Rapport_TVA_${suffixe}_${today()}.pdf`);
         toast.success('Rapport PDF téléchargé.');
       }
     } catch (error) {
@@ -422,7 +422,7 @@ const Tva = () => {
         ws['!cols'] = [{ wch: 5 }, { wch: 14 }, { wch: 12 }, { wch: 10 }, { wch: 18 }, { wch: 22 }, { wch: 20 }, { wch: 16 }, { wch: 20 }, { wch: 18 }];
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, 'Versements OTR');
-        XLSX.writeFile(wb, `Rapport_TVA_versements-otr_${new Date().toISOString().slice(0, 10)}.xlsx`);
+        XLSX.writeFile(wb, `Rapport_TVA_versements-otr_${today()}.xlsx`);
         toast.success('Rapport Excel téléchargé.');
       } catch (error) {
         toast.error(getErrorMessage(error, 'Erreur lors de la génération du fichier Excel.'));
@@ -461,7 +461,7 @@ const Tva = () => {
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, rapport.estAVerser ? 'TVA à reverser' : 'TVA versée');
       const suffixe = rapport.estAVerser ? 'a-reverser' : 'versee';
-      XLSX.writeFile(wb, `Rapport_TVA_${suffixe}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      XLSX.writeFile(wb, `Rapport_TVA_${suffixe}_${today()}.xlsx`);
       toast.success('Rapport Excel téléchargé.');
     } catch (error) {
       toast.error(getErrorMessage(error, 'Erreur lors de la génération du fichier Excel.'));

@@ -64,7 +64,10 @@ const nombreEnLettres = (nombre) => {
   const dixaines = ['', 'dix', 'vingt', 'trente', 'quarante', 'cinquante', 'soixante', 'soixante-dix', 'quatre-vingt', 'quatre-vingt-dix'];
   const special = ['dix', 'onze', 'douze', 'treize', 'quatorze', 'quinze', 'seize'];
   
-  const convertirNombreMoins1000 = (n) => {
+  // « vingt » et « cent » ne prennent le pluriel qu'en fin de nombre :
+  // « quatre-vingts », « deux cents », mais « quatre-vingt mille »,
+  // « deux cent mille ». pluriel = false quand « mille » suit.
+  const convertirNombreMoins1000 = (n, pluriel = true) => {
     if (n === 0) return '';
     if (n < 10) return unites[n];
     if (n >= 10 && n < 17) return special[n - 10];
@@ -76,7 +79,7 @@ const nombreEnLettres = (nombre) => {
       const un = n % 10;
       if (n === 71) return 'soixante et onze';
       if (n >= 70 && n < 80) return 'soixante-' + convertirNombreMoins1000(n - 60);
-      if (n === 80) return 'quatre-vingts';
+      if (n === 80) return pluriel ? 'quatre-vingts' : 'quatre-vingt';
       if (n > 80 && n < 90) return 'quatre-vingt-' + unites[un];
       if (n >= 90) return 'quatre-vingt-' + convertirNombreMoins1000(n - 80);
       return dixaines[diz] + (un > 0 ? (un === 1 && diz !== 8 ? ' et ' : '-') + unites[un] : '');
@@ -84,8 +87,8 @@ const nombreEnLettres = (nombre) => {
     if (n >= 100) {
       const cent = Math.floor(n / 100);
       const reste = n % 100;
-      return (cent === 1 ? 'cent' : unites[cent] + ' cent' + (cent > 1 && reste === 0 ? 's' : '')) +
-             (reste > 0 ? ' ' + convertirNombreMoins1000(reste) : '');
+      return (cent === 1 ? 'cent' : unites[cent] + ' cent' + (pluriel && reste === 0 ? 's' : '')) +
+             (reste > 0 ? ' ' + convertirNombreMoins1000(reste, pluriel) : '');
     }
     return '';
   };
@@ -117,7 +120,7 @@ const nombreEnLettres = (nombre) => {
     
     if (milliers > 0) {
       if (resultat) resultat += ' ';
-      resultat += (milliers === 1 ? 'mille' : convertirNombreMoins1000(milliers) + ' mille');
+      resultat += (milliers === 1 ? 'mille' : convertirNombreMoins1000(milliers, false) + ' mille');
     }
     
     if (centaines > 0) {
@@ -128,15 +131,20 @@ const nombreEnLettres = (nombre) => {
     return resultat.charAt(0).toUpperCase() + resultat.slice(1);
   };
 
-  const partieEntiere = Math.floor(nombre);
-  const partieDecimale = Math.round((nombre - partieEntiere) * 100);
-  
-  let resultat = convertirNombre(partieEntiere);
-  if (partieDecimale > 0) {
-    resultat += ' virgule ' + convertirNombre(partieDecimale);
+  // Montants en francs CFA : pas de subdivision, on arrondit à l'unité
+  // (les anciens documents peuvent contenir des décimales de TVA).
+  return convertirNombre(Math.round(Number(nombre) || 0));
+};
+
+// Taux de TVA à afficher : celui enregistré sur le document (figé à sa
+// création), sinon celui des paramètres. 0 est un taux valide.
+const tauxTvaDuDocument = (document, parametres = {}) => {
+  const candidats = [document && document.tva_taux, parametres.tva_taux];
+  for (const valeur of candidats) {
+    const taux = parseFloat(valeur);
+    if (Number.isFinite(taux) && taux >= 0) return taux;
   }
-  
-  return resultat;
+  return 18;
 };
 
 // Palette de couleurs de la charte In-Tel Services
@@ -898,7 +906,7 @@ const renderProformaPDF = async (proforma, parametres, options, compact) => {
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
-  const tauxTVA = parametres.tva_taux || 18;
+  const tauxTVA = tauxTvaDuDocument(proforma, parametres);
 
   drawPageFrame(doc);
   const { contentLeft, rightX, headerBottom } = await drawHeader(doc, parametres);
@@ -1028,7 +1036,7 @@ const renderFacturePDF = async (facture, parametres, compact) => {
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
-  const tauxTVA = parametres.tva_taux || 18;
+  const tauxTVA = tauxTvaDuDocument(facture, parametres);
 
   drawPageFrame(doc);
   const { contentLeft, rightX, headerBottom } = await drawHeader(doc, parametres, { vignette: true });
@@ -1247,7 +1255,7 @@ export const generateFactureSituationPDF = async (situation, facture, parametres
         ['Montant total TTC du marché', formatNumber(totalMarche)],
         [`Montant de la tranche de ${taux} % du TTC`, formatNumber(montantTtc)],
         ['Base HT comprise dans la présente facture', formatNumber(baseHt)],
-        [`TVA de la tranche (${Number(parametres.tva_taux) || 18} %)`, formatNumber(tvaTotale)],
+        [`TVA de la tranche (${tauxTvaDuDocument(facture, parametres)} %)`, formatNumber(tvaTotale)],
         ['- 50 % de la TVA à régler à In-Tel Services', formatNumber(tvaReglee)],
         ["- 50 % de la TVA faisant l'objet d'une quittance", formatNumber(quittance)],
         [`Montant brut de la facture de ${taux} %`, formatNumber(montantTtc)],
@@ -1260,7 +1268,7 @@ export const generateFactureSituationPDF = async (situation, facture, parametres
         ['Montant total TTC du marché', formatNumber(totalMarche)],
         [`Montant de la tranche de ${taux} % du TTC`, formatNumber(montantTtc)],
         ['Base HT comprise dans la présente facture', formatNumber(baseHt)],
-        [`TVA totale (${Number(parametres.tva_taux) || 18} %) acquittée sur cette première tranche`, formatNumber(tvaTotale)],
+        [`TVA totale (${tauxTvaDuDocument(facture, parametres)} %) acquittée sur cette première tranche`, formatNumber(tvaTotale)],
         ['- 50 % de la TVA à régler à In-Tel Services', formatNumber(tvaReglee)],
         ["- 50 % de la TVA faisant l'objet d'une quittance", formatNumber(quittance)],
         [`Montant brut de la facture de ${taux} %`, formatNumber(montantTtc)],

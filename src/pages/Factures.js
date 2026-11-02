@@ -3,7 +3,7 @@ import { Eye, Trash2, FileCheck, Truck, Printer, Download, CheckCircle, RotateCc
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
-import { inDateRange, inNumberRange } from '../utils/dateFilters';
+import { inDateRange, inNumberRange, today } from '../utils/dateFilters';
 import { generateFacturePDF, generateFactureSituationPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
@@ -36,7 +36,7 @@ const Factures = () => {
   const [parametres, setParametres] = useState({});
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [convertModalOpen, setConvertModalOpen] = useState(false);
-  const [convertDate, setConvertDate] = useState(new Date().toISOString().split('T')[0]);
+  const [convertDate, setConvertDate] = useState(today());
   const [convertSearchTerm, setConvertSearchTerm] = useState('');
   const [selectedFacture, setSelectedFacture] = useState(null);
   const [editModalOpen, setEditModalOpen] = useState(false);
@@ -93,7 +93,22 @@ const Factures = () => {
   };
 
   // —— Édition d'une facture ——
+  // Taux enregistré sur la facture ; à défaut (factures anciennes), déduit de
+  // ses montants, puis celui des paramètres.
+  const tauxTvaFacture = (facture) => {
+    if (facture && facture.tva_taux !== null && facture.tva_taux !== undefined) return facture.tva_taux;
+    if (facture && facture.total_ht > 0 && facture.tva > 0) {
+      return Math.round((facture.tva / facture.total_ht) * 10000) / 100;
+    }
+    const taux = parseFloat(parametres.tva_taux);
+    return Number.isFinite(taux) && taux >= 0 ? taux : 18;
+  };
+
   const handleEdit = async (facture) => {
+    if (facture.statut_paiement === 'payee') {
+      toast.error("Cette facture est payée : annulez d'abord son paiement pour la modifier.");
+      return;
+    }
     const full = await window.electronAPI.factures.getById(facture.id);
     setEditingFacture(full);
     // Reconstruire les séparateurs de section à partir des lignes
@@ -161,16 +176,18 @@ const Factures = () => {
   };
 
   const computeEditTotals = () => {
+    // Mêmes arrondis que le serveur ; le taux reste celui de la facture,
+    // même si le taux des paramètres a changé depuis son émission.
     const total_materiel_ht = editForm.lignes.reduce(
-      (sum, l) => (l._type === 'section' ? sum : sum + (l.montant || 0)),
+      (sum, l) => (l._type === 'section' ? sum : sum + Math.round(l.montant || 0)),
       0
     );
-    const prestations = parseFloat(editForm.prestations) || 0;
-    const remise = parseFloat(editForm.remise) || 0;
+    const prestations = Math.round(parseFloat(editForm.prestations) || 0);
+    const remise = Math.round(parseFloat(editForm.remise) || 0);
     const total_ht = total_materiel_ht + prestations - remise;
     const tvaApplicable = editingFacture ? (editingFacture.tva || 0) > 0 : true;
-    const tauxTVA = parseFloat(parametres.tva_taux) || 18;
-    const tva = tvaApplicable ? total_ht * (tauxTVA / 100) : 0;
+    const tauxTVA = tauxTvaFacture(editingFacture);
+    const tva = tvaApplicable ? Math.round(total_ht * (tauxTVA / 100)) : 0;
     const total_ttc = total_ht + tva;
     return { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, tvaApplicable, tauxTVA };
   };
@@ -539,7 +556,7 @@ const Factures = () => {
               Supprimer la sélection ({selection.count})
             </button>
           )}
-          <button className="btn btn-primary" onClick={() => { setConvertDate(new Date().toISOString().split('T')[0]); setConvertModalOpen(true); }}>
+          <button className="btn btn-primary" onClick={() => { setConvertDate(today()); setConvertModalOpen(true); }}>
             <FileCheck size={20} />
             Convertir une proforma
           </button>
@@ -681,14 +698,16 @@ const Factures = () => {
                             <Percent size={16} />
                           </button>
                         )}
-                        <button
-                          className="btn-icon"
-                          style={{ color: '#f59e0b' }}
-                          onClick={() => handleEdit(facture)}
-                          title="Modifier"
-                        >
-                          <Edit2 size={16} />
-                        </button>
+                        {facture.statut_paiement !== 'payee' && (
+                          <button
+                            className="btn-icon"
+                            style={{ color: '#f59e0b' }}
+                            onClick={() => handleEdit(facture)}
+                            title="Modifier"
+                          >
+                            <Edit2 size={16} />
+                          </button>
+                        )}
                         <button
                           className="btn-icon btn-icon-success"
                           onClick={() => handlePrint(facture)}

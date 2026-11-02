@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -11,6 +11,13 @@ app.disableHardwareAcceleration();
 
 let mainWindow;
 let db;
+
+// Une seule instance à la fois : deux processus écrivant dans la même base
+// (et sauvegardant chacun à la fermeture) risquent d'écraser des données.
+const instanceUnique = app.requestSingleInstanceLock();
+if (!instanceUnique) {
+  app.quit();
+}
 
 // Initialisation de la base de données
 function initDatabase() {
@@ -408,6 +415,15 @@ function migrateDatabase(db) {
     )
   `);
 
+  // Migration : taux de TVA figé sur chaque document, pour qu'un changement
+  // du taux dans les paramètres ne modifie pas les documents déjà émis.
+  ['proformas', 'factures', 'appels_offres'].forEach((table) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (cols.length > 0 && !cols.includes('tva_taux')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN tva_taux REAL`);
+    }
+  });
+
   // Migration : choix d'ajouter le cachet + signature sur la proforma.
   const proformaCols = db.prepare("PRAGMA table_info(proformas)").all().map((c) => c.name);
   if (!proformaCols.includes('avec_cachet')) {
@@ -608,13 +624,49 @@ async function waitForReact(url, maxRetries = 30) {
   return false;
 }
 
+// Menu de la version installée : édition et zoom uniquement. Le menu par
+// défaut d'Electron donne accès aux outils de développement, qui permettent
+// d'appeler l'API de l'application sans passer par l'écran de verrouillage.
+function installerMenuProduction() {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: 'Édition',
+      submenu: [
+        { role: 'undo', label: 'Annuler' },
+        { role: 'redo', label: 'Rétablir' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Couper' },
+        { role: 'copy', label: 'Copier' },
+        { role: 'paste', label: 'Coller' },
+        { role: 'selectAll', label: 'Tout sélectionner' }
+      ]
+    },
+    {
+      label: 'Affichage',
+      submenu: [
+        { role: 'resetZoom', label: 'Taille réelle' },
+        { role: 'zoomIn', label: 'Zoom avant' },
+        { role: 'zoomOut', label: 'Zoom arrière' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: 'Plein écran' }
+      ]
+    }
+  ]));
+}
+
 async function createWindow() {
+  const enDeveloppement = !!process.env.ELECTRON_START_URL;
+  if (!enDeveloppement) {
+    installerMenuProduction();
+  }
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      devTools: enDeveloppement,
       preload: path.join(__dirname, 'preload.js')
     },
     icon: path.join(__dirname, 'src/assets/logo.png')
@@ -623,6 +675,19 @@ async function createWindow() {
   // En développement, charge depuis le serveur React
   // En production, charge depuis les fichiers buildés
   const startUrl = process.env.ELECTRON_START_URL || `file://${path.join(__dirname, 'build/index.html')}`;
+
+  // Fenêtres secondaires : seulement les aperçus d'impression (PDF en blob:,
+  // ou page vide remplie ensuite). Aucune navigation hors de l'application.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => (
+    url.startsWith('blob:') || url === 'about:blank' || url === ''
+      ? { action: 'allow' }
+      : { action: 'deny' }
+  ));
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url.split('#')[0] !== startUrl.split('#')[0] && !url.startsWith(startUrl)) {
+      event.preventDefault();
+    }
+  });
   
   // En développement, attendre que React soit prêt
   if (process.env.ELECTRON_START_URL) {
@@ -647,8 +712,17 @@ async function createWindow() {
   });
 }
 
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
+
 app.whenReady().then(() => {
+  if (!instanceUnique) return;
   initDatabase();
+  demarrerSauvegardePeriodique();
   // Suivi de la période d'essai : enregistre le lancement à chaque démarrage
   // (le blocage effectif dépend de TRIAL_ENFORCEMENT dans license/license.js)
   try {
@@ -703,12 +777,50 @@ function autoBackupDatabase() {
   }
 }
 
+// Copie de sécurité toutes les 15 minutes, pendant que l'application tourne :
+// sans elle, une coupure de courant ou un plantage ne laissait aucune
+// sauvegarde de la session. Un seul fichier, écrasé à chaque fois, pour ne
+// pas évincer les sauvegardes horodatées faites à la fermeture.
+const INTERVALLE_SAUVEGARDE_MS = 15 * 60 * 1000;
+let minuterieSauvegarde = null;
+let sauvegardePeriodiqueEnCours = false;
+
+async function sauvegardePeriodique() {
+  if (sauvegardePeriodiqueEnCours || !db || !db.open) return;
+  sauvegardePeriodiqueEnCours = true;
+  try {
+    const backupDir = path.join(app.getPath('documents'), 'GestionFacturation-Backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const dest = path.join(backupDir, 'facturation-autosave.db');
+    const temp = `${dest}.tmp`;
+    await db.backup(temp);
+    fs.renameSync(temp, dest);
+  } catch (e) {
+    console.error('Sauvegarde périodique échouée :', e);
+  } finally {
+    sauvegardePeriodiqueEnCours = false;
+  }
+}
+
+function demarrerSauvegardePeriodique() {
+  minuterieSauvegarde = setInterval(sauvegardePeriodique, INTERVALLE_SAUVEGARDE_MS);
+}
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    db.close();
-    autoBackupDatabase();
     app.quit();
   }
+});
+
+// Fermeture de la base et sauvegarde horodatée à chaque sortie de
+// l'application, y compris sous macOS (Cmd+Q).
+let sortieTraitee = false;
+app.on('will-quit', () => {
+  if (!instanceUnique || sortieTraitee) return;
+  sortieTraitee = true;
+  if (minuterieSauvegarde) clearInterval(minuterieSauvegarde);
+  if (db && db.open) db.close();
+  autoBackupDatabase();
 });
 
 // ===== Licence / période d'essai =====
@@ -725,6 +837,37 @@ ipcMain.handle('license:activate', (event, code) => {
 function hashPassword(password, salt) {
   // scrypt : dérivation lente et salée, adaptée au stockage de mots de passe
   return crypto.scryptSync(String(password), salt, 64).toString('hex');
+}
+
+// Compare deux empreintes en temps constant.
+function empreintesEgales(a, b) {
+  const bufA = Buffer.from(String(a), 'hex');
+  const bufB = Buffer.from(String(b), 'hex');
+  return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+}
+
+// Limite les essais de mot de passe : après 5 échecs, attente de 30 secondes
+// (doublée à chaque nouvelle série d'échecs, plafonnée à 15 minutes).
+const essaisMotDePasse = { echecs: 0, bloqueJusqua: 0, attenteMs: 30 * 1000 };
+
+function verifierMotDePasse(password, s) {
+  const maintenant = Date.now();
+  if (maintenant < essaisMotDePasse.bloqueJusqua) {
+    const secondes = Math.ceil((essaisMotDePasse.bloqueJusqua - maintenant) / 1000);
+    throw new Error(`Trop de tentatives. Réessayez dans ${secondes} s.`);
+  }
+  if (password && empreintesEgales(hashPassword(password, s.salt), s.hash)) {
+    essaisMotDePasse.echecs = 0;
+    essaisMotDePasse.attenteMs = 30 * 1000;
+    return true;
+  }
+  essaisMotDePasse.echecs += 1;
+  if (essaisMotDePasse.echecs >= 5) {
+    essaisMotDePasse.bloqueJusqua = maintenant + essaisMotDePasse.attenteMs;
+    essaisMotDePasse.attenteMs = Math.min(essaisMotDePasse.attenteMs * 2, 15 * 60 * 1000);
+    essaisMotDePasse.echecs = 0;
+  }
+  return false;
 }
 
 function getSecurite() {
@@ -763,6 +906,85 @@ function genererNumero(table, compteurCle, annee, prefixe = '') {
   } while (existeStmt.get(numero));
 
   return { numero, compteur };
+}
+
+// Numéro suivant pour les séquences PREFIXE-NNNN (attestations, versements
+// TVA). Le compteur enregistré ne redescend jamais : le numéro d'un document
+// supprimé n'est pas réattribué (ce que faisait l'ancien calcul par COUNT(*)).
+// Il part au moins du plus grand numéro existant (bases antérieures).
+function numeroSequentiel(table, prefixe, compteurCle) {
+  const row = db.prepare('SELECT valeur FROM parametres WHERE cle = ?').get(compteurCle);
+  let compteur = parseInt(row && row.valeur, 10) || 0;
+  db.prepare(`SELECT numero FROM ${table}`).all().forEach(({ numero }) => {
+    const m = String(numero || '').match(new RegExp(`^${prefixe}-(\\d+)$`));
+    if (m) compteur = Math.max(compteur, Number(m[1]));
+  });
+  compteur += 1;
+  db.prepare(`
+    INSERT INTO parametres (cle, valeur) VALUES (?, ?)
+    ON CONFLICT(cle) DO UPDATE SET valeur = excluded.valeur
+  `).run(compteurCle, String(compteur));
+  return `${prefixe}-${String(compteur).padStart(4, '0')}`;
+}
+
+// Date du jour (AAAA-MM-JJ) en heure locale : toISOString() donne la date UTC,
+// fausse en début ou fin de journée hors fuseau UTC+0.
+function aujourdhui() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// Taux de TVA des paramètres (0 est un taux valide).
+function lireTauxTva() {
+  const row = db.prepare("SELECT valeur FROM parametres WHERE cle = 'tva_taux'").get();
+  const taux = parseFloat(row && row.valeur);
+  return Number.isFinite(taux) && taux >= 0 ? taux : 18;
+}
+
+// Taux d'un document existant : celui enregistré, sinon déduit de ses montants
+// (documents créés avant la colonne tva_taux), sinon celui des paramètres.
+function tauxTvaDocument(doc) {
+  if (doc.tva_taux !== null && doc.tva_taux !== undefined) return doc.tva_taux;
+  if (doc.total_ht > 0 && doc.tva > 0) return Math.round((doc.tva / doc.total_ht) * 10000) / 100;
+  return lireTauxTva();
+}
+
+// Le franc CFA n'a pas de subdivision : tous les montants sont arrondis à
+// l'unité. Les totaux sont recalculés ici à partir des lignes, sans se fier
+// à ceux envoyés par l'interface.
+function calculerDocument(data, tauxTva, tvaApplicable) {
+  if (!data || !Array.isArray(data.lignes)) {
+    throw new Error('Lignes du document manquantes.');
+  }
+  const nombre = (valeur, libelle) => {
+    const n = Number(valeur ?? 0);
+    if (!Number.isFinite(n) || n < 0) throw new Error(`${libelle} invalide.`);
+    return n;
+  };
+  const lignes = data.lignes.map((ligne) => {
+    const quantite = nombre(ligne.quantite, 'Quantité');
+    const prixUnitaire = nombre(ligne.prix_unitaire, 'Prix unitaire');
+    return { ...ligne, quantite, prix_unitaire: prixUnitaire, montant: Math.round(quantite * prixUnitaire) };
+  });
+  const totalMaterielHt = lignes.reduce((somme, ligne) => somme + ligne.montant, 0);
+  const prestations = Math.round(nombre(data.prestations, 'Montant des prestations'));
+  const remise = Math.round(nombre(data.remise, 'Remise'));
+  const totalHt = totalMaterielHt + prestations - remise;
+  if (totalHt < 0) {
+    throw new Error('La remise dépasse le total du document.');
+  }
+  const tva = tvaApplicable ? Math.round(totalHt * tauxTva / 100) : 0;
+  return {
+    lignes,
+    total_materiel_ht: totalMaterielHt,
+    prestations,
+    remise,
+    total_ht: totalHt,
+    tva,
+    total_ttc: totalHt + tva,
+    tva_taux: tauxTva
+  };
 }
 
 // ===== IPC Handlers pour les opérations de base de données =====
@@ -954,15 +1176,7 @@ ipcMain.handle('attestations:getById', (event, id) => {
 });
 
 ipcMain.handle('attestations:create', (event, data) => {
-  // Part du nombre d'attestations et saute les numéros déjà utilisés (évite les doublons après suppression)
-  const existing = db.prepare('SELECT COUNT(*) as count FROM attestations').get();
-  const existeStmt = db.prepare('SELECT 1 FROM attestations WHERE numero = ?');
-  let compteur = existing.count || 0;
-  let numero;
-  do {
-    compteur += 1;
-    numero = `ASF-${String(compteur).padStart(4, '0')}`;
-  } while (existeStmt.get(numero));
+  const numero = numeroSequentiel('attestations', 'ASF', 'attestation_compteur');
   const result = db.prepare(`
     INSERT INTO attestations (numero, reference, title, date, lieu, client_nom, objet,
       intro, intro_align, travaux, travaux_align, travaux_list_mode,
@@ -1283,27 +1497,29 @@ ipcMain.handle('proformas:create', (event, proforma) => {
     // Générer le numéro (année basée sur la date du document),
     // en sautant les numéros déjà utilisés.
     const annee = new Date(data.date).getFullYear() || new Date().getFullYear();
+    const calcul = calculerDocument(data, lireTauxTva(), data.tva_applicable !== false);
     const { numero, compteur } = genererNumero('proformas', 'proforma_compteur', annee);
-    
+
     // Créer la proforma
     const stmt = db.prepare(`
-      INSERT INTO proformas (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut, avec_cachet, tva_applicable)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO proformas (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut, avec_cachet, tva_applicable, tva_taux)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       numero,
       data.date,
       data.client_id,
       data.objet,
-      data.total_materiel_ht || 0,
-      data.prestations || 0,
-      data.remise || 0,
-      data.total_ht,
-      data.tva,
-      data.total_ttc,
+      calcul.total_materiel_ht,
+      calcul.prestations,
+      calcul.remise,
+      calcul.total_ht,
+      calcul.tva,
+      calcul.total_ttc,
       'en_attente',
       data.avec_cachet ? 1 : 0,
-      data.tva_applicable === false ? 0 : 1
+      data.tva_applicable === false ? 0 : 1,
+      calcul.tva_taux
     );
     
     const proformaId = result.lastInsertRowid;
@@ -1314,7 +1530,7 @@ ipcMain.handle('proformas:create', (event, proforma) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
-    data.lignes.forEach((ligne, index) => {
+    calcul.lignes.forEach((ligne, index) => {
       stmtLigne.run(
         proformaId,
         Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
@@ -1348,22 +1564,25 @@ ipcMain.handle('proformas:update', (event, id, data) => {
   }
 
   const transaction = db.transaction((payload) => {
+    const tvaApplicable = payload.tva_applicable !== false && payload.tva_applicable !== 0;
+    const calcul = calculerDocument(payload, lireTauxTva(), tvaApplicable);
     db.prepare(`
       UPDATE proformas
-      SET date = ?, client_id = ?, objet = ?, total_materiel_ht = ?, prestations = ?, remise = ?, total_ht = ?, tva = ?, total_ttc = ?, avec_cachet = ?, tva_applicable = ?, updated_at = CURRENT_TIMESTAMP
+      SET date = ?, client_id = ?, objet = ?, total_materiel_ht = ?, prestations = ?, remise = ?, total_ht = ?, tva = ?, total_ttc = ?, avec_cachet = ?, tva_applicable = ?, tva_taux = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(
       payload.date,
       payload.client_id,
       payload.objet,
-      payload.total_materiel_ht || 0,
-      payload.prestations || 0,
-      payload.remise || 0,
-      payload.total_ht,
-      payload.tva,
-      payload.total_ttc,
+      calcul.total_materiel_ht,
+      calcul.prestations,
+      calcul.remise,
+      calcul.total_ht,
+      calcul.tva,
+      calcul.total_ttc,
       payload.avec_cachet ? 1 : 0,
-      payload.tva_applicable === false ? 0 : 1,
+      tvaApplicable ? 1 : 0,
+      calcul.tva_taux,
       id
     );
 
@@ -1373,7 +1592,7 @@ ipcMain.handle('proformas:update', (event, id, data) => {
       INSERT INTO proforma_lignes (proforma_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre, description)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    payload.lignes.forEach((ligne, index) => {
+    calcul.lignes.forEach((ligne, index) => {
       stmtLigne.run(
         id,
         Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
@@ -1449,12 +1668,12 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId, dateFacture) =
     const { numero, compteur } = genererNumero('factures', 'facture_compteur', new Date().getFullYear());
     
     // Date de la facture : celle choisie par l'utilisateur, sinon aujourd'hui.
-    const dateValue = dateFacture || new Date().toISOString().split('T')[0];
+    const dateValue = dateFacture || aujourdhui();
 
     // Créer la facture
     const stmt = db.prepare(`
-      INSERT INTO factures (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, proforma_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO factures (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, proforma_id, tva_taux)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       numero,
@@ -1467,7 +1686,8 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId, dateFacture) =
       proforma.total_ht,
       proforma.tva,
       proforma.total_ttc,
-      pId
+      pId,
+      tauxTvaDocument(proforma)
     );
     
     const factureId = result.lastInsertRowid;
@@ -1507,27 +1727,41 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId, dateFacture) =
 
 // Modification d'une facture (date, objet, montants, lignes).
 // Le numéro et le client restent inchangés.
+// Interdit si la facture est payée ou engagée dans un versement de TVA :
+// le document remis au client et les montants déclarés à l'OTR ne doivent
+// plus changer. Les situations déjà émises sont recalculées (refus si l'une
+// d'elles est payée et que son montant changerait).
 ipcMain.handle('factures:update', (event, id, data) => {
-  const existing = db.prepare('SELECT id FROM factures WHERE id = ?').get(id);
+  const existing = db.prepare('SELECT * FROM factures WHERE id = ?').get(id);
   if (!existing) {
     throw new Error('Facture introuvable.');
   }
 
   const transaction = db.transaction((payload) => {
+    if (existing.statut_paiement === 'payee') {
+      throw new Error("Impossible de modifier une facture payée. Annulez d'abord son paiement.");
+    }
+    assertFactureSansEngagementTva(id);
+    const proforma = existing.proforma_id
+      ? db.prepare('SELECT tva_applicable FROM proformas WHERE id = ?').get(existing.proforma_id)
+      : null;
+    const tvaApplicable = proforma ? proforma.tva_applicable !== 0 : existing.tva > 0;
+    const calcul = calculerDocument(payload, tauxTvaDocument(existing), tvaApplicable);
     db.prepare(`
       UPDATE factures
       SET date = ?, objet = ?, total_materiel_ht = ?, prestations = ?, remise = ?,
-          total_ht = ?, tva = ?, total_ttc = ?, updated_at = CURRENT_TIMESTAMP
+          total_ht = ?, tva = ?, total_ttc = ?, tva_taux = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(
       payload.date,
       payload.objet,
-      payload.total_materiel_ht || 0,
-      payload.prestations || 0,
-      payload.remise || 0,
-      payload.total_ht,
-      payload.tva,
-      payload.total_ttc,
+      calcul.total_materiel_ht,
+      calcul.prestations,
+      calcul.remise,
+      calcul.total_ht,
+      calcul.tva,
+      calcul.total_ttc,
+      calcul.tva_taux,
       id
     );
 
@@ -1537,7 +1771,7 @@ ipcMain.handle('factures:update', (event, id, data) => {
       INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre, description)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    payload.lignes.forEach((ligne, index) => {
+    calcul.lignes.forEach((ligne, index) => {
       stmtLigne.run(
         id,
         Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
@@ -1552,10 +1786,14 @@ ipcMain.handle('factures:update', (event, id, data) => {
       );
     });
 
+    if (db.prepare('SELECT 1 FROM facture_situations WHERE facture_id = ?').get(id)) {
+      recalculerMontantsSituations(id);
+      recalculerStatutFacture(id);
+    }
     return { success: true };
   });
 
-  return transaction(data);
+  return transaction.immediate(data);
 });
 
 ipcMain.handle('factures:delete', (event, id) => {
@@ -1581,7 +1819,7 @@ ipcMain.handle('factures:delete', (event, id) => {
 
 // PAIEMENT DES FACTURES
 const normalizePaymentDate = (value) => {
-  const date = String(value || new Date().toISOString().split('T')[0]).trim();
+  const date = String(value || aujourdhui()).trim();
   const parsed = /^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(`${date}T00:00:00.000Z`) : null;
   if (!parsed || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
     throw new Error('Date de paiement invalide.');
@@ -1675,7 +1913,7 @@ ipcMain.handle('factureSituations:create', (event, factureId, taux, modeTva) => 
     const result = db.prepare(`
       INSERT INTO facture_situations (facture_id, numero, taux, montant_ht, tva, tva_a_verser, montant_ttc, date)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(factureId, numero, t, montantHt, tva, tvaAverser, montantTtc, new Date().toISOString().split('T')[0]);
+    `).run(factureId, numero, t, montantHt, tva, tvaAverser, montantTtc, aujourdhui());
 
     return { id: result.lastInsertRowid, numero, taux: t, montant_ht: montantHt, tva, tva_a_verser: tvaAverser, montant_ttc: montantTtc, mode_tva_situations: mode };
   });
@@ -1828,19 +2066,14 @@ ipcMain.handle('tva:verser', (event, ids) => {
       throw new Error('Aucune facture éligible (déjà versée ou déjà dans un versement).');
     }
     const totalTva = rows.reduce((s, r) => s + (r.tva || 0), 0);
-    let cpt = db.prepare('SELECT COUNT(*) AS c FROM tva_versements').get().c || 0;
-    let numero;
-    do {
-      cpt += 1;
-      numero = `VT-${String(cpt).padStart(4, '0')}`;
-    } while (db.prepare('SELECT 1 FROM tva_versements WHERE numero = ?').get(numero));
+    const numero = numeroSequentiel('tva_versements', 'VT', 'versement_tva_compteur');
     const res = db.prepare(
       'INSERT INTO tva_versements (numero, date, total_du) VALUES (?, ?, ?)'
-    ).run(numero, new Date().toISOString().split('T')[0], totalTva / 2);
+    ).run(numero, aujourdhui(), Math.round(totalTva / 2));
     const vid = Number(res.lastInsertRowid);
     const ins = db.prepare('INSERT INTO tva_versement_factures (versement_id, facture_id, tva) VALUES (?, ?, ?)');
     rows.forEach((r) => ins.run(vid, r.id, r.tva));
-    return { id: vid, numero, count: rows.length, totalDu: totalTva / 2 };
+    return { id: vid, numero, count: rows.length, totalDu: Math.round(totalTva / 2) };
   });
   const out = transaction(ids);
   return { success: true, ...out };
@@ -1874,7 +2107,7 @@ ipcMain.handle('tva:ajouterPaiement', (event, versementId, paiement) => {
   if (!v) throw new Error('Versement introuvable.');
   const montant = Number(paiement && paiement.montant);
   if (!montant || montant <= 0) throw new Error('Montant du paiement invalide.');
-  const datePaiement = (paiement && paiement.date) || new Date().toISOString().split('T')[0];
+  const datePaiement = (paiement && paiement.date) || aujourdhui();
   const transaction = db.transaction(() => {
     db.prepare(
       'INSERT INTO tva_paiements (versement_id, date, montant, quittance, mode, note) VALUES (?, ?, ?, ?, ?, ?)'
@@ -1960,23 +2193,24 @@ ipcMain.handle('appelsOffres:getById', (event, id) => {
 ipcMain.handle('appelsOffres:create', (event, appelOffre) => {
   const transaction = db.transaction((data) => {
     const annee = new Date(data.date).getFullYear() || new Date().getFullYear();
+    const calcul = calculerDocument(data, lireTauxTva(), data.tva_applicable !== false);
     const { numero, compteur } = genererNumero('appels_offres', 'appel_offre_compteur', annee, 'AO-');
 
     const stmt = db.prepare(`
-      INSERT INTO appels_offres (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut, avec_cachet, tva_applicable, reference_externe, autorite, autorite_adresse, validite_offre, delai_execution)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO appels_offres (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut, avec_cachet, tva_applicable, reference_externe, autorite, autorite_adresse, validite_offre, delai_execution, tva_taux)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       numero,
       data.date,
       data.client_id,
       data.objet,
-      data.total_materiel_ht || 0,
-      data.prestations || 0,
-      data.remise || 0,
-      data.total_ht,
-      data.tva,
-      data.total_ttc,
+      calcul.total_materiel_ht,
+      calcul.prestations,
+      calcul.remise,
+      calcul.total_ht,
+      calcul.tva,
+      calcul.total_ttc,
       'en_attente',
       data.avec_cachet ? 1 : 0,
       data.tva_applicable === false ? 0 : 1,
@@ -1984,7 +2218,8 @@ ipcMain.handle('appelsOffres:create', (event, appelOffre) => {
       data.autorite || '',
       data.autorite_adresse || '',
       parseInt(data.validite_offre, 10) || 90,
-      data.delai_execution || ''
+      data.delai_execution || '',
+      calcul.tva_taux
     );
     const appelOffreId = result.lastInsertRowid;
 
@@ -1992,7 +2227,7 @@ ipcMain.handle('appelsOffres:create', (event, appelOffre) => {
       INSERT INTO appel_offre_lignes (appel_offre_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    data.lignes.forEach((ligne, index) => {
+    calcul.lignes.forEach((ligne, index) => {
       stmtLigne.run(
         appelOffreId,
         Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
@@ -2021,23 +2256,24 @@ ipcMain.handle('appelsOffres:update', (event, id, data) => {
     throw new Error("Cet appel d'offre a déjà été transformé en proforma et ne peut plus être modifié.");
   }
   const transaction = db.transaction(() => {
+    const calcul = calculerDocument(data, lireTauxTva(), data.tva_applicable !== false);
     db.prepare(`
       UPDATE appels_offres
       SET date = ?, client_id = ?, objet = ?, total_materiel_ht = ?, prestations = ?, remise = ?,
           total_ht = ?, tva = ?, total_ttc = ?, avec_cachet = ?, tva_applicable = ?,
           reference_externe = ?, autorite = ?, autorite_adresse = ?, validite_offre = ?, delai_execution = ?,
-          updated_at = CURRENT_TIMESTAMP
+          tva_taux = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(
       data.date,
       data.client_id,
       data.objet,
-      data.total_materiel_ht || 0,
-      data.prestations || 0,
-      data.remise || 0,
-      data.total_ht,
-      data.tva,
-      data.total_ttc,
+      calcul.total_materiel_ht,
+      calcul.prestations,
+      calcul.remise,
+      calcul.total_ht,
+      calcul.tva,
+      calcul.total_ttc,
       data.avec_cachet ? 1 : 0,
       data.tva_applicable === false ? 0 : 1,
       data.reference_externe || '',
@@ -2045,6 +2281,7 @@ ipcMain.handle('appelsOffres:update', (event, id, data) => {
       data.autorite_adresse || '',
       parseInt(data.validite_offre, 10) || 90,
       data.delai_execution || '',
+      calcul.tva_taux,
       id
     );
 
@@ -2053,7 +2290,7 @@ ipcMain.handle('appelsOffres:update', (event, id, data) => {
       INSERT INTO appel_offre_lignes (appel_offre_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    data.lignes.forEach((ligne, index) => {
+    calcul.lignes.forEach((ligne, index) => {
       stmtLigne.run(
         id,
         Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
@@ -2090,11 +2327,11 @@ ipcMain.handle('appelsOffres:transformerEnProforma', (event, id) => {
     const { numero, compteur } = genererNumero('proformas', 'proforma_compteur', annee);
 
     const result = db.prepare(`
-      INSERT INTO proformas (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut, avec_cachet, tva_applicable)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO proformas (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut, avec_cachet, tva_applicable, tva_taux)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       numero,
-      new Date().toISOString().split('T')[0],
+      aujourdhui(),
       ao.client_id,
       ao.objet,
       ao.total_materiel_ht || 0,
@@ -2105,7 +2342,8 @@ ipcMain.handle('appelsOffres:transformerEnProforma', (event, id) => {
       ao.total_ttc,
       'en_attente',
       ao.avec_cachet || 0,
-      ao.tva_applicable === 0 ? 0 : 1
+      ao.tva_applicable === 0 ? 0 : 1,
+      tauxTvaDocument(ao)
     );
     const proformaId = result.lastInsertRowid;
 
@@ -2165,7 +2403,7 @@ ipcMain.handle('bordereaux:create', (event, data) => {
       VALUES (?, ?, ?, NULL)
     `).run(
       numero,
-      b.date || new Date().toISOString().split('T')[0],
+      b.date || aujourdhui(),
       b.client_id
     );
     const bordereauId = result.lastInsertRowid;
@@ -2204,7 +2442,7 @@ ipcMain.handle('bordereaux:update', (event, id, data) => {
       SET date = ?, client_id = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(
-      data.date || new Date().toISOString().split('T')[0],
+      data.date || aujourdhui(),
       data.client_id,
       id
     );
@@ -2261,7 +2499,7 @@ ipcMain.handle('bordereaux:createFromFacture', (event, factureId) => {
     `);
     const result = stmt.run(
       numero,
-      new Date().toISOString().split('T')[0],
+      aujourdhui(),
       facture.client_id,
       fId
     );
@@ -2308,12 +2546,12 @@ ipcMain.handle('bordereaux:createFromProforma', (event, proformaId, createFactur
       assertProformaConvertible(proforma);
       const { numero: factureNumero, compteur: factureCompteur } = genererNumero('factures', 'facture_compteur', new Date().getFullYear());
       const factureStmt = db.prepare(`
-        INSERT INTO factures (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, proforma_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO factures (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, proforma_id, tva_taux)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       const factureInsert = factureStmt.run(
         factureNumero,
-        new Date().toISOString().split('T')[0],
+        aujourdhui(),
         proforma.client_id,
         proforma.objet,
         proforma.total_materiel_ht || 0,
@@ -2322,7 +2560,8 @@ ipcMain.handle('bordereaux:createFromProforma', (event, proformaId, createFactur
         proforma.total_ht,
         proforma.tva,
         proforma.total_ttc,
-        pId
+        pId,
+        tauxTvaDocument(proforma)
       );
       const factureId = factureInsert.lastInsertRowid;
 
@@ -2361,7 +2600,7 @@ ipcMain.handle('bordereaux:createFromProforma', (event, proformaId, createFactur
     const factureLieeId = factureResult ? factureResult.id : (proforma.facture_id || null);
     const bordereauInsert = bordereauStmt.run(
       bordereauNumero,
-      new Date().toISOString().split('T')[0],
+      aujourdhui(),
       proforma.client_id,
       factureLieeId
     );
@@ -2402,11 +2641,13 @@ ipcMain.handle('bordereaux:createFromProforma', (event, proformaId, createFactur
 ipcMain.handle('bordereaux:delete', (event, id) => {
   const bordereau = db.prepare('SELECT facture_id FROM bordereaux WHERE id = ?').get(id);
   const transaction = db.transaction((bordereauId) => {
-    // Détacher le bordereau de sa facture
-    if (bordereau && bordereau.facture_id) {
-      db.prepare('UPDATE factures SET bordereau_id = NULL WHERE id = ?').run(bordereau.facture_id);
-    }
     db.prepare('DELETE FROM bordereaux WHERE id = ?').run(bordereauId);
+    // Une facture peut avoir plusieurs bordereaux : elle reste liée au plus
+    // récent de ceux qui restent, et n'est détachée que s'il n'en reste aucun.
+    if (bordereau && bordereau.facture_id) {
+      const restant = db.prepare('SELECT MAX(id) AS id FROM bordereaux WHERE facture_id = ?').get(bordereau.facture_id);
+      db.prepare('UPDATE factures SET bordereau_id = ? WHERE id = ?').run(restant.id, bordereau.facture_id);
+    }
   });
   transaction(id);
   return { success: true };
@@ -2486,9 +2727,9 @@ function validateBackupDatabase(database, legacy = false) {
   // colonnes que migrateDatabase sait créer, jamais les données de base.
   const migratableColumns = {
     clients: ['tva_applicable'],
-    proformas: ['avec_cachet', 'tva_applicable'],
+    proformas: ['avec_cachet', 'tva_applicable', 'tva_taux'],
     proforma_lignes: ['section_titre', 'description'],
-    factures: ['statut_paiement', 'date_paiement', 'tva_versee', 'date_versement_tva', 'tva_declenchee', 'mode_tva_situations'],
+    factures: ['statut_paiement', 'date_paiement', 'tva_versee', 'date_versement_tva', 'tva_declenchee', 'mode_tva_situations', 'tva_taux'],
     facture_lignes: ['section_titre', 'description'],
     bordereau_lignes: ['section_titre'],
   };
@@ -2566,7 +2807,7 @@ async function restoreDatabase(source) {
 }
 
 ipcMain.handle('database:backup', async () => {
-  const defaultName = `sauvegarde-facturation-${new Date().toISOString().split('T')[0]}.db`;
+  const defaultName = `sauvegarde-facturation-${aujourdhui()}.db`;
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
     title: 'Enregistrer la sauvegarde',
     defaultPath: defaultName,
@@ -2621,8 +2862,7 @@ ipcMain.handle('security:setPassword', (event, { currentPassword, newPassword })
     if (!currentPassword) {
       throw new Error('Veuillez saisir le mot de passe actuel.');
     }
-    const currentHash = hashPassword(currentPassword, s.salt);
-    if (currentHash !== s.hash) {
+    if (!verifierMotDePasse(currentPassword, s)) {
       throw new Error('Le mot de passe actuel est incorrect.');
     }
   }
@@ -2643,8 +2883,7 @@ ipcMain.handle('security:verify', (event, password) => {
   if (!(s.hash && s.salt)) {
     return { success: true }; // pas de mot de passe défini
   }
-  const hash = hashPassword(password, s.salt);
-  if (hash !== s.hash) {
+  if (!verifierMotDePasse(password, s)) {
     throw new Error('Mot de passe incorrect.');
   }
   return { success: true };
@@ -2659,8 +2898,7 @@ ipcMain.handle('security:disable', (event, currentPassword) => {
     if (!currentPassword) {
       throw new Error('Veuillez saisir le mot de passe actuel.');
     }
-    const currentHash = hashPassword(currentPassword, s.salt);
-    if (currentHash !== s.hash) {
+    if (!verifierMotDePasse(currentPassword, s)) {
       throw new Error('Le mot de passe actuel est incorrect.');
     }
   }

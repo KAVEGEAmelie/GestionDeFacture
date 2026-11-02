@@ -21,7 +21,7 @@ import mammoth from 'mammoth';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
-import { inDateRange } from '../utils/dateFilters';
+import { inDateRange, today } from '../utils/dateFilters';
 import { generateRapportPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
@@ -54,7 +54,7 @@ const Rapports = () => {
   const [objetSuggestions, rememberObjet] = useObjetSuggestions(objetsExistants);
 
   const [formData, setFormData] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: today(),
     titre: '',
     client_id: '',
     client_nom: '',
@@ -297,7 +297,7 @@ const Rapports = () => {
   const openModal = () => {
     setEditingRapport(null);
     const fresh = {
-      date: new Date().toISOString().split('T')[0],
+      date: today(),
       titre: '',
       client_id: '',
       client_nom: '',
@@ -333,7 +333,7 @@ const Rapports = () => {
     const full = await window.electronAPI.rapports.getById(rapport.id);
     setEditingRapport(full);
     const loaded = {
-      date: full.date ? full.date.split('T')[0] : new Date().toISOString().split('T')[0],
+      date: full.date ? full.date.split('T')[0] : today(),
       titre: full.titre || '',
       client_id: full.client_id ? String(full.client_id) : '',
       client_nom: full.client_nom || '',
