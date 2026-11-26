@@ -1032,7 +1032,25 @@ export const generateFacturePDF = async (facture, parametres) => {
   return renderFacturePDF(facture, parametres, true);
 };
 
-const renderFacturePDF = async (facture, parametres, compact) => {
+// Facture d'avoir : même présentation que la facture, avec la référence de
+// la facture d'origine et le motif dans l'objet, sans conditions de paiement.
+export const generateAvoirPDF = async (avoir, parametres) => {
+  const dateFacture = avoir.facture_date ? ` du ${formatDateLong(avoir.facture_date)}` : '';
+  const document = {
+    ...avoir,
+    objet: `Avoir sur la facture N° ${avoir.facture_numero || ''}${dateFacture}${avoir.facture_objet ? ` (${avoir.facture_objet})` : ''}. Motif : ${avoir.motif || ''}`,
+  };
+  const options = {
+    titre: "FACTURE D'AVOIR",
+    phraseArrete: 'Arrêté le présent avoir à la somme de :',
+    sansConditions: true,
+  };
+  const normal = await renderFacturePDF(document, parametres, false, options);
+  if (normal) return normal;
+  return renderFacturePDF(document, parametres, true, options);
+};
+
+const renderFacturePDF = async (facture, parametres, compact, options = {}) => {
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
@@ -1042,7 +1060,7 @@ const renderFacturePDF = async (facture, parametres, compact) => {
   const { contentLeft, rightX, headerBottom } = await drawHeader(doc, parametres, { vignette: true });
 
   // Titre
-  let yPos = drawTitle(doc, 'FACTURE', headerBottom + (compact ? 7 : 11));
+  let yPos = drawTitle(doc, options.titre || 'FACTURE', headerBottom + (compact ? 7 : 11));
 
   // N° (centré sous le titre) / Date (décalée à droite) — même disposition que la proforma
   const dateStr = formatDateLong(facture.date);
@@ -1142,7 +1160,7 @@ const renderFacturePDF = async (facture, parametres, compact) => {
   }
 
   drawAmountInWords(doc, contentLeft, yPos, wordsW, wordsH,
-    'Arrêtée la présente facture à la somme de :',
+    options.phraseArrete || 'Arrêtée la présente facture à la somme de :',
     facture.total_ttc, parseFloat(facture.tva) > 0 ? 'TTC' : 'HT');
 
   const totalsBottom = drawTotals(doc, totalsX, yPos, totalsW, {
@@ -1155,7 +1173,9 @@ const renderFacturePDF = async (facture, parametres, compact) => {
   }, tauxTVA, compact);
 
   // Conditions de paiement (gauche, sous la somme en lettres)
-  drawConditionsBox(doc, contentLeft, yPos + wordsH + condGap, wordsW);
+  if (!options.sansConditions) {
+    drawConditionsBox(doc, contentLeft, yPos + wordsH + condGap, wordsW);
+  }
 
   // Signature centrée sous les totaux (colonne de droite, indépendante du bloc gauche)
   drawSignature(doc, totalsX + totalsW / 2, totalsBottom + SIG_GAP, parametres, false, compact);

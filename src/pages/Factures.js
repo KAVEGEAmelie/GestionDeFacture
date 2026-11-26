@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Eye, Trash2, FileCheck, Truck, Printer, Download, CheckCircle, RotateCcw, Edit2, Plus, FolderPlus, AlignLeft, Percent, X } from 'lucide-react';
+import { Eye, Trash2, FileCheck, Truck, Printer, Download, CheckCircle, RotateCcw, Edit2, Plus, FolderPlus, AlignLeft, Percent, X, FileMinus } from 'lucide-react';
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
@@ -48,6 +48,10 @@ const Factures = () => {
   const [nouveauTaux, setNouveauTaux] = useState('');
   const [paymentTarget, setPaymentTarget] = useState(null);
   const [paymentDate, setPaymentDate] = useState(getLocalISODate());
+  // Avoir en préparation : facture d'origine (avec ses lignes) + formulaire
+  const [avoirFacture, setAvoirFacture] = useState(null);
+  const [avoirForm, setAvoirForm] = useState({ type: 'total', date: today(), motif: '', lignes: [] });
+  const [avoirEnCours, setAvoirEnCours] = useState(false);
   const [editForm, setEditForm] = useState({
     date: '',
     objet: '',
@@ -267,6 +271,103 @@ const Factures = () => {
     }
   };
 
+  // —— Avoirs ——
+  const resteACrediter = (facture) => Math.max(0, (facture.total_ttc || 0) - (facture.total_avoirs || 0));
+
+  const openAvoir = async (facture) => {
+    const full = await window.electronAPI.factures.getById(facture.id);
+    if (!full) {
+      toast.error('Facture introuvable. La liste va être actualisée.');
+      loadData();
+      return;
+    }
+    setAvoirFacture({ ...full, total_avoirs: facture.total_avoirs || 0 });
+    setAvoirForm({
+      // Avoir total possible seulement si aucun avoir n'a encore été émis
+      type: (facture.total_avoirs || 0) > 0 ? 'partiel' : 'total',
+      date: today(),
+      motif: '',
+      lignes: (full.lignes || []).map((l) => ({
+        inclus: false,
+        designation: l.designation,
+        description: l.description || '',
+        section_titre: l.section_titre || '',
+        unite: l.unite,
+        quantite: l.quantite,
+        prix_unitaire: l.prix_unitaire,
+      })),
+    });
+  };
+
+  const closeAvoir = () => setAvoirFacture(null);
+
+  const changeAvoirLigne = (index, field, value) => {
+    setAvoirForm((prev) => ({
+      ...prev,
+      lignes: prev.lignes.map((l, i) => (i === index ? { ...l, [field]: value } : l)),
+    }));
+  };
+
+  // Aperçu des montants, avec les mêmes arrondis que le serveur
+  const computeAvoirTotals = () => {
+    if (!avoirFacture) return { total_ht: 0, tva: 0, total_ttc: 0 };
+    if (avoirForm.type === 'total') {
+      return { total_ht: avoirFacture.total_ht, tva: avoirFacture.tva, total_ttc: avoirFacture.total_ttc };
+    }
+    const total_ht = avoirForm.lignes
+      .filter((l) => l.inclus)
+      .reduce((sum, l) => sum + Math.round((parseFloat(l.quantite) || 0) * (parseFloat(l.prix_unitaire) || 0)), 0);
+    const tva = (avoirFacture.tva || 0) > 0 ? Math.round(total_ht * tauxTvaFacture(avoirFacture) / 100) : 0;
+    return { total_ht, tva, total_ttc: total_ht + tva };
+  };
+
+  const handleAvoirSubmit = async (e) => {
+    e.preventDefault();
+    if (avoirEnCours) return;
+    if (!avoirForm.motif.trim()) {
+      toast.error("Indiquez le motif de l'avoir.");
+      return;
+    }
+    const lignes = avoirForm.lignes
+      .filter((l) => l.inclus)
+      .map((l) => ({
+        designation: l.designation,
+        description: l.description,
+        section_titre: l.section_titre,
+        unite: l.unite,
+        quantite: parseFloat(l.quantite) || 0,
+        prix_unitaire: parseFloat(l.prix_unitaire) || 0,
+      }));
+    if (avoirForm.type === 'partiel' && lignes.length === 0) {
+      toast.error("Cochez au moins une ligne à créditer.");
+      return;
+    }
+    const { total_ttc } = computeAvoirTotals();
+    const ok = await confirm({
+      title: avoirForm.type === 'total' ? 'Annuler toute la facture' : 'Créer un avoir partiel',
+      message: `Un avoir de ${formatPrice(total_ttc)} FCFA va être émis sur la facture ${avoirFacture.numero}. Une fois émise, la facture ne pourra plus être modifiée. Continuer ?`,
+      confirmText: "Créer l'avoir",
+      danger: avoirForm.type === 'total',
+    });
+    if (!ok) return;
+    setAvoirEnCours(true);
+    try {
+      const res = await window.electronAPI.avoirs.create(avoirFacture.id, {
+        type: avoirForm.type,
+        date: avoirForm.date,
+        motif: avoirForm.motif,
+        lignes,
+      });
+      toast.success(`Avoir ${res.numero} créé. Vous le retrouvez dans le menu Avoirs.`);
+      closeAvoir();
+      loadData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Erreur lors de la création de l'avoir."));
+    } finally {
+      setAvoirEnCours(false);
+    }
+  };
+
   const handlePrint = async (facture) => {
     const fullFacture = await window.electronAPI.factures.getById(facture.id);
     const doc = await generateFacturePDF(fullFacture, parametres);
@@ -458,6 +559,15 @@ const Factures = () => {
   };
 
   const getPaiementBadge = (facture) => {
+    const avoirs = facture.total_avoirs || 0;
+    if (avoirs > 0 && resteACrediter(facture) <= 0.5) {
+      return <span className="badge badge-danger">Annulée par avoir</span>;
+    }
+    const mentionAvoir = avoirs > 0 && (
+      <div style={{ marginTop: 3, fontSize: 11, color: '#b91c1c' }}>
+        Avoir : - {formatPrice(avoirs)} FCFA
+      </div>
+    );
     if (facture.statut_paiement === 'payee') {
       return (
         <div>
@@ -467,10 +577,16 @@ const Factures = () => {
               Le {formatDate(facture.date_paiement)}
             </div>
           )}
+          {mentionAvoir}
         </div>
       );
     }
-    return <span className="badge badge-warning">Non payée</span>;
+    return (
+      <div>
+        <span className="badge badge-warning">Non payée</span>
+        {mentionAvoir}
+      </div>
+    );
   };
 
   const filteredFactures = factures.filter((f) => {
@@ -681,7 +797,7 @@ const Factures = () => {
                           >
                             <RotateCcw size={16} />
                           </button>
-                        ) : (
+                        ) : resteACrediter(facture) > 0.5 && (
                           <button
                             className="btn-icon"
                             style={{ color: '#10b981' }}
@@ -698,7 +814,7 @@ const Factures = () => {
                         >
                           <Eye size={16} />
                         </button>
-                        {(facture.statut_paiement !== 'payee' || facture.nb_situations > 0) && (
+                        {(facture.statut_paiement !== 'payee' || facture.nb_situations > 0) && !(facture.total_avoirs > 0) && (
                           <button
                             className="btn-icon"
                             style={{ color: '#7c3aed' }}
@@ -708,7 +824,7 @@ const Factures = () => {
                             <Percent size={16} />
                           </button>
                         )}
-                        {facture.statut_paiement !== 'payee' && (
+                        {facture.statut_paiement !== 'payee' && !(facture.total_avoirs > 0) && (
                           <button
                             className="btn-icon"
                             style={{ color: '#f59e0b' }}
@@ -716,6 +832,16 @@ const Factures = () => {
                             title="Modifier"
                           >
                             <Edit2 size={16} />
+                          </button>
+                        )}
+                        {!(facture.nb_situations > 0) && resteACrediter(facture) > 0.5 && (
+                          <button
+                            className="btn-icon"
+                            style={{ color: '#b91c1c' }}
+                            onClick={() => openAvoir(facture)}
+                            title="Créer un avoir (annuler tout ou partie de la facture)"
+                          >
+                            <FileMinus size={16} />
                           </button>
                         )}
                         <button
@@ -1003,6 +1129,143 @@ const Factures = () => {
             </div>
           </form>
         )}
+      </Modal>
+
+      {/* Modal Création d'un avoir */}
+      <Modal
+        isOpen={!!avoirFacture}
+        onClose={closeAvoir}
+        title={avoirFacture ? `Créer un avoir sur la facture ${avoirFacture.numero}` : 'Créer un avoir'}
+        size="xlarge"
+      >
+        {avoirFacture && (() => {
+          const t = computeAvoirTotals();
+          const reste = resteACrediter(avoirFacture);
+          const depasse = t.total_ttc > reste + 0.5;
+          return (
+            <form onSubmit={handleAvoirSubmit} className="form">
+              <p style={{ marginTop: 0, color: '#475569' }}>
+                Client : <strong>{avoirFacture.client_nom}</strong> — Facture de {formatPrice(avoirFacture.total_ttc)} FCFA
+                {avoirFacture.total_avoirs > 0 && <> — déjà créditée de {formatPrice(avoirFacture.total_avoirs)} FCFA</>}
+                {' '}— reste à créditer : <strong>{formatPrice(reste)} FCFA</strong>
+              </p>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Type d'avoir</label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 'normal' }}>
+                    <input
+                      type="radio"
+                      checked={avoirForm.type === 'total'}
+                      disabled={avoirFacture.total_avoirs > 0}
+                      onChange={() => setAvoirForm((prev) => ({ ...prev, type: 'total' }))}
+                    />
+                    Annuler toute la facture
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 'normal' }}>
+                    <input
+                      type="radio"
+                      checked={avoirForm.type === 'partiel'}
+                      onChange={() => setAvoirForm((prev) => ({ ...prev, type: 'partiel' }))}
+                    />
+                    Créditer une partie (lignes, quantités ou prix)
+                  </label>
+                </div>
+                <div className="form-group">
+                  <label>Date de l'avoir *</label>
+                  <input
+                    type="date"
+                    value={avoirForm.date}
+                    min={String(avoirFacture.date || '').slice(0, 10)}
+                    onChange={(e) => setAvoirForm((prev) => ({ ...prev, date: e.target.value }))}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label>Motif *</label>
+                <input
+                  type="text"
+                  value={avoirForm.motif}
+                  onChange={(e) => setAvoirForm((prev) => ({ ...prev, motif: e.target.value }))}
+                  placeholder="Ex : erreur de quantité, retour de matériel, remise accordée…"
+                  required
+                />
+              </div>
+
+              {avoirForm.type === 'partiel' && (
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 40 }}></th>
+                      <th>Désignation</th>
+                      <th style={{ width: 110 }}>Quantité</th>
+                      <th style={{ width: 150 }}>Prix unit. HT</th>
+                      <th style={{ width: 140 }}>Montant HT</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {avoirForm.lignes.map((l, i) => (
+                      <tr key={i} style={{ opacity: l.inclus ? 1 : 0.55 }}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={l.inclus}
+                            onChange={(e) => changeAvoirLigne(i, 'inclus', e.target.checked)}
+                            aria-label={`Créditer ${l.designation}`}
+                          />
+                        </td>
+                        <td>{l.designation}</td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={l.quantite}
+                            disabled={!l.inclus}
+                            onChange={(e) => changeAvoirLigne(i, 'quantite', e.target.value)}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={l.prix_unitaire}
+                            disabled={!l.inclus}
+                            onChange={(e) => changeAvoirLigne(i, 'prix_unitaire', e.target.value)}
+                          />
+                        </td>
+                        <td>{l.inclus ? formatPrice(Math.round((parseFloat(l.quantite) || 0) * (parseFloat(l.prix_unitaire) || 0))) : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              <div style={{ marginTop: '1rem', textAlign: 'right', lineHeight: 1.8 }}>
+                <div>Total HT de l'avoir : <strong>{formatPrice(t.total_ht)} FCFA</strong></div>
+                {t.tva > 0 && <div>TVA : <strong>{formatPrice(t.tva)} FCFA</strong></div>}
+                <div style={{ fontSize: '1.1rem' }}>Total TTC de l'avoir : <strong>{formatPrice(t.total_ttc)} FCFA</strong></div>
+                {depasse && (
+                  <div style={{ color: '#b91c1c' }}>
+                    Ce montant dépasse le reste à créditer ({formatPrice(reste)} FCFA).
+                  </div>
+                )}
+              </div>
+
+              <div className="form-actions">
+                <button type="button" className="btn btn-secondary" onClick={closeAvoir}>
+                  Annuler
+                </button>
+                <button type="submit" className="btn btn-primary" disabled={avoirEnCours || depasse || t.total_ttc <= 0}>
+                  Créer l'avoir
+                </button>
+              </div>
+            </form>
+          );
+        })()}
       </Modal>
 
       {/* Modal Conversion Proforma */}

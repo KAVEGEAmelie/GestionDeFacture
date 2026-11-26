@@ -44,6 +44,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     markUnpaid: (id) => ipcRenderer.invoke('factures:markUnpaid', id),
     delete: (id) => ipcRenderer.invoke('factures:delete', id)
   },
+  // AVOIRS (annulation totale ou partielle d'une facture)
+  avoirs: {
+    getAll: () => ipcRenderer.invoke('avoirs:getAll'),
+    getById: (id) => ipcRenderer.invoke('avoirs:getById', id),
+    create: (factureId, data) => ipcRenderer.invoke('avoirs:create', factureId, data),
+    delete: (id) => ipcRenderer.invoke('avoirs:delete', id)
+  },
   factureSituations: {
     getByFacture: (factureId) => ipcRenderer.invoke('factureSituations:getByFacture', factureId),
     create: (factureId, taux) => ipcRenderer.invoke('factureSituations:create', factureId, taux),

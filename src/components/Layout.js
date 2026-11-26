@@ -6,6 +6,7 @@ import {
   Package, 
   FileText, 
   Receipt, 
+  FileMinus,
   Truck,
   Landmark,
   ClipboardList,
@@ -65,6 +66,7 @@ const Layout = () => {
     // { path: '/appels-offres', icon: Megaphone, label: "Appels d'offre" }, // ← désactivé temporairement
     { path: '/proformas', icon: FileText, label: 'Proformas' },
     { path: '/factures', icon: Receipt, label: 'Factures' },
+    { path: '/avoirs', icon: FileMinus, label: 'Avoirs' },
     { path: '/bordereaux', icon: Truck, label: 'Bordereaux' },
     { path: '/tva', icon: Landmark, label: 'TVA / OTR' },
     { path: '/rapports', icon: ClipboardList, label: 'Rapports' },

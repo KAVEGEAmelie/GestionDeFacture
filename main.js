@@ -424,6 +424,44 @@ function migrateDatabase(db) {
     }
   });
 
+  // Avoirs (factures d'avoir) : annulation totale ou partielle d'une facture
+  // émise, avec leur propre numérotation. Les montants sont positifs ; ils
+  // viennent en déduction de la facture d'origine.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS avoirs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      numero TEXT UNIQUE NOT NULL,
+      date DATE NOT NULL,
+      facture_id INTEGER NOT NULL,
+      client_id INTEGER NOT NULL,
+      type TEXT NOT NULL DEFAULT 'partiel',
+      motif TEXT NOT NULL,
+      total_materiel_ht REAL DEFAULT 0,
+      prestations REAL DEFAULT 0,
+      remise REAL DEFAULT 0,
+      total_ht REAL NOT NULL,
+      tva REAL NOT NULL,
+      total_ttc REAL NOT NULL,
+      tva_taux REAL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (facture_id) REFERENCES factures(id),
+      FOREIGN KEY (client_id) REFERENCES clients(id)
+    );
+    CREATE TABLE IF NOT EXISTS avoir_lignes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      avoir_id INTEGER NOT NULL,
+      designation TEXT NOT NULL,
+      unite TEXT NOT NULL,
+      quantite REAL NOT NULL,
+      prix_unitaire REAL NOT NULL,
+      montant REAL NOT NULL,
+      ordre INTEGER DEFAULT 0,
+      section_titre TEXT DEFAULT '',
+      description TEXT DEFAULT '',
+      FOREIGN KEY (avoir_id) REFERENCES avoirs(id) ON DELETE CASCADE
+    );
+  `);
+
   // Migration : choix d'ajouter le cachet + signature sur la proforma.
   const proformaCols = db.prepare("PRAGMA table_info(proformas)").all().map((c) => c.name);
   if (!proformaCols.includes('avec_cachet')) {
@@ -589,6 +627,7 @@ function migrateDatabase(db) {
   ensureParam.run('signataire_nom', 'Koffi KAVEGE');
   // Compteur des rapports techniques (créé pour les bases existantes aussi)
   ensureParam.run('rapport_compteur', '0');
+  ensureParam.run('avoir_compteur', '0');
 
   // Valeurs de sécurité par défaut (mot de passe désactivé au départ)
   const checkSecu = db.prepare('SELECT COUNT(*) as count FROM securite').get();
@@ -1022,6 +1061,16 @@ function assertFactureSansEngagementTva(factureId) {
   }
 }
 
+function totalAvoirs(factureId) {
+  return db.prepare('SELECT COALESCE(SUM(total_ttc), 0) AS total FROM avoirs WHERE facture_id = ?').get(factureId).total;
+}
+
+function assertFactureSansAvoir(factureId, action) {
+  if (db.prepare('SELECT 1 FROM avoirs WHERE facture_id = ?').get(factureId)) {
+    throw new Error(`Impossible ${action} : des avoirs ont été émis sur cette facture.`);
+  }
+}
+
 function calculerMontantSituation(facture, taux, precedentes) {
   const totalTtc = Math.round(facture.total_ttc || 0);
   const totalTva = Math.round(facture.tva || 0);
@@ -1163,6 +1212,113 @@ ipcMain.handle('produits:delete', (event, id) => {
   }
   const stmt = db.prepare('DELETE FROM produits WHERE id = ?');
   stmt.run(id);
+  return { success: true };
+});
+
+// ===== AVOIRS =====
+
+ipcMain.handle('avoirs:getAll', () => {
+  return db.prepare(`
+    SELECT a.*, c.nom AS client_nom, f.numero AS facture_numero
+    FROM avoirs a
+    LEFT JOIN clients c ON a.client_id = c.id
+    LEFT JOIN factures f ON a.facture_id = f.id
+    ORDER BY a.date DESC, a.id DESC
+  `).all();
+});
+
+ipcMain.handle('avoirs:getById', (event, id) => {
+  const avoir = db.prepare(`
+    SELECT a.*, c.nom AS client_nom, c.adresse AS client_adresse,
+           c.telephone AS client_telephone, c.email AS client_email, c.nif AS client_nif,
+           f.numero AS facture_numero, f.date AS facture_date, f.objet AS facture_objet,
+           f.total_ttc AS facture_total_ttc
+    FROM avoirs a
+    LEFT JOIN clients c ON a.client_id = c.id
+    LEFT JOIN factures f ON a.facture_id = f.id
+    WHERE a.id = ?
+  `).get(id);
+  if (avoir) {
+    avoir.lignes = db.prepare('SELECT * FROM avoir_lignes WHERE avoir_id = ? ORDER BY ordre').all(id);
+  }
+  return avoir;
+});
+
+// data = { type: 'total' | 'partiel', date, motif, lignes }
+// Avoir total : reprend toutes les lignes et tous les montants de la facture.
+// Avoir partiel : lignes choisies (quantités et prix modifiables), sans
+// prestations ni remise ; le cumul des avoirs ne dépasse jamais la facture.
+ipcMain.handle('avoirs:create', (event, factureId, data = {}) => {
+  const transaction = db.transaction(() => {
+    const facture = db.prepare('SELECT * FROM factures WHERE id = ?').get(factureId);
+    if (!facture) throw new Error('Facture introuvable.');
+    const motif = String(data.motif || '').trim();
+    if (!motif) throw new Error("Indiquez le motif de l'avoir.");
+    const date = String(data.date || aujourdhui());
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Date de l'avoir invalide.");
+    if (date < String(facture.date).slice(0, 10)) {
+      throw new Error("L'avoir ne peut pas être daté d'avant la facture.");
+    }
+    if (db.prepare('SELECT 1 FROM facture_situations WHERE facture_id = ?').get(factureId)) {
+      throw new Error("Cette facture est réglée par situations : les avoirs ne sont pas encore pris en charge dans ce cas.");
+    }
+
+    const deja = totalAvoirs(factureId);
+    const restant = Math.max(0, facture.total_ttc - deja);
+    let montants;
+    let lignes;
+    if (data.type === 'total') {
+      if (deja > 0) {
+        throw new Error('Des avoirs partiels existent déjà : créez un avoir partiel pour le montant restant.');
+      }
+      montants = facture;
+      lignes = db.prepare('SELECT * FROM facture_lignes WHERE facture_id = ? ORDER BY ordre').all(factureId);
+    } else {
+      const proforma = facture.proforma_id
+        ? db.prepare('SELECT tva_applicable FROM proformas WHERE id = ?').get(facture.proforma_id)
+        : null;
+      const tvaApplicable = proforma ? proforma.tva_applicable !== 0 : facture.tva > 0;
+      const calcul = calculerDocument(
+        { lignes: Array.isArray(data.lignes) ? data.lignes : [], prestations: 0, remise: 0 },
+        tauxTvaDocument(facture),
+        tvaApplicable
+      );
+      lignes = calcul.lignes.filter((ligne) => ligne.montant > 0);
+      if (lignes.length === 0) throw new Error("Ajoutez au moins une ligne avec un montant à l'avoir.");
+      montants = { ...calcul, total_materiel_ht: lignes.reduce((somme, ligne) => somme + ligne.montant, 0) };
+      if (montants.total_ttc > restant + 0.5) {
+        throw new Error(`Montant trop élevé : il ne reste que ${Math.round(restant)} FCFA à créditer sur cette facture.`);
+      }
+    }
+
+    const { numero, compteur } = genererNumero('avoirs', 'avoir_compteur', anneeDe(date), 'AV-');
+    const result = db.prepare(`
+      INSERT INTO avoirs (numero, date, facture_id, client_id, type, motif, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, tva_taux)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      numero, date, factureId, facture.client_id, data.type === 'total' ? 'total' : 'partiel', motif,
+      montants.total_materiel_ht || 0, montants.prestations || 0, montants.remise || 0,
+      montants.total_ht, montants.tva, montants.total_ttc, tauxTvaDocument(facture)
+    );
+    const avoirId = result.lastInsertRowid;
+    const stmtLigne = db.prepare(`
+      INSERT INTO avoir_lignes (avoir_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre, description)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    lignes.forEach((ligne, index) => {
+      stmtLigne.run(
+        avoirId, ligne.designation, ligne.unite || 'Unité', ligne.quantite, ligne.prix_unitaire, ligne.montant,
+        index, ligne.section_titre || '', ligne.description || ''
+      );
+    });
+    db.prepare('UPDATE parametres SET valeur = ? WHERE cle = ?').run(compteur.toString(), 'avoir_compteur');
+    return { id: avoirId, numero, total_ttc: montants.total_ttc };
+  });
+  return transaction.immediate();
+});
+
+ipcMain.handle('avoirs:delete', (event, id) => {
+  db.prepare('DELETE FROM avoirs WHERE id = ?').run(id);
   return { success: true };
 });
 
@@ -1635,7 +1791,8 @@ ipcMain.handle('proformas:delete', (event, id) => {
 ipcMain.handle('factures:getAll', () => {
   const factures = db.prepare(`
     SELECT f.*, c.nom as client_nom,
-      (SELECT COUNT(*) FROM facture_situations s WHERE s.facture_id = f.id) AS nb_situations
+      (SELECT COUNT(*) FROM facture_situations s WHERE s.facture_id = f.id) AS nb_situations,
+      (SELECT COALESCE(SUM(a.total_ttc), 0) FROM avoirs a WHERE a.facture_id = f.id) AS total_avoirs
     FROM factures f
     LEFT JOIN clients c ON f.client_id = c.id
     ORDER BY f.created_at DESC
@@ -1752,6 +1909,7 @@ ipcMain.handle('factures:update', (event, id, data) => {
       throw new Error("Impossible de modifier une facture payée. Annulez d'abord son paiement.");
     }
     assertFactureSansEngagementTva(id);
+    assertFactureSansAvoir(id, 'de modifier cette facture');
     const proforma = existing.proforma_id
       ? db.prepare('SELECT tva_applicable FROM proformas WHERE id = ?').get(existing.proforma_id)
       : null;
@@ -1811,6 +1969,7 @@ ipcMain.handle('factures:delete', (event, id) => {
     const facture = db.prepare('SELECT bordereau_id, proforma_id FROM factures WHERE id = ?').get(factureId);
     if (!facture) throw new Error('Facture introuvable.');
     assertFactureSansEngagementTva(factureId);
+    assertFactureSansAvoir(factureId, 'de supprimer cette facture');
     if (facture.bordereau_id || db.prepare('SELECT 1 FROM bordereaux WHERE facture_id = ?').get(factureId)) {
       throw new Error('Impossible de supprimer cette facture : un bordereau de livraison y est rattaché. Supprimez d\'abord le bordereau.');
     }
@@ -1845,6 +2004,10 @@ ipcMain.handle('factures:markPaid', (event, id, date) => {
   const situations = db.prepare('SELECT COUNT(*) AS nb FROM facture_situations WHERE facture_id = ?').get(id);
   if (situations.nb > 0) {
     throw new Error('Cette facture est réglée par situations. Validez ses situations séparément.');
+  }
+  const montant = db.prepare('SELECT total_ttc FROM factures WHERE id = ?').get(id).total_ttc;
+  if (totalAvoirs(id) >= montant - 0.5) {
+    throw new Error('Cette facture est entièrement annulée par avoir : il ne reste rien à payer.');
   }
   const datePaiement = normalizePaymentDate(date);
   db.prepare(
@@ -1885,6 +2048,8 @@ ipcMain.handle('factureSituations:create', (event, factureId, taux, modeTva) => 
   if (modeTva !== undefined && !['premiere', 'prorata'].includes(modeTva)) {
     throw new Error('Méthode de calcul de la TVA invalide.');
   }
+
+  assertFactureSansAvoir(factureId, 'de facturer par situations');
 
   const transaction = db.transaction(() => {
     const dejaEmis = db.prepare(
@@ -2048,8 +2213,21 @@ ipcMain.handle('tva:getStats', () => {
     ).all(v.id),
   }));
 
+  // Avoirs avec TVA : à déduire des prochains versements (non intégrés
+  // automatiquement aux lots OTR, à reporter avec le comptable)
+  const avoirs = db.prepare(`
+    SELECT a.id, a.numero, a.date, a.tva, ROUND(a.tva / 2.0) AS tva_a_deduire, a.total_ttc,
+      f.numero AS facture_numero, c.nom AS client_nom
+    FROM avoirs a
+    LEFT JOIN factures f ON f.id = a.facture_id
+    LEFT JOIN clients c ON c.id = a.client_id
+    WHERE a.tva > 0
+    ORDER BY a.date DESC, a.id DESC
+  `).all();
+
   return {
-    tvaNonVersee: nonVersee.total,
+    avoirs,
+    tvaAvoirs: avoirs.reduce((somme, a) => somme + a.tva, 0),
     tvaAVerser: nonVersee.total / 2,
     nbNonVersee: nonVersee.count,
     tvaVersee: versee.total,
@@ -2682,9 +2860,15 @@ ipcMain.handle('stats:getCounts', () => {
 ipcMain.handle('stats:getDashboard', () => {
   const annee = new Date().getFullYear();
 
-  const caTotal = db.prepare('SELECT COALESCE(SUM(total_ttc), 0) as total FROM factures').get().total;
+  // Chiffre d'affaires net : factures moins avoirs (à la date de l'avoir)
+  const mouvements = `(
+    SELECT date, client_id, total_ttc AS montant FROM factures
+    UNION ALL
+    SELECT date, client_id, -total_ttc AS montant FROM avoirs
+  )`;
+  const caTotal = db.prepare(`SELECT COALESCE(SUM(montant), 0) as total FROM ${mouvements}`).get().total;
   const caAnnee = db.prepare(
-    "SELECT COALESCE(SUM(total_ttc), 0) as total FROM factures WHERE strftime('%Y', date) = ?"
+    `SELECT COALESCE(SUM(montant), 0) as total FROM ${mouvements} WHERE strftime('%Y', date) = ?`
   ).get(String(annee)).total;
   const proformasEnAttente = db.prepare(
     "SELECT COUNT(*) as count FROM proformas WHERE statut = 'en_attente'"
@@ -2692,7 +2876,7 @@ ipcMain.handle('stats:getDashboard', () => {
 
   // Chiffre d'affaires par mois pour l'année courante
   const rows = db.prepare(
-    "SELECT strftime('%m', date) as mois, COALESCE(SUM(total_ttc), 0) as total FROM factures WHERE strftime('%Y', date) = ? GROUP BY mois"
+    `SELECT strftime('%m', date) as mois, COALESCE(SUM(montant), 0) as total FROM ${mouvements} WHERE strftime('%Y', date) = ? GROUP BY mois`
   ).all(String(annee));
   const caParMois = Array(12).fill(0);
   rows.forEach((r) => {
@@ -2702,10 +2886,10 @@ ipcMain.handle('stats:getDashboard', () => {
 
   // Top 5 clients par chiffre d'affaires
   const topClients = db.prepare(`
-    SELECT c.nom as nom, COALESCE(SUM(f.total_ttc), 0) as total
-    FROM factures f
-    LEFT JOIN clients c ON f.client_id = c.id
-    GROUP BY f.client_id
+    SELECT c.nom as nom, COALESCE(SUM(m.montant), 0) as total
+    FROM ${mouvements} m
+    LEFT JOIN clients c ON m.client_id = c.id
+    GROUP BY m.client_id
     ORDER BY total DESC
     LIMIT 5
   `).all();

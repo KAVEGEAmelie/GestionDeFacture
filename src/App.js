@@ -7,6 +7,7 @@ import Produits from './pages/Produits';
 // import AppelsOffres from './pages/AppelsOffres'; // ← désactivé temporairement
 import Proformas from './pages/Proformas';
 import Factures from './pages/Factures';
+import Avoirs from './pages/Avoirs';
 import Bordereaux from './pages/Bordereaux';
 import Tva from './pages/Tva';
 import Rapports from './pages/Rapports';
@@ -63,6 +64,7 @@ function App() {
                 {/* <Route path="appels-offres" element={<AppelsOffres />} /> */} {/* ← désactivé temporairement */}
                 <Route path="proformas" element={<Proformas />} />
                 <Route path="factures" element={<Factures />} />
+                <Route path="avoirs" element={<Avoirs />} />
                 <Route path="bordereaux" element={<Bordereaux />} />
                 <Route path="tva" element={<Tva />} />
                 <Route path="rapports" element={<Rapports />} />

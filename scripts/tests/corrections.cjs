@@ -105,6 +105,44 @@ module.exports = async ({ test, h, assert, paidInvoice, count }) => {
     assert.equal(lue.services, undefined); assert.equal(lue.client_adresse, 'Maternité');
   });
 
+  await test('Avoir total : reprend la facture et la verrouille', a => {
+    const inv = h.facture(a, h.fixture(a));
+    const av = a.call('avoirs:create', inv.id, { type: 'total', date: '2026-10-20', motif: 'Erreur de client' });
+    assert.equal(av.numero, 'AV-2026/00001-ITS');
+    const full = a.call('avoirs:getById', av.id);
+    assert.equal(full.total_ttc, 129800); assert.equal(full.prestations, 10000); assert.equal(full.lignes.length, 1);
+    assert.equal(full.facture_numero, inv.numero); assert.equal(full.tva_taux, 18);
+    assert.equal(a.call('factures:getAll')[0].total_avoirs, 129800);
+    assert.throws(() => a.call('avoirs:create', inv.id, { type: 'total', motif: 'Encore' }), /partiel/);
+    assert.throws(() => a.call('avoirs:create', inv.id, { type: 'partiel', motif: 'Encore', lignes: [ligne(1000)] }), /reste/);
+    const facture = a.call('factures:getById', inv.id);
+    assert.throws(() => a.call('factures:update', inv.id, { ...facture, objet: 'X' }), /avoirs/);
+    assert.throws(() => a.call('factures:delete', inv.id), /avoirs/);
+    assert.throws(() => a.call('factures:markPaid', inv.id, '2026-10-21'), /annulée par avoir/);
+    assert.throws(() => a.call('factureSituations:create', inv.id, 50), /avoirs/);
+    assert.equal(a.call('stats:getDashboard').caTotal, 0);
+    a.call('avoirs:delete', av.id);
+    a.call('factures:delete', inv.id);
+  });
+
+  await test('Avoir partiel : montants recalculés et plafonnés au reste de la facture', a => {
+    const inv = h.facture(a, h.fixture(a));
+    const av = a.call('avoirs:create', inv.id, { type: 'partiel', date: '2026-10-20', motif: 'Remise accordée', lignes: [ligne(50000), ligne(0)] });
+    const full = a.call('avoirs:getById', av.id);
+    assert.equal(full.total_ht, 50000); assert.equal(full.tva, 9000); assert.equal(full.total_ttc, 59000); assert.equal(full.lignes.length, 1);
+    assert.throws(() => a.call('avoirs:create', inv.id, { type: 'partiel', motif: 'Trop', lignes: [ligne(61000)] }), /reste que 70800/);
+    assert.equal(a.call('stats:getDashboard').caTotal, 129800 - 59000);
+    assert.equal(a.call('tva:getStats').tvaAvoirs, 9000);
+    a.call('factures:markPaid', inv.id, '2026-10-21');
+  });
+
+  await test('Avoir : motif obligatoire et date postérieure à la facture', a => {
+    const inv = h.facture(a, h.fixture(a));
+    assert.throws(() => a.call('avoirs:create', inv.id, { type: 'total', date: '2026-10-20', motif: ' ' }), /motif/);
+    assert.throws(() => a.call('avoirs:create', inv.id, { type: 'total', date: '2026-10-01', motif: 'Erreur' }), /avant la facture/);
+    assert.equal(count(a, 'avoirs'), 0);
+  });
+
   await test('Mot de passe : blocage temporaire après 5 échecs', a => {
     a.call('security:setPassword', { newPassword: 'abcd1234' });
     for (let i = 0; i < 5; i += 1) assert.throws(() => a.call('security:verify', 'faux'), /incorrect/);

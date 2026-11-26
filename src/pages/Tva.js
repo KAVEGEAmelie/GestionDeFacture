@@ -524,6 +524,42 @@ const Tva = () => {
         </div>
       </div>
 
+      {/* Avoirs : TVA à déduire, signalée sans modifier les lots OTR */}
+      {(stats.avoirs || []).length > 0 && (
+        <div className="content-card" style={{ borderLeft: '4px solid #b91c1c' }}>
+          <h3 style={{ marginTop: 0 }}>Avoirs émis : TVA à déduire</h3>
+          <p style={{ color: '#475569', marginTop: 0 }}>
+            {stats.avoirs.length} avoir(s) contiennent {formatFCFA(stats.tvaAvoirs)} de TVA, soit {formatFCFA(Math.round(stats.tvaAvoirs / 2))} sur
+            la part de 50 %. Ces montants ne sont pas retirés automatiquement des versements ci-dessous :
+            déduisez-les de votre prochaine déclaration, avec votre comptable.
+          </p>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Avoir</th>
+                <th>Date</th>
+                <th>Facture</th>
+                <th>Client</th>
+                <th>TVA de l'avoir</th>
+                <th>Part 50 %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.avoirs.map((a) => (
+                <tr key={a.id}>
+                  <td className="font-semibold">{a.numero}</td>
+                  <td>{new Date(a.date).toLocaleDateString('fr-FR')}</td>
+                  <td>{a.facture_numero}</td>
+                  <td>{a.client_nom}</td>
+                  <td>{formatFCFA(a.tva)}</td>
+                  <td>{formatFCFA(a.tva_a_deduire)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {/* Onglets */}
       <div className="content-card">
         <FilterBar
