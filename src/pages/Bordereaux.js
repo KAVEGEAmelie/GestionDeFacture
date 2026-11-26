@@ -4,7 +4,7 @@ import { Eye, Trash2, Printer, Download, Plus, X, FileText, Edit2 } from 'lucide
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
-import { inDateRange, today } from '../utils/dateFilters';
+import { inDateRange, today, anneeAnterieure } from '../utils/dateFilters';
 import { generateBordereauPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
@@ -118,6 +118,16 @@ const Bordereaux = () => {
     if (lignes.length === 0) {
       toast.error('Ajoutez au moins une ligne avec une désignation.');
       return;
+    }
+    const annee = !editingBordereau && anneeAnterieure(createForm.date);
+    if (annee) {
+      const ok = await confirm({
+        title: `Bordereau daté de ${annee}`,
+        message: `Ce bordereau est daté de ${annee} : son numéro commencera par ${annee}/. Vérifiez la date avant de continuer.`,
+        confirmText: 'Créer le bordereau',
+        danger: false,
+      });
+      if (!ok) return;
     }
     try {
       if (editingBordereau) {

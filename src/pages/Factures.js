@@ -3,7 +3,7 @@ import { Eye, Trash2, FileCheck, Truck, Printer, Download, CheckCircle, RotateCc
 import Modal from '../components/modals/Modal';
 import FilterBar from '../components/Filters/FilterBar';
 import PeriodFilter from '../components/Filters/PeriodFilter';
-import { inDateRange, inNumberRange, today } from '../utils/dateFilters';
+import { inDateRange, inNumberRange, today, anneeAnterieure } from '../utils/dateFilters';
 import { generateFacturePDF, generateFactureSituationPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
@@ -75,6 +75,16 @@ const Factures = () => {
     if (!convertDate) {
       toast.error('Veuillez choisir la date de la facture.');
       return;
+    }
+    const annee = anneeAnterieure(convertDate);
+    if (annee) {
+      const ok = await confirm({
+        title: `Facture datée de ${annee}`,
+        message: `Cette facture est datée de ${annee} : son numéro commencera par ${annee}/ et elle se rattache à l'exercice ${annee}. Vérifiez la date avant de continuer.`,
+        confirmText: 'Créer la facture',
+        danger: false,
+      });
+      if (!ok) return;
     }
     try {
       await window.electronAPI.factures.createFromProforma(proformaId, convertDate);

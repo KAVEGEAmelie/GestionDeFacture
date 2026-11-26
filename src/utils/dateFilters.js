@@ -11,6 +11,16 @@ export const toISO = (d) => {
 // Date du jour 'YYYY-MM-DD' en heure locale (toISOString() donne la date UTC)
 export const today = () => toISO(new Date());
 
+// Année d'une date 'YYYY-MM-DD' si elle est antérieure à l'année en cours,
+// sinon null. Sert à avertir avant de créer un document daté d'un exercice
+// passé (son numéro portera cette année-là).
+export const anneeAnterieure = (dateStr) => {
+  const m = String(dateStr || '').match(/^(\d{4})-/);
+  if (!m) return null;
+  const annee = Number(m[1]);
+  return annee < new Date().getFullYear() ? annee : null;
+};
+
 // Retourne une plage de dates { from, to } pour un raccourci de période donné.
 export const getPresetRange = (preset) => {
   const now = new Date();

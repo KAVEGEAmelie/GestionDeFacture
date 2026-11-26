@@ -935,6 +935,14 @@ function aujourdhui() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+// Année d'une date AAAA-MM-JJ, lue dans le texte : new Date('2026-01-01')
+// est minuit UTC, ce qui donne 2025 sur un PC à l'ouest de Greenwich.
+// Sans date valide, année en cours.
+function anneeDe(date) {
+  const m = String(date || '').match(/^(\d{4})-\d{2}-\d{2}/);
+  return m ? Number(m[1]) : new Date().getFullYear();
+}
+
 // Taux de TVA des paramètres (0 est un taux valide).
 function lireTauxTva() {
   const row = db.prepare("SELECT valeur FROM parametres WHERE cle = 'tva_taux'").get();
@@ -1376,7 +1384,7 @@ ipcMain.handle('rapports:getById', (event, id) => {
 });
 
 ipcMain.handle('rapports:create', (event, data) => {
-  const annee = new Date(data.date || Date.now()).getFullYear();
+  const annee = anneeDe(data.date);
   const { numero, compteur } = genererNumero('rapports', 'rapport_compteur', annee);
 
   // Si un client est lié, on récupère son nom pour l'historique (dénormalisé).
@@ -1496,7 +1504,7 @@ ipcMain.handle('proformas:create', (event, proforma) => {
   const transaction = db.transaction((data) => {
     // Générer le numéro (année basée sur la date du document),
     // en sautant les numéros déjà utilisés.
-    const annee = new Date(data.date).getFullYear() || new Date().getFullYear();
+    const annee = anneeDe(data.date);
     const calcul = calculerDocument(data, lireTauxTva(), data.tva_applicable !== false);
     const { numero, compteur } = genererNumero('proformas', 'proforma_compteur', annee);
 
@@ -1664,11 +1672,13 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId, dateFacture) =
     assertProformaConvertible(proforma);
     const lignes = db.prepare('SELECT * FROM proforma_lignes WHERE proforma_id = ?').all(pId);
     
-    // Générer le numéro de facture (année courante), en sautant les numéros déjà utilisés.
-    const { numero, compteur } = genererNumero('factures', 'facture_compteur', new Date().getFullYear());
-    
     // Date de la facture : celle choisie par l'utilisateur, sinon aujourd'hui.
     const dateValue = dateFacture || aujourdhui();
+
+    // Numéro préfixé par l'année de la date de la facture (une facture datée
+    // de 2025 et saisie en 2026 se rattache à l'exercice 2025), en sautant
+    // les numéros déjà utilisés.
+    const { numero, compteur } = genererNumero('factures', 'facture_compteur', anneeDe(dateValue));
 
     // Créer la facture
     const stmt = db.prepare(`
@@ -2192,7 +2202,7 @@ ipcMain.handle('appelsOffres:getById', (event, id) => {
 
 ipcMain.handle('appelsOffres:create', (event, appelOffre) => {
   const transaction = db.transaction((data) => {
-    const annee = new Date(data.date).getFullYear() || new Date().getFullYear();
+    const annee = anneeDe(data.date);
     const calcul = calculerDocument(data, lireTauxTva(), data.tva_applicable !== false);
     const { numero, compteur } = genererNumero('appels_offres', 'appel_offre_compteur', annee, 'AO-');
 
@@ -2397,13 +2407,14 @@ ipcMain.handle('bordereaux:create', (event, data) => {
       throw new Error('Ajoutez au moins une ligne au bordereau.');
     }
 
-    const { numero, compteur } = genererNumero('bordereaux', 'bordereau_compteur', new Date().getFullYear());
+    const dateBordereau = b.date || aujourdhui();
+    const { numero, compteur } = genererNumero('bordereaux', 'bordereau_compteur', anneeDe(dateBordereau));
     const result = db.prepare(`
       INSERT INTO bordereaux (numero, date, client_id, facture_id)
       VALUES (?, ?, ?, NULL)
     `).run(
       numero,
-      b.date || aujourdhui(),
+      dateBordereau,
       b.client_id
     );
     const bordereauId = result.lastInsertRowid;

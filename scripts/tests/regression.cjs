@@ -58,10 +58,14 @@ async function main() {
   await test('Conversion répétée : refuser une deuxième facture pour la même proforma',a=>{
     const p=h.proforma(a,h.fixture(a)); a.call('factures:createFromProforma',p.id); assert.throws(()=>a.call('factures:createFromProforma',p.id),/déjà|convert|factur/i);
   });
-  await test('Facture antidatée : règle actuelle de numérotation conservée',a=>{
-    const p=h.proforma(a,h.fixture(a),{date:'2025-12-31'}); const inv=a.call('factures:createFromProforma',p.id,'2025-12-31');
-    assert.ok(inv.numero.startsWith(new Date().getFullYear()+'/'),`Numéro obtenu : ${inv.numero}`);
+  await test('Facture antidatée : numéro préfixé par l’année de sa date',a=>{
+    const f=h.fixture(a); const p=h.proforma(a,f,{date:'2025-12-31'}); const inv=a.call('factures:createFromProforma',p.id,'2025-12-31');
+    assert.ok(inv.numero.startsWith('2025/'),`Numéro obtenu : ${inv.numero}`);
     assert.equal(a.call('factures:getById',inv.id).date,'2025-12-31');
+    const suivante=a.call('factures:createFromProforma',h.proforma(a,f).id,'2026-01-05');
+    assert.ok(suivante.numero.startsWith('2026/'),`Numéro obtenu : ${suivante.numero}`); assert.notEqual(suivante.numero.slice(5),inv.numero.slice(5));
+    const b=a.call('bordereaux:create',{date:'2025-12-30',client_id:f.client,lignes:[{designation:'Câble',quantite:2}]});
+    assert.ok(b.numero.startsWith('2025/'),`Numéro obtenu : ${b.numero}`);
   });
   await test('Facture : suppression libère la proforma et supprime les lignes',a=>{
     const inv=h.facture(a,h.fixture(a)); const full=a.call('factures:getById',inv.id); a.call('factures:delete',inv.id);
