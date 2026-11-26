@@ -743,7 +743,8 @@ const Interventions = () => {
             <>
           <section className="form-section">
             <span className="form-section__eyebrow">1. Client / Service</span>
-            <div className="form-row">
+            {/* Alignement en haut : les étiquettes de services ne décalent pas le champ client */}
+            <div className="form-row" style={{ alignItems: 'start' }}>
               <div className="form-group">
                 <label>Client / Structure *</label>
                 <SearchableSelect
@@ -922,7 +923,8 @@ const Interventions = () => {
             <>
           <section className="form-section">
             <span className="form-section__eyebrow">1. Client / Service</span>
-            <div className="form-row">
+            {/* Alignement en haut : les étiquettes de services ne décalent pas le champ client */}
+            <div className="form-row" style={{ alignItems: 'start' }}>
               <div className="form-group">
                 <label>Client / Structure *</label>
                 <SearchableSelect

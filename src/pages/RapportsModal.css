@@ -106,6 +106,12 @@
   align-items: end;
 }
 
+/* Colonnes d'une même ligne : l'espacement vient du gap, pas de la marge
+   prévue pour les champs empilés (sinon la 2e colonne est décalée). */
+.rapports-form .form-row > .form-group + .form-group {
+  margin-top: 0;
+}
+
 /* ============================================================
    CHAMP TITRE EN MODE "HERO"
    ============================================================

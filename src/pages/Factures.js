@@ -1244,7 +1244,19 @@ const Factures = () => {
                 </table>
               )}
 
-              <div style={{ marginTop: '1rem', textAlign: 'right', lineHeight: 1.8 }}>
+              {/* Totaux et boutons fixés en bas : toujours visibles, même avec beaucoup de lignes */}
+              <div
+                style={{
+                  position: 'sticky',
+                  bottom: 0,
+                  zIndex: 1,
+                  background: '#fff',
+                  borderTop: '1px solid #e2e8f0',
+                  marginTop: '1rem',
+                  paddingBottom: '0.5rem',
+                }}
+              >
+              <div style={{ marginTop: '0.75rem', textAlign: 'right', lineHeight: 1.8 }}>
                 <div>Total HT de l'avoir : <strong>{formatPrice(t.total_ht)} FCFA</strong></div>
                 {t.tva > 0 && <div>TVA : <strong>{formatPrice(t.tva)} FCFA</strong></div>}
                 <div style={{ fontSize: '1.1rem' }}>Total TTC de l'avoir : <strong>{formatPrice(t.total_ttc)} FCFA</strong></div>
@@ -1262,6 +1274,7 @@ const Factures = () => {
                 <button type="submit" className="btn btn-primary" disabled={avoirEnCours || depasse || t.total_ttc <= 0}>
                   Créer l'avoir
                 </button>
+              </div>
               </div>
             </form>
           );
