@@ -2,6 +2,9 @@
 // côté serveur, taux de TVA figé par document, modification des factures
 // protégée, liens bordereau ↔ facture, numérotation sans réutilisation,
 // limitation des essais de mot de passe.
+const fs = require('fs');
+const path = require('path');
+
 module.exports = async ({ test, h, assert, paidInvoice, count }) => {
   const ligne = (prix, quantite = 1) => ({ produit_id: null, designation: 'Ligne', unite: 'Unité', quantite, prix_unitaire: prix, montant: prix * quantite });
 
@@ -141,6 +144,36 @@ module.exports = async ({ test, h, assert, paidInvoice, count }) => {
     assert.throws(() => a.call('avoirs:create', inv.id, { type: 'total', date: '2026-10-20', motif: ' ' }), /motif/);
     assert.throws(() => a.call('avoirs:create', inv.id, { type: 'total', date: '2026-10-01', motif: 'Erreur' }), /avant la facture/);
     assert.equal(count(a, 'avoirs'), 0);
+  });
+
+  await test('Second dossier de sauvegarde : choix, état et copie à la fermeture', async a => {
+    h.fixture(a);
+    a.dialogs.open = { canceled: false, filePaths: [a.documents] };
+    await assert.rejects(() => a.call('database:choisirDossierSauvegarde'), /autre dossier/);
+    const usb = path.join(a.dir, 'cle-usb'); fs.mkdirSync(usb);
+    a.dialogs.open = { canceled: false, filePaths: [usb] };
+    assert.equal((await a.call('database:choisirDossierSauvegarde')).dossier, usb);
+    const cible = path.join(usb, 'GestionFacturation-Backups');
+    assert.ok(fs.existsSync(path.join(cible, 'facturation-autosave.db')));
+    const statut = a.call('database:getStatutSauvegarde');
+    assert.equal(statut.secondaire.dossier, cible); assert.equal(statut.secondaire.accessible, true); assert.ok(statut.secondaire.derniere);
+    a.close(); a.autoBackup(cible);
+    const principal = path.join(a.documents, 'GestionFacturation-Backups');
+    assert.equal(fs.readdirSync(principal).filter((f) => f.startsWith('facturation-backup-')).length, 1);
+    assert.equal(fs.readdirSync(cible).filter((f) => f.startsWith('facturation-backup-')).length, 1);
+    // Second dossier inaccessible : la sauvegarde principale se fait quand même
+    const bloque = path.join(a.dir, 'fichier'); fs.writeFileSync(bloque, '');
+    fs.rmSync(principal, { recursive: true });
+    a.autoBackup(path.join(bloque, 'GestionFacturation-Backups'));
+    assert.equal(fs.readdirSync(principal).length, 1);
+  });
+
+  await test('Second dossier de sauvegarde : retrait', async a => {
+    const usb = path.join(a.dir, 'cle-usb'); fs.mkdirSync(usb);
+    a.dialogs.open = { canceled: false, filePaths: [usb] };
+    await a.call('database:choisirDossierSauvegarde');
+    a.call('database:retirerDossierSauvegarde');
+    assert.equal(a.call('database:getStatutSauvegarde').secondaire, null);
   });
 
   await test('Mot de passe : blocage temporaire après 5 échecs', a => {

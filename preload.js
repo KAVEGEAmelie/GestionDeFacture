@@ -146,6 +146,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // SAUVEGARDE / RESTAURATION
   database: {
     backup: () => ipcRenderer.invoke('database:backup'),
-    restore: () => ipcRenderer.invoke('database:restore')
+    restore: () => ipcRenderer.invoke('database:restore'),
+    getStatutSauvegarde: () => ipcRenderer.invoke('database:getStatutSauvegarde'),
+    choisirDossierSauvegarde: () => ipcRenderer.invoke('database:choisirDossierSauvegarde'),
+    retirerDossierSauvegarde: () => ipcRenderer.invoke('database:retirerDossierSauvegarde')
   }
 });

@@ -784,35 +784,66 @@ app.whenReady().then(() => {
 // conservées). Protège les utilisateurs qui ne font jamais de sauvegarde
 // manuelle : en cas de panne/changement de PC, il suffit de restaurer le
 // fichier le plus récent via Paramètres → Restaurer.
-function autoBackupDatabase() {
+const DOSSIER_SAUVEGARDES = 'GestionFacturation-Backups';
+
+function dossierSauvegardePrincipal() {
+  return path.join(app.getPath('documents'), DOSSIER_SAUVEGARDES);
+}
+
+// Second dossier choisi dans les Paramètres (clé USB, dossier synchronisé
+// Google Drive / OneDrive…) : une copie de chaque sauvegarde automatique y
+// est déposée, pour survivre à une panne du disque de l'ordinateur.
+function dossierSauvegardeSecondaire() {
+  if (!db || !db.open) return '';
+  const row = db.prepare("SELECT valeur FROM parametres WHERE cle = 'sauvegarde_dossier_secondaire'").get();
+  return row && row.valeur ? path.join(row.valeur, DOSSIER_SAUVEGARDES) : '';
+}
+
+// Dépose une copie horodatée dans backupDir et n'y garde que les 10 plus récentes.
+function copierSauvegardeHorodatee(dbPath, backupDir, stamp) {
+  fs.mkdirSync(backupDir, { recursive: true });
+  fs.copyFileSync(dbPath, path.join(backupDir, `facturation-backup-${stamp}.db`));
+  const files = fs.readdirSync(backupDir)
+    .filter((f) => f.startsWith('facturation-backup-') && f.endsWith('.db'))
+    .map((f) => ({ f, t: fs.statSync(path.join(backupDir, f)).mtimeMs }))
+    .sort((a, b) => b.t - a.t);
+  files.slice(10).forEach(({ f }) => {
+    try {
+      fs.unlinkSync(path.join(backupDir, f));
+    } catch {
+      // suppression impossible : non bloquant
+    }
+  });
+}
+
+// À la fermeture (base déjà fermée) : copie dans le dossier principal et,
+// s'il est configuré, dans le second dossier. L'échec de l'un (clé USB
+// débranchée…) n'empêche pas l'autre, ni la fermeture.
+function autoBackupDatabase(dossierSecondaire = '') {
+  const dbPath = path.join(app.getPath('userData'), 'facturation.db');
+  if (!fs.existsSync(dbPath)) return;
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}h${pad(now.getMinutes())}`;
+  [dossierSauvegardePrincipal(), dossierSecondaire].filter(Boolean).forEach((dossier) => {
+    try {
+      copierSauvegardeHorodatee(dbPath, dossier, stamp);
+    } catch (e) {
+      console.error(`Sauvegarde automatique échouée dans ${dossier} :`, e);
+    }
+  });
+}
+
+// Date de la sauvegarde la plus récente d'un dossier (null si aucune ou
+// dossier inaccessible).
+function derniereSauvegarde(dossier) {
   try {
-    const dbPath = path.join(app.getPath('userData'), 'facturation.db');
-    if (!fs.existsSync(dbPath)) return;
-
-    const backupDir = path.join(app.getPath('documents'), 'GestionFacturation-Backups');
-    fs.mkdirSync(backupDir, { recursive: true });
-
-    const now = new Date();
-    const pad = (n) => String(n).padStart(2, '0');
-    const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}h${pad(now.getMinutes())}`;
-    const dest = path.join(backupDir, `facturation-backup-${stamp}.db`);
-    fs.copyFileSync(dbPath, dest);
-
-    // Rotation : ne conserver que les 10 sauvegardes les plus récentes
-    const files = fs.readdirSync(backupDir)
-      .filter((f) => f.startsWith('facturation-backup-') && f.endsWith('.db'))
-      .map((f) => ({ f, t: fs.statSync(path.join(backupDir, f)).mtimeMs }))
-      .sort((a, b) => b.t - a.t);
-    files.slice(10).forEach(({ f }) => {
-      try {
-        fs.unlinkSync(path.join(backupDir, f));
-      } catch {
-        // suppression impossible : non bloquant
-      }
-    });
-  } catch (e) {
-    // La sauvegarde automatique ne doit jamais empêcher la fermeture
-    console.error('Sauvegarde automatique échouée :', e);
+    const dates = fs.readdirSync(dossier)
+      .filter((f) => f.startsWith('facturation-') && f.endsWith('.db'))
+      .map((f) => fs.statSync(path.join(dossier, f)).mtimeMs);
+    return dates.length ? new Date(Math.max(...dates)).toISOString() : null;
+  } catch {
+    return null;
   }
 }
 
@@ -828,12 +859,23 @@ async function sauvegardePeriodique() {
   if (sauvegardePeriodiqueEnCours || !db || !db.open) return;
   sauvegardePeriodiqueEnCours = true;
   try {
-    const backupDir = path.join(app.getPath('documents'), 'GestionFacturation-Backups');
+    const backupDir = dossierSauvegardePrincipal();
     fs.mkdirSync(backupDir, { recursive: true });
     const dest = path.join(backupDir, 'facturation-autosave.db');
     const temp = `${dest}.tmp`;
     await db.backup(temp);
     fs.renameSync(temp, dest);
+    const secondaire = dossierSauvegardeSecondaire();
+    if (secondaire) {
+      try {
+        fs.mkdirSync(secondaire, { recursive: true });
+        const destSecondaire = path.join(secondaire, 'facturation-autosave.db');
+        fs.copyFileSync(dest, `${destSecondaire}.tmp`);
+        fs.renameSync(`${destSecondaire}.tmp`, destSecondaire);
+      } catch (e) {
+        console.error('Copie vers le second dossier de sauvegarde impossible :', e);
+      }
+    }
   } catch (e) {
     console.error('Sauvegarde périodique échouée :', e);
   } finally {
@@ -858,8 +900,14 @@ app.on('will-quit', () => {
   if (!instanceUnique || sortieTraitee) return;
   sortieTraitee = true;
   if (minuterieSauvegarde) clearInterval(minuterieSauvegarde);
+  let secondaire = '';
+  try {
+    secondaire = dossierSauvegardeSecondaire();
+  } catch (e) {
+    console.error('Lecture du second dossier de sauvegarde impossible :', e);
+  }
   if (db && db.open) db.close();
-  autoBackupDatabase();
+  autoBackupDatabase(secondaire);
 });
 
 // ===== Licence / période d'essai =====
@@ -3015,6 +3063,61 @@ ipcMain.handle('database:backup', async () => {
 
   await db.backup(filePath);
   return { success: true, path: filePath };
+});
+
+// État des sauvegardes automatiques, affiché dans les Paramètres.
+ipcMain.handle('database:getStatutSauvegarde', () => {
+  const principal = dossierSauvegardePrincipal();
+  const secondaire = dossierSauvegardeSecondaire();
+  let accessible = false;
+  if (secondaire) {
+    try {
+      fs.accessSync(path.dirname(secondaire), fs.constants.W_OK);
+      accessible = true;
+    } catch {
+      accessible = false;
+    }
+  }
+  return {
+    principal: { dossier: principal, derniere: derniereSauvegarde(principal) },
+    secondaire: secondaire
+      ? { dossier: secondaire, accessible, derniere: derniereSauvegarde(secondaire) }
+      : null,
+  };
+});
+
+// Choix du second dossier : vérifie qu'on peut y écrire, puis y fait
+// immédiatement une première copie.
+ipcMain.handle('database:choisirDossierSauvegarde', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choisir un second dossier de sauvegarde (clé USB, Google Drive, OneDrive…)',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (canceled || !filePaths || filePaths.length === 0) {
+    return { success: false, canceled: true };
+  }
+  const choisi = filePaths[0];
+  const cible = path.join(choisi, DOSSIER_SAUVEGARDES);
+  const principal = path.resolve(dossierSauvegardePrincipal());
+  if (path.resolve(cible) === principal || path.resolve(choisi).startsWith(principal)) {
+    throw new Error('Choisissez un autre dossier que celui des sauvegardes principales (Documents).');
+  }
+  try {
+    fs.mkdirSync(cible, { recursive: true });
+    await db.backup(path.join(cible, 'facturation-autosave.db'));
+  } catch (e) {
+    throw new Error(`Impossible d'écrire dans ce dossier : ${e.message}`);
+  }
+  db.prepare(`
+    INSERT INTO parametres (cle, valeur) VALUES ('sauvegarde_dossier_secondaire', ?)
+    ON CONFLICT(cle) DO UPDATE SET valeur = excluded.valeur
+  `).run(choisi);
+  return { success: true, dossier: choisi };
+});
+
+ipcMain.handle('database:retirerDossierSauvegarde', () => {
+  db.prepare("DELETE FROM parametres WHERE cle = 'sauvegarde_dossier_secondaire'").run();
+  return { success: true };
 });
 
 ipcMain.handle('database:restore', async () => {

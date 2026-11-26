@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Save, Download, Upload, Lock, ShieldCheck, ShieldOff, KeyRound, Copy } from 'lucide-react';
+import { Save, Download, Upload, Lock, ShieldCheck, ShieldOff, KeyRound, Copy, FolderOpen, X } from 'lucide-react';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
@@ -22,6 +22,7 @@ const Parametres = () => {
 
   // Licence / période d'essai
   const [licenseStatus, setLicenseStatus] = useState(null);
+  const [statutSauvegarde, setStatutSauvegarde] = useState(null);
   const [activationCode, setActivationCode] = useState('');
   const [isActivating, setIsActivating] = useState(false);
 
@@ -29,7 +30,55 @@ const Parametres = () => {
     loadParametres();
     loadSecurity();
     loadLicense();
+    loadStatutSauvegarde();
   }, []);
+
+  const loadStatutSauvegarde = async () => {
+    try {
+      setStatutSauvegarde(await window.electronAPI.database.getStatutSauvegarde());
+    } catch {
+      setStatutSauvegarde(null);
+    }
+  };
+
+  const formatDateHeure = (iso) => (iso
+    ? new Date(iso).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
+    : 'aucune pour le moment');
+
+  // Le second dossier est enregistré directement par le processus principal :
+  // on met aussi à jour l'état local, pour que « Enregistrer les paramètres »
+  // ne réécrive pas l'ancienne valeur.
+  const handleChoisirDossier = async () => {
+    try {
+      const result = await window.electronAPI.database.choisirDossierSauvegarde();
+      if (result.canceled) return;
+      setParametres((prev) => ({ ...prev, sauvegarde_dossier_secondaire: result.dossier }));
+      toast.success('Second dossier de sauvegarde enregistré. Une première copie y a été faite.');
+      loadStatutSauvegarde();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Impossible d\'utiliser ce dossier.'));
+    }
+  };
+
+  const handleRetirerDossier = async () => {
+    const ok = await confirm({
+      title: 'Retirer le second dossier',
+      message: 'Les sauvegardes ne seront plus copiées dans ce dossier. Les copies déjà faites y restent. Continuer ?',
+      confirmText: 'Retirer',
+      danger: false,
+    });
+    if (!ok) return;
+    try {
+      await window.electronAPI.database.retirerDossierSauvegarde();
+      setParametres((prev) => {
+        const { sauvegarde_dossier_secondaire: _retire, ...reste } = prev;
+        return reste;
+      });
+      loadStatutSauvegarde();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors du retrait du dossier.'));
+    }
+  };
 
   const loadParametres = async () => {
     const params = await window.electronAPI.parametres.getAll();
@@ -586,6 +635,57 @@ const Parametres = () => {
                 <Upload size={20} />
                 Restaurer une sauvegarde
               </button>
+            </div>
+
+            <h4 style={{ margin: '1.5rem 0 0.5rem' }}>Sauvegardes automatiques</h4>
+            <p style={{ color: '#6b7280', fontSize: '0.875rem', marginTop: 0 }}>
+              Une copie est faite toutes les 15 minutes et à chaque fermeture de l'application.
+              {statutSauvegarde && (
+                <>
+                  <br />
+                  Dossier : <code>{statutSauvegarde.principal.dossier}</code> — dernière sauvegarde : {formatDateHeure(statutSauvegarde.principal.derniere)}
+                </>
+              )}
+            </p>
+
+            <p style={{ color: '#6b7280', fontSize: '0.875rem' }}>
+              Ce dossier est sur le même disque que l'application : si l'ordinateur tombe en panne, il est perdu
+              avec elle. Choisissez un second dossier sur une clé USB, un disque externe ou un dossier
+              synchronisé (Google Drive, OneDrive…) pour y recevoir aussi chaque sauvegarde.
+            </p>
+            {statutSauvegarde?.secondaire ? (
+              <div
+                style={{
+                  padding: '0.75rem 1rem',
+                  borderRadius: 8,
+                  marginBottom: '0.75rem',
+                  background: statutSauvegarde.secondaire.accessible ? '#ecfdf5' : '#fef2f2',
+                  color: statutSauvegarde.secondaire.accessible ? '#065f46' : '#991b1b',
+                  fontSize: '0.875rem',
+                }}
+              >
+                Second dossier : <code>{statutSauvegarde.secondaire.dossier}</code>
+                <br />
+                {statutSauvegarde.secondaire.accessible
+                  ? `Dernière copie : ${formatDateHeure(statutSauvegarde.secondaire.derniere)}`
+                  : 'Dossier inaccessible (clé USB débranchée ?) : les copies reprendront dès qu\'il sera de nouveau disponible.'}
+              </div>
+            ) : (
+              <p style={{ color: '#b45309', fontSize: '0.875rem', fontWeight: 600 }}>
+                Aucun second dossier configuré.
+              </p>
+            )}
+            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-secondary" onClick={handleChoisirDossier}>
+                <FolderOpen size={20} />
+                {statutSauvegarde?.secondaire ? 'Changer de second dossier' : 'Choisir un second dossier'}
+              </button>
+              {statutSauvegarde?.secondaire && (
+                <button type="button" className="btn btn-secondary" onClick={handleRetirerDossier}>
+                  <X size={20} />
+                  Retirer
+                </button>
+              )}
             </div>
           </div>
 

@@ -15,7 +15,7 @@ function situations(a) { const inv=h.facture(a,h.fixture(a)); return {inv,s95:a.
 async function main() {
   await test('Initialisation : schéma, intégrité et clés étrangères', a=>{
     assert.equal(a.db.pragma('integrity_check',{simple:true}),'ok'); assert.equal(a.db.pragma('foreign_keys',{simple:true}),1);
-    assert.equal(a.call('parametres:getAll').tva_taux,'18'); assert.equal(a.handlers.size,80);
+    assert.equal(a.call('parametres:getAll').tva_taux,'18'); assert.equal(a.handlers.size,83);
   });
   await test('Clients : création, modification et suppression',a=>{
     const {id}=a.call('clients:create',h.clientData); a.call('clients:update',id,{...h.clientData,nom:'Client modifié'});
