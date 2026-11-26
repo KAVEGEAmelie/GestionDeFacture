@@ -1919,9 +1919,11 @@ export const generateInterventionV11PDF = async (fiche, parametres = {}) => {
   const labW = 31;
   const valW = contentW / 2 - labW;
   const rowH = 7.4;
+  const servicesV11 = servicesDeLaFiche(fiche);
   const infoRows = [
     ['N° intervention', fiche.numero || '', 'Date intervention', dateTxt],
-    ['Client / Structure', fiche.client_nom || '', 'Site / Service', fiche.client_adresse || ''],
+    ['Client / Structure', fiche.client_nom || '', servicesV11.length > 1 ? 'Sites / Services' : 'Site / Service',
+      servicesV11.length > 1 ? `${servicesV11.length} services (détail ci-dessous)` : (servicesV11[0] || '')],
     ['Contact client', fiche.client_contact || '', 'Technicien(s)', fiche.intervenant || ''],
   ];
   infoRows.forEach((r, i) => {
@@ -1963,9 +1965,12 @@ export const generateInterventionV11PDF = async (fiche, parametres = {}) => {
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(7.9);
         const lw = doc.getTextWidth(s.label) + 1.5;
-        doc.setFont('helvetica', 'normal');
+        // Mesure dans la police du rendu : une valeur saisie s'écrit en gras,
+        // plus large que la police normale (sinon la fin était tronquée).
+        const valeur = String(s.value || '');
+        doc.setFont('helvetica', valeur.trim() ? 'bold' : 'normal');
         doc.setFontSize(7.6);
-        return lw + Math.max(doc.getTextWidth(String(s.value || '')) + 2, s.w || 20);
+        return lw + Math.max(doc.getTextWidth(valeur) + 2, s.w || 20);
       }
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(7.9);
@@ -2092,6 +2097,12 @@ export const generateInterventionV11PDF = async (fiche, parametres = {}) => {
       first = false;
     } while (lines.length);
   };
+
+  // Plusieurs sites / services : liste complète sous la grille d'informations
+  if (servicesV11.length > 1) {
+    flowRow(segmentsServices('Sites / Services concernés :', servicesV11), { gap: 1.5 });
+    y += 3;
+  }
 
   // === 1. NATURE DE LA DEMANDE ===
   const dNature = Array.isArray(fiche.nature) ? fiche.nature : [];
@@ -2319,6 +2330,29 @@ export const FIT_TRAVAUX_OPTIONS = [
 export const FIT_RESULTAT_OPTIONS = ['Résolu', 'Résolu provisoirement', 'À poursuivre', 'Pièce à remplacer'];
 
 // Case à cocher 3 mm (y = ligne de base du texte associé)
+// Services d'une fiche d'intervention : liste enregistrée, sinon le texte
+// unique des fiches créées avant les services multiples.
+const servicesDeLaFiche = (fiche) => {
+  const liste = Array.isArray(fiche.services)
+    ? fiche.services.map((v) => String(v || '').trim()).filter(Boolean)
+    : [];
+  if (liste.length) return liste;
+  const texte = String(fiche.client_adresse || '').trim();
+  return texte ? [texte] : [];
+};
+
+// Segments flowRow listant les services (un champ par service, séparés par
+// des virgules) : la ligne passe à la ligne suivante si elle est trop longue.
+const segmentsServices = (libelle, services) => [
+  { t: 'b', text: libelle },
+  ...services.map((service, i) => ({
+    t: 'f',
+    label: '',
+    value: i < services.length - 1 ? `${service},` : service,
+    w: 1,
+  })),
+];
+
 const drawFitCheckbox = (doc, x, y, checked) => {
   doc.setDrawColor(...COLORS.ink);
   doc.setLineWidth(0.3);
@@ -2420,9 +2454,12 @@ export const generateInterventionPDF = async (fiche, parametres = {}) => {
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(7.9);
         const lw = doc.getTextWidth(s.label) + 1.5;
-        doc.setFont('helvetica', 'normal');
+        // Mesure dans la police du rendu : une valeur saisie s'écrit en gras,
+        // plus large que la police normale (sinon la fin était tronquée).
+        const valeur = String(s.value || '');
+        doc.setFont('helvetica', valeur.trim() ? 'bold' : 'normal');
         doc.setFontSize(7.6);
-        return lw + Math.max(doc.getTextWidth(String(s.value || '')) + 2, s.w || 20);
+        return lw + Math.max(doc.getTextWidth(valeur) + 2, s.w || 20);
       }
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(7.9);
@@ -2552,10 +2589,17 @@ export const generateInterventionPDF = async (fiche, parametres = {}) => {
   // === 1. CLIENT / SERVICE ===
   y = ensureSpace(y, 30);
   y = drawFitSectionBar(doc, contentLeft, contentW, y, '1. CLIENT / SERVICE');
-  flowRow([
-    { t: 'f', label: 'Client / Structure :', value: fiche.client_nom || '', w: 80 },
-    { t: 'f', label: 'Service / Département :', value: fiche.client_adresse || '', w: 70 },
-  ]);
+  const servicesFiche = servicesDeLaFiche(fiche);
+  if (servicesFiche.length > 1) {
+    // Plusieurs services : client seul, puis la liste complète des services
+    flowRow([{ t: 'f', label: 'Client / Structure :', value: fiche.client_nom || '', w: 80 }]);
+    flowRow(segmentsServices('Services / Départements :', servicesFiche), { gap: 1.5 });
+  } else {
+    flowRow([
+      { t: 'f', label: 'Client / Structure :', value: fiche.client_nom || '', w: 80 },
+      { t: 'f', label: 'Service / Département :', value: servicesFiche[0] || '', w: 70 },
+    ]);
+  }
   flowRow([
     { t: 'f', label: 'Nom du demandeur :', value: fiche.nom_demandeur || '', w: 70 },
     { t: 'f', label: 'Tél. :', value: fiche.client_contact || '', w: 50 },

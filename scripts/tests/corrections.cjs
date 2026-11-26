@@ -93,6 +93,18 @@ module.exports = async ({ test, h, assert, paidInvoice, count }) => {
     assert.equal(a.call('tva:verser', [a.call('factures:getAll')[0].id]).numero, 'VT-0002');
   });
 
+  await test('Intervention : plusieurs services conservés, ancienne fiche lisible', a => {
+    const services = ['Urgences', 'Pédiatrie', 'Radiologie'];
+    const { id } = a.call('interventions:create', {
+      date: '2026-11-20', client_nom: 'Hôpital', client_adresse: services.join(', '), details: { modele: 'simplifie', services }
+    });
+    const fiche = a.call('interventions:getById', id);
+    assert.equal(JSON.stringify(fiche.services), JSON.stringify(services)); assert.equal(fiche.client_adresse, 'Urgences, Pédiatrie, Radiologie');
+    const ancienne = a.call('interventions:create', { date: '2026-11-20', client_nom: 'Hôpital', client_adresse: 'Maternité', details: { modele: 'simplifie' } });
+    const lue = a.call('interventions:getById', ancienne.id);
+    assert.equal(lue.services, undefined); assert.equal(lue.client_adresse, 'Maternité');
+  });
+
   await test('Mot de passe : blocage temporaire après 5 échecs', a => {
     a.call('security:setPassword', { newPassword: 'abcd1234' });
     for (let i = 0; i < 5; i += 1) assert.throws(() => a.call('security:verify', 'faux'), /incorrect/);

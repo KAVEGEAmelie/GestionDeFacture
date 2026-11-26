@@ -41,7 +41,7 @@ const buildDefaultForm = () => ({
   heure_arrivee: '',
   intervenant: '',
   client_nom: '',
-  client_adresse: '',
+  services: [], // services / départements où l'intervention a eu lieu
   nom_demandeur: '',
   responsable_client: '',
   client_contact: '',
@@ -74,10 +74,15 @@ const buildDefaultForm = () => ({
   materiels_v11: [],
 });
 
+// Services sans doublon ni entrée vide, dans l'ordre de saisie.
+const nettoyerServices = (services) => Array.from(new Set(arr(services).map(trim).filter(Boolean)));
+
 const toStoredRecord = (form) => {
   const estV11 = form.modele === 'v11';
+  const services = nettoyerServices(form.services);
   const details = {
     modele: form.modele || 'simplifie',
+    services,
     categorie: arr(form.categorie),
     equipements: arr(form.equipements),
     nom_demandeur: trim(form.nom_demandeur),
@@ -105,7 +110,9 @@ const toStoredRecord = (form) => {
     intervenant: trim(form.intervenant),
     heure_arrivee: trim(form.heure_arrivee),
     client_nom: trim(form.client_nom),
-    client_adresse: trim(form.client_adresse),
+    // Texte lisible conservé pour la recherche et les fiches existantes ;
+    // la liste exacte est dans details.services.
+    client_adresse: services.join(', '),
     client_contact: trim(form.client_contact),
     marque_modele: trim(form.marque_modele),
     num_serie: trim(form.num_serie),
@@ -128,6 +135,11 @@ const toForm = (record) => {
   });
   form.date = record.date || todayISO();
   form.modele = record.modele === 'v11' ? 'v11' : 'simplifie';
+  // Fiches enregistrées avant les services multiples : un seul service,
+  // stocké en texte dans client_adresse.
+  form.services = Array.isArray(record.services) && record.services.length
+    ? record.services
+    : (trim(record.client_adresse) ? [trim(record.client_adresse)] : []);
   // materiels est soit un tableau de pièces (V11) soit un texte (simplifié)
   if (Array.isArray(record.materiels)) {
     form.materiels_v11 = record.materiels;
@@ -227,6 +239,7 @@ const Interventions = () => {
         matchesWordPrefix(f.numero, term) ||
         matchesWordPrefix(f.client_nom, term) ||
         matchesWordPrefix(f.intervenant, term) ||
+        matchesWordPrefix(f.client_adresse, term) ||
         matchesWordPrefix(f.interlocuteur, term);
       const matchDate = inDateRange(f.date, dateFrom, dateTo);
       return matchSearch && matchDate;
@@ -339,6 +352,68 @@ const Interventions = () => {
         // non bloquant
       }
     }
+  };
+
+  const addService = (value) => {
+    const v = trim(value);
+    if (!v) return;
+    setFormData((prev) => {
+      const services = arr(prev.services);
+      return services.includes(v) ? prev : { ...prev, services: [...services, v] };
+    });
+  };
+
+  const removeService = (value) => {
+    setFormData((prev) => ({ ...prev, services: arr(prev.services).filter((s) => s !== value) }));
+  };
+
+  // Plusieurs services possibles pour une même intervention : chaque choix
+  // s'ajoute à la liste (le champ se vide), une croix retire un service.
+  const renderServices = (placeholder, noOptionsText) => {
+    const choisis = arr(formData.services);
+    return (
+      <>
+        {choisis.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+            {choisis.map((service) => (
+              <span
+                key={service}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  padding: '3px 6px 3px 10px',
+                  borderRadius: 999,
+                  background: '#e0e7ff',
+                  color: '#1e3a8a',
+                  fontSize: 13,
+                }}
+              >
+                {service}
+                <button
+                  type="button"
+                  onClick={() => removeService(service)}
+                  title={`Retirer ${service}`}
+                  aria-label={`Retirer ${service}`}
+                  style={{ display: 'inline-flex', border: 'none', background: 'none', color: 'inherit', cursor: 'pointer', padding: 0 }}
+                >
+                  <X size={14} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <SearchableSelect
+          options={sitesServices.filter((s) => !choisis.includes(s)).map((s) => ({ value: s, label: s }))}
+          value=""
+          onChange={(val, option) => addService(option?.label || val)}
+          placeholder={choisis.length ? 'Ajouter un autre service' : placeholder}
+          noOptionsText={noOptionsText}
+          allowCustomValue
+          commitOnBlur
+        />
+      </>
+    );
   };
 
   const renderCheckGrid = (field, options) => (
@@ -454,9 +529,9 @@ const Interventions = () => {
           await window.electronAPI.listes.add('technicien', payload.intervenant);
           setTechniciens((prev) => (prev.includes(payload.intervenant) ? prev : [...prev, payload.intervenant].sort((a, b) => a.localeCompare(b, 'fr'))));
         }
-        if (payload.client_adresse) {
-          await window.electronAPI.listes.add('site_service', payload.client_adresse);
-          setSitesServices((prev) => (prev.includes(payload.client_adresse) ? prev : [...prev, payload.client_adresse].sort((a, b) => a.localeCompare(b, 'fr'))));
+        for (const service of payload.services) {
+          await window.electronAPI.listes.add('site_service', service);
+          setSitesServices((prev) => (prev.includes(service) ? prev : [...prev, service].sort((a, b) => a.localeCompare(b, 'fr'))));
         }
         if (payload.nom_demandeur) {
           await window.electronAPI.listes.add('demandeur', payload.nom_demandeur);
@@ -680,16 +755,8 @@ const Interventions = () => {
                 />
               </div>
               <div className="form-group">
-                <label>Service / Département</label>
-                <SearchableSelect
-                  options={sitesServices.map((s) => ({ value: s, label: s }))}
-                  value={formData.client_adresse}
-                  onChange={(val, option) => handleChange('client_adresse', option?.label || val)}
-                  placeholder="Choisir ou saisir un service / département"
-                  noOptionsText="Aucun service — tapez-le puis Entrée"
-                  allowCustomValue
-                  commitOnBlur
-                />
+                <label>Service(s) / Département(s)</label>
+                {renderServices('Choisir ou saisir un service / département', 'Aucun service — tapez-le puis Entrée')}
               </div>
             </div>
             <div className="form-row">
@@ -867,15 +934,8 @@ const Interventions = () => {
                 />
               </div>
               <div className="form-group">
-                <label>Site / Service</label>
-                <SearchableSelect
-                  options={sitesServices.map((s) => ({ value: s, label: s }))}
-                  value={formData.client_adresse}
-                  onChange={(val, option) => handleChange('client_adresse', option?.label || val)}
-                  placeholder="Choisir ou saisir un site / service"
-                  noOptionsText="Aucun site — tapez-le puis Entrée"
-                  allowCustomValue
-                />
+                <label>Site(s) / Service(s)</label>
+                {renderServices('Choisir ou saisir un site / service', 'Aucun site — tapez-le puis Entrée')}
               </div>
               <div className="form-group">
                 <label>Contact client</label>
