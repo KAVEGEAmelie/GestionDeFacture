@@ -1,13 +1,13 @@
 .layout-container {
   display: flex;
   min-height: 100vh;
-  background-color: #f5f5f5;
+  background-color: var(--bg-app);
 }
 
 /* SIDEBAR */
 .sidebar {
-  width: 260px;
-  background: linear-gradient(180deg, #1e40af 0%, #1e3a8a 100%);
+  width: 264px;
+  background: linear-gradient(180deg, #1e3a8a 0%, #1e40af 55%, #1d4ed8 100%);
   color: white;
   display: flex;
   flex-direction: column;
@@ -15,12 +15,28 @@
   height: 100vh;
   left: 0;
   top: 0;
-  box-shadow: 2px 0 10px rgba(0, 0, 0, 0.1);
+  box-shadow: 4px 0 24px rgba(15, 23, 42, 0.18);
+  z-index: 100;
+}
+
+.sidebar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(96, 165, 250, 0.18), transparent 45%),
+    radial-gradient(circle at 80% 100%, rgba(37, 99, 235, 0.25), transparent 40%);
+  pointer-events: none;
+}
+
+.sidebar > * {
+  position: relative;
+  z-index: 1;
 }
 
 .sidebar-header {
-  padding: 2rem 1.5rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 1.75rem 1.5rem 1.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -28,90 +44,127 @@
 }
 
 .sidebar-logo {
-  width: 56px;
-  height: 56px;
+  width: 64px;
+  height: 64px;
   object-fit: contain;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.85rem;
   background: white;
-  border-radius: 12px;
-  padding: 6px;
+  border-radius: var(--radius-md);
+  padding: 7px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.22);
 }
 
 .logo h2 {
-  font-size: 1.25rem;
+  font-size: 1.2rem;
   font-weight: 700;
-  margin-bottom: 0.25rem;
+  margin-bottom: 0.2rem;
   color: white;
+  letter-spacing: -0.02em;
 }
 
 .logo p {
-  font-size: 0.875rem;
-  color: rgba(255, 255, 255, 0.8);
-  font-weight: 300;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.75);
+  font-weight: 400;
+  letter-spacing: 0.02em;
 }
 
 /* NAVIGATION */
 .sidebar-nav {
   flex: 1;
-  padding: 1.5rem 0;
+  padding: 1.25rem 0.75rem;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.875rem 1.5rem;
-  color: rgba(255, 255, 255, 0.8);
+  gap: 0.85rem;
+  padding: 0.8rem 1rem;
+  color: rgba(255, 255, 255, 0.82);
   text-decoration: none;
-  transition: all 0.2s ease;
+  transition: all var(--transition);
   font-weight: 500;
-  font-size: 0.95rem;
-  border-left: 3px solid transparent;
+  font-size: 0.925rem;
+  border-radius: var(--radius);
+  position: relative;
 }
 
 .nav-item:hover {
   background-color: rgba(255, 255, 255, 0.1);
   color: white;
+  transform: translateX(2px);
 }
 
 .nav-item.active {
-  background-color: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.16);
   color: white;
-  border-left-color: #60a5fa;
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: -0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 60%;
+  background: #93c5fd;
+  border-radius: var(--radius-full);
 }
 
 .nav-item svg {
   flex-shrink: 0;
+  opacity: 0.92;
 }
 
 /* SIDEBAR FOOTER */
 .sidebar-footer {
   padding: 1rem 1.5rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
   text-align: center;
 }
 
 .version {
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   color: rgba(255, 255, 255, 0.5);
+  letter-spacing: 0.04em;
 }
 
 /* MAIN CONTENT */
 .main-content {
   flex: 1;
-  margin-left: 260px;
-  padding: 2rem;
+  margin-left: 264px;
+  padding: 2.25rem 2.5rem;
   min-height: 100vh;
-  background-color: #f9fafb;
+  background-color: var(--bg-app);
 }
 
 /* RESPONSIVE */
 @media (max-width: 768px) {
   .sidebar {
-    width: 70px;
+    width: 72px;
   }
 
+  .sidebar-header {
+    padding: 1.25rem 0.5rem;
+  }
+
+  .sidebar-logo {
+    width: 44px;
+    height: 44px;
+  }
+
+  .sidebar-header .logo h2,
   .sidebar-header .logo p,
   .nav-item span {
     display: none;
@@ -119,10 +172,11 @@
 
   .nav-item {
     justify-content: center;
-    padding: 1rem;
+    padding: 0.85rem;
   }
 
   .main-content {
-    margin-left: 70px;
+    margin-left: 72px;
+    padding: 1.5rem;
   }
 }

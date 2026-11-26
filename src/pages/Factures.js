@@ -1,13 +1,24 @@
-import React, { useState, useEffect } from 'react';
-import { Eye, Trash2, FileCheck, Truck, Printer, Download, Search, CheckCircle, RotateCcw } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Eye, Trash2, FileCheck, Truck, Printer, Download, CheckCircle, RotateCcw, Edit2, Plus, FolderPlus, AlignLeft, Percent, X, FileMinus } from 'lucide-react';
 import Modal from '../components/modals/Modal';
-import { generateFacturePDF } from '../utils/pdfGenerator';
+import FilterBar from '../components/Filters/FilterBar';
+import PeriodFilter from '../components/Filters/PeriodFilter';
+import { inDateRange, inNumberRange, today, anneeAnterieure } from '../utils/dateFilters';
+import { generateFacturePDF, generateFactureSituationPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import { matchesWordPrefix } from '../utils/search';
+import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
 import './Clients.css';
 import './Proformas.css';
 import { useNavigate } from 'react-router-dom';
+
+const getLocalISODate = () => {
+  const date = new Date();
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 10);
+};
 
 const Factures = () => {
   const navigate = useNavigate();
@@ -15,11 +26,39 @@ const Factures = () => {
   const confirm = useConfirm();
   const [factures, setFactures] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [paiementFilter, setPaiementFilter] = useState('tous');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [montantMin, setMontantMin] = useState('');
+  const [montantMax, setMontantMax] = useState('');
+  const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
   const [proformas, setProformas] = useState([]);
   const [parametres, setParametres] = useState({});
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [convertModalOpen, setConvertModalOpen] = useState(false);
+  const [convertDate, setConvertDate] = useState(today());
+  const [convertSearchTerm, setConvertSearchTerm] = useState('');
   const [selectedFacture, setSelectedFacture] = useState(null);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editingFacture, setEditingFacture] = useState(null);
+  const [openDescRows, setOpenDescRows] = useState({});
+  const [situationsModalOpen, setSituationsModalOpen] = useState(false);
+  const [situationsFacture, setSituationsFacture] = useState(null);
+  const [situations, setSituations] = useState([]);
+  const [nouveauTaux, setNouveauTaux] = useState('');
+  const [paymentTarget, setPaymentTarget] = useState(null);
+  const [paymentDate, setPaymentDate] = useState(getLocalISODate());
+  // Avoir en préparation : facture d'origine (avec ses lignes) + formulaire
+  const [avoirFacture, setAvoirFacture] = useState(null);
+  const [avoirForm, setAvoirForm] = useState({ type: 'total', date: today(), motif: '', lignes: [] });
+  const [avoirEnCours, setAvoirEnCours] = useState(false);
+  const [editForm, setEditForm] = useState({
+    date: '',
+    objet: '',
+    prestations: 0,
+    remise: 0,
+    lignes: []
+  });
 
   useEffect(() => {
     loadData();
@@ -37,8 +76,22 @@ const Factures = () => {
   };
 
   const handleConvertProforma = async (proformaId) => {
+    if (!convertDate) {
+      toast.error('Veuillez choisir la date de la facture.');
+      return;
+    }
+    const annee = anneeAnterieure(convertDate);
+    if (annee) {
+      const ok = await confirm({
+        title: `Facture datée de ${annee}`,
+        message: `Cette facture est datée de ${annee} : son numéro commencera par ${annee}/ et elle se rattache à l'exercice ${annee}. Vérifiez la date avant de continuer.`,
+        confirmText: 'Créer la facture',
+        danger: false,
+      });
+      if (!ok) return;
+    }
     try {
-      await window.electronAPI.factures.createFromProforma(proformaId);
+      await window.electronAPI.factures.createFromProforma(proformaId, convertDate);
       toast.success('Facture créée avec succès !');
       loadData();
       setConvertModalOpen(false);
@@ -51,6 +104,154 @@ const Factures = () => {
     const fullFacture = await window.electronAPI.factures.getById(facture.id);
     setSelectedFacture(fullFacture);
     setViewModalOpen(true);
+  };
+
+  // —— Édition d'une facture ——
+  // Taux enregistré sur la facture ; à défaut (factures anciennes), déduit de
+  // ses montants, puis celui des paramètres.
+  const tauxTvaFacture = (facture) => {
+    if (facture && facture.tva_taux !== null && facture.tva_taux !== undefined) return facture.tva_taux;
+    if (facture && facture.total_ht > 0 && facture.tva > 0) {
+      return Math.round((facture.tva / facture.total_ht) * 10000) / 100;
+    }
+    const taux = parseFloat(parametres.tva_taux);
+    return Number.isFinite(taux) && taux >= 0 ? taux : 18;
+  };
+
+  const handleEdit = async (facture) => {
+    if (facture.statut_paiement === 'payee') {
+      toast.error("Cette facture est payée : annulez d'abord son paiement pour la modifier.");
+      return;
+    }
+    const full = await window.electronAPI.factures.getById(facture.id);
+    setEditingFacture(full);
+    // Reconstruire les séparateurs de section à partir des lignes
+    const lignesForm = [];
+    let sectionCourante = '';
+    (full.lignes || []).forEach((l) => {
+      const titre = l.section_titre || '';
+      if (titre !== sectionCourante) {
+        sectionCourante = titre;
+        if (titre) lignesForm.push({ _type: 'section', titre });
+      }
+      lignesForm.push({
+        produit_id: l.produit_id,
+        designation: l.designation,
+        description: l.description || '',
+        unite: l.unite,
+        quantite: l.quantite,
+        prix_unitaire: l.prix_unitaire,
+        montant: l.montant
+      });
+    });
+    setEditForm({
+      date: full.date,
+      objet: full.objet || '',
+      prestations: full.prestations || 0,
+      remise: full.remise || 0,
+      lignes: lignesForm
+    });
+    setOpenDescRows({});
+    setEditModalOpen(true);
+  };
+
+  const editLigneChange = (index, field, value) => {
+    setEditForm((prev) => {
+      const lignes = prev.lignes.map((l, i) => {
+        if (i !== index) return l;
+        const updated = { ...l, [field]: value };
+        if (updated._type !== 'section') {
+          const q = parseFloat(updated.quantite) || 0;
+          const pu = parseFloat(updated.prix_unitaire) || 0;
+          updated.montant = q * pu;
+        }
+        return updated;
+      });
+      return { ...prev, lignes };
+    });
+  };
+
+  const editAddLigne = () => {
+    setEditForm((prev) => ({
+      ...prev,
+      lignes: [...prev.lignes, { produit_id: null, designation: '', description: '', unite: 'Unité', quantite: 1, prix_unitaire: 0, montant: 0 }]
+    }));
+  };
+
+  const editAddSection = () => {
+    setEditForm((prev) => ({
+      ...prev,
+      lignes: [...prev.lignes, { _type: 'section', titre: '' }]
+    }));
+  };
+
+  const editRemoveLigne = (index) => {
+    setEditForm((prev) => ({ ...prev, lignes: prev.lignes.filter((_, i) => i !== index) }));
+  };
+
+  const computeEditTotals = () => {
+    // Mêmes arrondis que le serveur ; le taux reste celui de la facture,
+    // même si le taux des paramètres a changé depuis son émission.
+    const total_materiel_ht = editForm.lignes.reduce(
+      (sum, l) => (l._type === 'section' ? sum : sum + Math.round(l.montant || 0)),
+      0
+    );
+    const prestations = Math.round(parseFloat(editForm.prestations) || 0);
+    const remise = Math.round(parseFloat(editForm.remise) || 0);
+    const total_ht = total_materiel_ht + prestations - remise;
+    const tvaApplicable = editingFacture ? (editingFacture.tva || 0) > 0 : true;
+    const tauxTVA = tauxTvaFacture(editingFacture);
+    const tva = tvaApplicable ? Math.round(total_ht * (tauxTVA / 100)) : 0;
+    const total_ttc = total_ht + tva;
+    return { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, tvaApplicable, tauxTVA };
+  };
+
+  const handleEditSubmit = async (e) => {
+    e.preventDefault();
+    // Aplatir : les séparateurs attribuent leur titre aux lignes suivantes
+    let currentSection = '';
+    const lignes = [];
+    editForm.lignes.forEach((l) => {
+      if (l._type === 'section') {
+        currentSection = (l.titre || '').trim();
+        return;
+      }
+      if (!String(l.designation || '').trim()) return;
+      lignes.push({
+        produit_id: Number.isInteger(l.produit_id) ? l.produit_id : null,
+        designation: l.designation,
+        description: l.description || '',
+        unite: l.unite,
+        quantite: parseFloat(l.quantite) || 0,
+        prix_unitaire: parseFloat(l.prix_unitaire) || 0,
+        montant: l.montant || 0,
+        section_titre: currentSection
+      });
+    });
+    if (lignes.length === 0) {
+      toast.error('La facture doit contenir au moins une ligne.');
+      return;
+    }
+    const { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc } = computeEditTotals();
+    try {
+      await window.electronAPI.factures.update(editingFacture.id, {
+        date: editForm.date,
+        objet: editForm.objet,
+        total_materiel_ht,
+        prestations,
+        remise,
+        total_ht,
+        tva,
+        total_ttc,
+        lignes
+      });
+      toast.success(`Facture ${editingFacture.numero} modifiée avec succès.`);
+      setEditModalOpen(false);
+      setEditingFacture(null);
+      loadData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la modification de la facture.'));
+    }
   };
 
   const handleDelete = async (id) => {
@@ -67,6 +268,103 @@ const Factures = () => {
       loadData();
     } catch (error) {
       toast.error(getErrorMessage(error, 'Erreur lors de la suppression de la facture.'));
+    }
+  };
+
+  // —— Avoirs ——
+  const resteACrediter = (facture) => Math.max(0, (facture.total_ttc || 0) - (facture.total_avoirs || 0));
+
+  const openAvoir = async (facture) => {
+    const full = await window.electronAPI.factures.getById(facture.id);
+    if (!full) {
+      toast.error('Facture introuvable. La liste va être actualisée.');
+      loadData();
+      return;
+    }
+    setAvoirFacture({ ...full, total_avoirs: facture.total_avoirs || 0 });
+    setAvoirForm({
+      // Avoir total possible seulement si aucun avoir n'a encore été émis
+      type: (facture.total_avoirs || 0) > 0 ? 'partiel' : 'total',
+      date: today(),
+      motif: '',
+      lignes: (full.lignes || []).map((l) => ({
+        inclus: false,
+        designation: l.designation,
+        description: l.description || '',
+        section_titre: l.section_titre || '',
+        unite: l.unite,
+        quantite: l.quantite,
+        prix_unitaire: l.prix_unitaire,
+      })),
+    });
+  };
+
+  const closeAvoir = () => setAvoirFacture(null);
+
+  const changeAvoirLigne = (index, field, value) => {
+    setAvoirForm((prev) => ({
+      ...prev,
+      lignes: prev.lignes.map((l, i) => (i === index ? { ...l, [field]: value } : l)),
+    }));
+  };
+
+  // Aperçu des montants, avec les mêmes arrondis que le serveur
+  const computeAvoirTotals = () => {
+    if (!avoirFacture) return { total_ht: 0, tva: 0, total_ttc: 0 };
+    if (avoirForm.type === 'total') {
+      return { total_ht: avoirFacture.total_ht, tva: avoirFacture.tva, total_ttc: avoirFacture.total_ttc };
+    }
+    const total_ht = avoirForm.lignes
+      .filter((l) => l.inclus)
+      .reduce((sum, l) => sum + Math.round((parseFloat(l.quantite) || 0) * (parseFloat(l.prix_unitaire) || 0)), 0);
+    const tva = (avoirFacture.tva || 0) > 0 ? Math.round(total_ht * tauxTvaFacture(avoirFacture) / 100) : 0;
+    return { total_ht, tva, total_ttc: total_ht + tva };
+  };
+
+  const handleAvoirSubmit = async (e) => {
+    e.preventDefault();
+    if (avoirEnCours) return;
+    if (!avoirForm.motif.trim()) {
+      toast.error("Indiquez le motif de l'avoir.");
+      return;
+    }
+    const lignes = avoirForm.lignes
+      .filter((l) => l.inclus)
+      .map((l) => ({
+        designation: l.designation,
+        description: l.description,
+        section_titre: l.section_titre,
+        unite: l.unite,
+        quantite: parseFloat(l.quantite) || 0,
+        prix_unitaire: parseFloat(l.prix_unitaire) || 0,
+      }));
+    if (avoirForm.type === 'partiel' && lignes.length === 0) {
+      toast.error("Cochez au moins une ligne à créditer.");
+      return;
+    }
+    const { total_ttc } = computeAvoirTotals();
+    const ok = await confirm({
+      title: avoirForm.type === 'total' ? 'Annuler toute la facture' : 'Créer un avoir partiel',
+      message: `Un avoir de ${formatPrice(total_ttc)} FCFA va être émis sur la facture ${avoirFacture.numero}. Une fois émise, la facture ne pourra plus être modifiée. Continuer ?`,
+      confirmText: "Créer l'avoir",
+      danger: avoirForm.type === 'total',
+    });
+    if (!ok) return;
+    setAvoirEnCours(true);
+    try {
+      const res = await window.electronAPI.avoirs.create(avoirFacture.id, {
+        type: avoirForm.type,
+        date: avoirForm.date,
+        motif: avoirForm.motif,
+        lignes,
+      });
+      toast.success(`Avoir ${res.numero} créé. Vous le retrouvez dans le menu Avoirs.`);
+      closeAvoir();
+      loadData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Erreur lors de la création de l'avoir."));
+    } finally {
+      setAvoirEnCours(false);
     }
   };
 
@@ -99,16 +397,29 @@ const Factures = () => {
     }
   };
 
-  const handleMarkPaid = async (facture) => {
-    const ok = await confirm({
-      title: 'Valider le paiement',
-      message: `Confirmer que la facture ${facture.numero} a été payée par le client ? Sa TVA passera en « TVA à reverser à l'OTR ».`,
-      confirmText: 'Valider le paiement',
-    });
-    if (!ok) return;
+  const openPaymentDateModal = (type, item) => {
+    setPaymentDate(getLocalISODate());
+    setPaymentTarget({ type, item });
+  };
+
+  const handleMarkPaid = (facture) => openPaymentDateModal('facture', facture);
+
+  const handleConfirmPayment = async (event) => {
+    event.preventDefault();
+    if (!paymentTarget || !paymentDate) {
+      toast.error('Veuillez choisir la date du paiement.');
+      return;
+    }
     try {
-      await window.electronAPI.factures.markPaid(facture.id);
-      toast.success('Paiement enregistré. La TVA est désormais à reverser à l\'OTR.');
+      if (paymentTarget.type === 'facture') {
+        await window.electronAPI.factures.markPaid(paymentTarget.item.id, paymentDate);
+        toast.success('Paiement enregistré. La TVA est désormais à reverser à l\'OTR.');
+      } else {
+        await window.electronAPI.factureSituations.markPaid(paymentTarget.item.id, paymentDate);
+        await refreshSituations();
+        toast.success('Paiement de la situation enregistré.');
+      }
+      setPaymentTarget(null);
       loadData();
     } catch (error) {
       toast.error(getErrorMessage(error, 'Erreur lors de la validation du paiement.'));
@@ -132,6 +443,113 @@ const Factures = () => {
     }
   };
 
+  // —— Facturation par situation (paiement partiel en %) ——
+  const openSituations = async (facture) => {
+    try {
+      const full = await window.electronAPI.factures.getById(facture.id);
+      const list = await window.electronAPI.factureSituations.getByFacture(facture.id);
+      setSituationsFacture(full);
+      setSituations(list || []);
+      setNouveauTaux('');
+      setSituationsModalOpen(true);
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Impossible de charger les situations de facturation.'));
+    }
+  };
+
+  const tauxDejaEmis = situations.reduce((s, v) => s + (v.taux || 0), 0);
+  const tauxRestant = Math.max(0, Math.round((100 - tauxDejaEmis) * 100) / 100);
+
+  const refreshSituations = async () => {
+    const [list, facture] = await Promise.all([
+      window.electronAPI.factureSituations.getByFacture(situationsFacture.id),
+      window.electronAPI.factures.getById(situationsFacture.id),
+    ]);
+    setSituations(list || []);
+    setSituationsFacture(facture);
+  };
+
+  const handleAddSituation = async () => {
+    const taux = parseFloat(nouveauTaux);
+    if (!taux || taux <= 0) {
+      toast.error('Veuillez saisir un pourcentage valide.');
+      return;
+    }
+    try {
+      const res = await window.electronAPI.factureSituations.create(situationsFacture.id, taux);
+      toast.success(`Facture de situation ${res.numero} créée (${formatPrice(res.montant_ttc)} FCFA).`);
+      setNouveauTaux('');
+      await refreshSituations();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la création de la situation.'));
+    }
+  };
+
+  const handlePrintSituation = async (situation, print = false) => {
+    try {
+      // La 1ère situation créée porte toute la TVA de la facture ;
+      // le solde se calcule sur le cumul des situations jusqu'à celle-ci incluse
+      const estPremiere = situations.length > 0 && situations[0].id === situation.id;
+      const index = situations.findIndex((s) => s.id === situation.id);
+      const jusquIci = index >= 0 ? situations.slice(0, index + 1) : [situation];
+      const cumulTaux = Math.round(jusquIci.reduce((sum, s) => sum + (Number(s.taux) || 0), 0) * 100) / 100;
+      const cumulTtc = jusquIci.reduce((sum, s) => sum + (Number(s.montant_ttc) || 0), 0);
+      const doc = await generateFactureSituationPDF(situation, situationsFacture, parametres, { estPremiere, cumulTaux, cumulTtc });
+      if (print) {
+        doc.autoPrint();
+        window.open(doc.output('bloburl'), '_blank');
+      } else {
+        doc.save(`${situation.numero.replace(/\//g, '-')}.pdf`);
+      }
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la génération du PDF.'));
+    }
+  };
+
+  const handleToggleSituationPaid = async (situation) => {
+    try {
+      if (situation.statut_paiement === 'payee') {
+        const ok = await confirm({
+          title: 'Annuler le paiement de la situation',
+          message: `Annuler le paiement de ${situation.numero} ? Le statut de la facture sera recalculé.`,
+          confirmText: 'Annuler le paiement',
+          danger: true,
+        });
+        if (!ok) return;
+        await window.electronAPI.factureSituations.markUnpaid(situation.id);
+      } else {
+        openPaymentDateModal('situation', situation);
+        return;
+      }
+      await refreshSituations();
+      loadData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la mise à jour du paiement.'));
+    }
+  };
+
+  const handleDeleteSituation = async (situation) => {
+    if (situation.statut_paiement === 'payee') {
+      toast.error("Annulez d'abord le paiement de cette situation avant de la supprimer.");
+      return;
+    }
+    const ok = await confirm({
+      title: 'Supprimer la situation',
+      message: `Supprimer la facture de situation ${situation.numero} ?`,
+      confirmText: 'Supprimer',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await window.electronAPI.factureSituations.delete(situation.id);
+      await refreshSituations();
+      await loadData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la suppression.'));
+    }
+  };
+
+
   const formatPrice = (price) => {
     return new Intl.NumberFormat('fr-FR').format(price);
   };
@@ -141,21 +559,114 @@ const Factures = () => {
   };
 
   const getPaiementBadge = (facture) => {
-    if (facture.statut_paiement === 'payee') {
-      return <span className="badge badge-success">Payée</span>;
+    const avoirs = facture.total_avoirs || 0;
+    if (avoirs > 0 && resteACrediter(facture) <= 0.5) {
+      return <span className="badge badge-danger">Annulée par avoir</span>;
     }
-    return <span className="badge badge-warning">Non payée</span>;
+    const mentionAvoir = avoirs > 0 && (
+      <div style={{ marginTop: 3, fontSize: 11, color: '#b91c1c' }}>
+        Avoir : - {formatPrice(avoirs)} FCFA
+      </div>
+    );
+    if (facture.statut_paiement === 'payee') {
+      return (
+        <div>
+          <span className="badge badge-success">Payée</span>
+          {facture.date_paiement && (
+            <div style={{ marginTop: 3, fontSize: 11, color: '#64748b' }}>
+              Le {formatDate(facture.date_paiement)}
+            </div>
+          )}
+          {mentionAvoir}
+        </div>
+      );
+    }
+    return (
+      <div>
+        <span className="badge badge-warning">Non payée</span>
+        {mentionAvoir}
+      </div>
+    );
   };
 
   const filteredFactures = factures.filter((f) => {
     const term = searchTerm.toLowerCase();
-    return (
+    const matchSearch =
       !term ||
-      (f.numero && f.numero.toLowerCase().includes(term)) ||
-      (f.client_nom && f.client_nom.toLowerCase().includes(term)) ||
-      (f.objet && f.objet.toLowerCase().includes(term))
-    );
+      matchesWordPrefix(f.numero, term) ||
+      matchesWordPrefix(f.client_nom, term) ||
+      matchesWordPrefix(f.objet, term);
+    const matchPaiement =
+      paiementFilter === 'tous' ||
+      (paiementFilter === 'payee' && f.statut_paiement === 'payee') ||
+      (paiementFilter === 'non_payee' && f.statut_paiement !== 'payee');
+    const matchDate = inDateRange(f.date, dateFrom, dateTo);
+    const matchMontant = inNumberRange(f.total_ttc, montantMin, montantMax);
+    return matchSearch && matchPaiement && matchDate && matchMontant;
   });
+
+  const sortedFilteredFactures = useMemo(() => {
+    const items = [...filteredFactures];
+    const { key, direction } = sortConfig;
+    const factor = direction === 'asc' ? 1 : -1;
+    return items.sort((a, b) => {
+      if (key === 'date') {
+        return ((new Date(a.date).getTime() || 0) - (new Date(b.date).getTime() || 0)) * factor;
+      }
+      if (key === 'total_ttc') {
+        return ((Number(a.total_ttc) || 0) - (Number(b.total_ttc) || 0)) * factor;
+      }
+      return String(a[key] || '').localeCompare(String(b[key] || ''), 'fr', { sensitivity: 'base' }) * factor;
+    });
+  }, [filteredFactures, sortConfig]);
+
+  const toggleSort = (key) => {
+    setSortConfig((prev) =>
+      prev.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: key === 'date' ? 'desc' : 'asc' }
+    );
+  };
+
+  const sortMark = (key) => {
+    if (sortConfig.key !== key) return ' ↕';
+    return sortConfig.direction === 'asc' ? ' ↑' : ' ↓';
+  };
+
+  const filteredProformasForConvert = useMemo(() => {
+    const term = convertSearchTerm.toLowerCase();
+    if (!term) return proformas;
+    return proformas.filter((p) =>
+      matchesWordPrefix(p.numero, term) ||
+      matchesWordPrefix(p.client_nom, term) ||
+      matchesWordPrefix(p.objet, term)
+    );
+  }, [proformas, convertSearchTerm]);
+
+  const activeCount =
+    (paiementFilter !== 'tous' ? 1 : 0) +
+    (dateFrom || dateTo ? 1 : 0) +
+    (montantMin !== '' || montantMax !== '' ? 1 : 0);
+
+  const resetFilters = () => {
+    setPaiementFilter('tous');
+    setDateFrom('');
+    setDateTo('');
+    setMontantMin('');
+    setMontantMax('');
+  };
+
+  const selection = useBulkSelection(sortedFilteredFactures);
+  const handleBulkDelete = () =>
+    bulkDelete({
+      ids: selection.selectedIds,
+      deleteFn: (id) => window.electronAPI.factures.delete(id),
+      confirm,
+      toast,
+      reload: loadData,
+      clear: selection.clear,
+      labels: { confirmTitle: 'Supprimer les factures', singular: 'facture', plural: 'factures' },
+    });
 
   return (
     <div className="page fade-in">
@@ -164,45 +675,111 @@ const Factures = () => {
           <h1>Factures Définitives</h1>
           <p className="subtitle">Gérez vos factures définitives</p>
         </div>
-        <button className="btn btn-primary" onClick={() => setConvertModalOpen(true)}>
-          <FileCheck size={20} />
-          Convertir une proforma
-        </button>
+        <div className="header-actions">
+          {selection.count > 0 && (
+            <button className="btn btn-danger bulk-delete-btn" onClick={handleBulkDelete}>
+              <Trash2 size={18} />
+              Supprimer la sélection ({selection.count})
+            </button>
+          )}
+          <button className="btn btn-primary" onClick={() => { setConvertDate(today()); setConvertModalOpen(true); }}>
+            <FileCheck size={20} />
+            Convertir une proforma
+          </button>
+        </div>
       </div>
 
       <div className="content-card">
-        <div className="search-bar">
-          <Search size={20} />
-          <input
-            type="text"
-            placeholder="Rechercher par numéro, client ou objet..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+        <FilterBar
+          searchValue={searchTerm}
+          onSearchChange={setSearchTerm}
+          searchPlaceholder="Rechercher par numéro, client ou objet..."
+          activeCount={activeCount}
+          onReset={resetFilters}
+        >
+          <div className="filter-group">
+            <label>Paiement</label>
+            <select
+              className="filter-select"
+              value={paiementFilter}
+              onChange={(e) => setPaiementFilter(e.target.value)}
+            >
+              <option value="tous">Tous les paiements</option>
+              <option value="payee">Payées</option>
+              <option value="non_payee">Non payées</option>
+            </select>
+          </div>
+
+          <div className="filter-group">
+            <label>Montant TTC (FCFA)</label>
+            <div className="filter-range">
+              <input
+                type="number"
+                min="0"
+                placeholder="Min"
+                value={montantMin}
+                onChange={(e) => setMontantMin(e.target.value)}
+              />
+              <span>—</span>
+              <input
+                type="number"
+                min="0"
+                placeholder="Max"
+                value={montantMax}
+                onChange={(e) => setMontantMax(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <PeriodFilter
+            label="Date de la facture"
+            from={dateFrom}
+            to={dateTo}
+            onChange={(f, t) => {
+              setDateFrom(f);
+              setDateTo(t);
+            }}
           />
-        </div>
+        </FilterBar>
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>N°</th>
-                <th>Date</th>
-                <th>Client</th>
-                <th>Objet</th>
-                <th>Montant TTC</th>
-                <th>Paiement</th>
+                <th className="select-col">
+                  <input
+                    type="checkbox"
+                    checked={selection.allSelected}
+                    onChange={selection.toggleAll}
+                    title="Tout sélectionner"
+                  />
+                </th>
+                <th onClick={() => toggleSort('numero')} style={{ cursor: 'pointer' }}>N°{sortMark('numero')}</th>
+                <th onClick={() => toggleSort('date')} style={{ cursor: 'pointer' }}>Date{sortMark('date')}</th>
+                <th onClick={() => toggleSort('client_nom')} style={{ cursor: 'pointer' }}>Client{sortMark('client_nom')}</th>
+                <th onClick={() => toggleSort('objet')} style={{ cursor: 'pointer' }}>Objet{sortMark('objet')}</th>
+                <th onClick={() => toggleSort('total_ttc')} style={{ cursor: 'pointer' }}>Montant TTC{sortMark('total_ttc')}</th>
+                <th onClick={() => toggleSort('statut_paiement')} style={{ cursor: 'pointer' }}>Paiement{sortMark('statut_paiement')}</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredFactures.length === 0 ? (
+              {sortedFilteredFactures.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="empty-state">
-                    {searchTerm ? 'Aucune facture trouvée' : 'Aucune facture enregistrée'}
+                  <td colSpan="8" className="empty-state">
+                    {searchTerm || activeCount > 0 ? 'Aucune facture trouvée' : 'Aucune facture enregistrée'}
                   </td>
                 </tr>
               ) : (
-                filteredFactures.map((facture) => (
+                sortedFilteredFactures.map((facture) => (
                   <tr key={facture.id}>
+                    <td className="select-col">
+                      <input
+                        type="checkbox"
+                        checked={selection.isSelected(facture.id)}
+                        onChange={() => selection.toggle(facture.id)}
+                        title="Sélectionner"
+                      />
+                    </td>
                     <td className="font-semibold">{facture.numero}</td>
                     <td>{formatDate(facture.date)}</td>
                     <td>{facture.client_nom}</td>
@@ -220,7 +797,7 @@ const Factures = () => {
                           >
                             <RotateCcw size={16} />
                           </button>
-                        ) : (
+                        ) : resteACrediter(facture) > 0.5 && (
                           <button
                             className="btn-icon"
                             style={{ color: '#10b981' }}
@@ -237,6 +814,36 @@ const Factures = () => {
                         >
                           <Eye size={16} />
                         </button>
+                        {(facture.statut_paiement !== 'payee' || facture.nb_situations > 0) && !(facture.total_avoirs > 0) && (
+                          <button
+                            className="btn-icon"
+                            style={{ color: '#7c3aed' }}
+                            onClick={() => openSituations(facture)}
+                            title="Facturation par situation (paiement partiel en %)"
+                          >
+                            <Percent size={16} />
+                          </button>
+                        )}
+                        {facture.statut_paiement !== 'payee' && !(facture.total_avoirs > 0) && (
+                          <button
+                            className="btn-icon"
+                            style={{ color: '#f59e0b' }}
+                            onClick={() => handleEdit(facture)}
+                            title="Modifier"
+                          >
+                            <Edit2 size={16} />
+                          </button>
+                        )}
+                        {!(facture.nb_situations > 0) && resteACrediter(facture) > 0.5 && (
+                          <button
+                            className="btn-icon"
+                            style={{ color: '#b91c1c' }}
+                            onClick={() => openAvoir(facture)}
+                            title="Créer un avoir (annuler tout ou partie de la facture)"
+                          >
+                            <FileMinus size={16} />
+                          </button>
+                        )}
                         <button
                           className="btn-icon btn-icon-success"
                           onClick={() => handlePrint(facture)}
@@ -276,6 +883,391 @@ const Factures = () => {
         </div>
       </div>
 
+      {/* Modal Modification Facture */}
+      <Modal
+        isOpen={editModalOpen}
+        onClose={() => { setEditModalOpen(false); setEditingFacture(null); }}
+        title={editingFacture ? `Modifier la facture ${editingFacture.numero}` : 'Modifier la facture'}
+        size="xlarge"
+      >
+        {editingFacture && (
+          <form onSubmit={handleEditSubmit} className="form">
+            <div className="form-row">
+              <div className="form-group">
+                <label>Date *</label>
+                <input
+                  type="date"
+                  value={editForm.date}
+                  onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>Client</label>
+                <input type="text" value={editingFacture.client_nom || ''} readOnly className="readonly" />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label>Objet</label>
+              <input
+                type="text"
+                value={editForm.objet}
+                onChange={(e) => setEditForm({ ...editForm, objet: e.target.value })}
+              />
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>Main d'œuvre (FCFA)</label>
+                <input
+                  type="number"
+                  value={editForm.prestations}
+                  onChange={(e) => setEditForm({ ...editForm, prestations: e.target.value })}
+                  min="0"
+                  step="0.01"
+                />
+              </div>
+              <div className="form-group">
+                <label>Remise (FCFA)</label>
+                <input
+                  type="number"
+                  value={editForm.remise}
+                  onChange={(e) => setEditForm({ ...editForm, remise: e.target.value })}
+                  min="0"
+                  step="0.01"
+                />
+              </div>
+            </div>
+
+            <div className="lignes-section">
+              <div className="lignes-header">
+                <h3>Lignes de la facture</h3>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={editAddSection} title="Regrouper les lignes suivantes sous un titre avec sous-total">
+                    <FolderPlus size={16} />
+                    Ajouter une section
+                  </button>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={editAddLigne}>
+                    <Plus size={16} />
+                    Ajouter une ligne
+                  </button>
+                </div>
+              </div>
+
+              {editForm.lignes.length === 0 ? (
+                <div className="ligne-empty-state">Aucune ligne.</div>
+              ) : (
+                <div className="ligne-table-wrapper">
+                  <table className="data-table ligne-table">
+                    <thead>
+                      <tr>
+                        <th>Désignation</th>
+                        <th>Unité</th>
+                        <th>Quantité</th>
+                        <th>Prix unitaire</th>
+                        <th>Montant</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {editForm.lignes.map((ligne, index) => {
+                        if (ligne._type === 'section') {
+                          let sousTotal = 0;
+                          for (let i = index + 1; i < editForm.lignes.length; i++) {
+                            if (editForm.lignes[i]._type === 'section') break;
+                            sousTotal += editForm.lignes[i].montant || 0;
+                          }
+                          return (
+                            <tr key={index}>
+                              <td colSpan="4" style={{ background: '#eef2ff', padding: '0.4rem 0.6rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                  <FolderPlus size={16} style={{ color: '#1e3a8a', flexShrink: 0 }} />
+                                  <input
+                                    type="text"
+                                    value={ligne.titre}
+                                    onChange={(e) => editLigneChange(index, 'titre', e.target.value)}
+                                    placeholder="Titre de la section"
+                                    style={{ fontWeight: 700, color: '#1e3a8a', background: 'transparent', border: 'none', borderBottom: '1px dashed #94a3b8', width: '100%' }}
+                                  />
+                                </div>
+                              </td>
+                              <td style={{ background: '#eef2ff', textAlign: 'right', fontWeight: 700, color: '#1e3a8a' }}>
+                                {formatPrice(sousTotal)}
+                              </td>
+                              <td style={{ background: '#eef2ff' }}>
+                                <button
+                                  type="button"
+                                  className="btn-remove-ligne"
+                                  onClick={() => editRemoveLigne(index)}
+                                  title="Supprimer la section (les lignes sont conservées)"
+                                >
+                                  <Trash2 size={18} />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        }
+                        return (
+                          <tr key={index}>
+                            <td>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                <input
+                                  type="text"
+                                  value={ligne.designation}
+                                  onChange={(e) => editLigneChange(index, 'designation', e.target.value)}
+                                />
+                                {!(openDescRows[index] || String(ligne.description || '').trim()) && (
+                                  <button
+                                    type="button"
+                                    title="Ajouter une description détaillée"
+                                    onClick={() => setOpenDescRows((p) => ({ ...p, [index]: true }))}
+                                    style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748b', padding: 4, flexShrink: 0 }}
+                                  >
+                                    <AlignLeft size={15} />
+                                  </button>
+                                )}
+                              </div>
+                              {(openDescRows[index] || String(ligne.description || '').trim()) ? (
+                                <textarea
+                                  value={ligne.description || ''}
+                                  onChange={(e) => editLigneChange(index, 'description', e.target.value)}
+                                  placeholder="Description détaillée (optionnel)"
+                                  rows={2}
+                                  style={{ marginTop: 4, width: '100%', fontSize: '0.8rem', resize: 'vertical', border: '1px solid #e5e7eb', borderRadius: 6, padding: '0.4rem 0.6rem', color: 'inherit', background: '#fff' }}
+                                />
+                              ) : null}
+                            </td>
+                            <td>
+                              <input
+                                type="text"
+                                value={ligne.unite}
+                                onChange={(e) => editLigneChange(index, 'unite', e.target.value)}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="number"
+                                value={ligne.quantite}
+                                onChange={(e) => editLigneChange(index, 'quantite', e.target.value)}
+                                min="0"
+                                step="1"
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="number"
+                                value={ligne.prix_unitaire}
+                                onChange={(e) => editLigneChange(index, 'prix_unitaire', e.target.value)}
+                                min="0"
+                                step="0.01"
+                              />
+                            </td>
+                            <td>
+                              <input type="text" value={formatPrice(ligne.montant)} readOnly className="readonly" />
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                className="btn-remove-ligne"
+                                onClick={() => editRemoveLigne(index)}
+                                title="Supprimer"
+                              >
+                                <Trash2 size={18} />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {(() => {
+              const t = computeEditTotals();
+              return (
+                <div className="totaux-section">
+                  <div className="totaux-grid">
+                    <div className="totaux-item">
+                      <span>Total Matériel HT :</span>
+                      <strong>{formatPrice(t.total_materiel_ht)} FCFA</strong>
+                    </div>
+                    <div className="totaux-item">
+                      <span>Main d'œuvre :</span>
+                      <strong>{formatPrice(t.prestations)} FCFA</strong>
+                    </div>
+                    <div className="totaux-item">
+                      <span>Remise :</span>
+                      <strong>- {formatPrice(t.remise)} FCFA</strong>
+                    </div>
+                    <div className="totaux-item">
+                      <span>Total HT :</span>
+                      <strong>{formatPrice(t.total_ht)} FCFA</strong>
+                    </div>
+                    <div className="totaux-item">
+                      <span>TVA ({t.tvaApplicable ? t.tauxTVA : 0}%) :</span>
+                      <strong>{formatPrice(t.tva)} FCFA</strong>
+                    </div>
+                    <div className="totaux-item total-ttc">
+                      <span>Total TTC :</span>
+                      <strong>{formatPrice(t.total_ttc)} FCFA</strong>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div className="form-actions">
+              <button type="button" className="btn btn-secondary" onClick={() => { setEditModalOpen(false); setEditingFacture(null); }}>
+                Annuler
+              </button>
+              <button type="submit" className="btn btn-primary">
+                Enregistrer les modifications
+              </button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      {/* Modal Création d'un avoir */}
+      <Modal
+        isOpen={!!avoirFacture}
+        onClose={closeAvoir}
+        title={avoirFacture ? `Créer un avoir sur la facture ${avoirFacture.numero}` : 'Créer un avoir'}
+        size="xlarge"
+      >
+        {avoirFacture && (() => {
+          const t = computeAvoirTotals();
+          const reste = resteACrediter(avoirFacture);
+          const depasse = t.total_ttc > reste + 0.5;
+          return (
+            <form onSubmit={handleAvoirSubmit} className="form">
+              <p style={{ marginTop: 0, color: '#475569' }}>
+                Client : <strong>{avoirFacture.client_nom}</strong> — Facture de {formatPrice(avoirFacture.total_ttc)} FCFA
+                {avoirFacture.total_avoirs > 0 && <> — déjà créditée de {formatPrice(avoirFacture.total_avoirs)} FCFA</>}
+                {' '}— reste à créditer : <strong>{formatPrice(reste)} FCFA</strong>
+              </p>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Type d'avoir</label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 'normal' }}>
+                    <input
+                      type="radio"
+                      checked={avoirForm.type === 'total'}
+                      disabled={avoirFacture.total_avoirs > 0}
+                      onChange={() => setAvoirForm((prev) => ({ ...prev, type: 'total' }))}
+                    />
+                    Annuler toute la facture
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 'normal' }}>
+                    <input
+                      type="radio"
+                      checked={avoirForm.type === 'partiel'}
+                      onChange={() => setAvoirForm((prev) => ({ ...prev, type: 'partiel' }))}
+                    />
+                    Créditer une partie (lignes, quantités ou prix)
+                  </label>
+                </div>
+                <div className="form-group">
+                  <label>Date de l'avoir *</label>
+                  <input
+                    type="date"
+                    value={avoirForm.date}
+                    min={String(avoirFacture.date || '').slice(0, 10)}
+                    onChange={(e) => setAvoirForm((prev) => ({ ...prev, date: e.target.value }))}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label>Motif *</label>
+                <input
+                  type="text"
+                  value={avoirForm.motif}
+                  onChange={(e) => setAvoirForm((prev) => ({ ...prev, motif: e.target.value }))}
+                  placeholder="Ex : erreur de quantité, retour de matériel, remise accordée…"
+                  required
+                />
+              </div>
+
+              {avoirForm.type === 'partiel' && (
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 40 }}></th>
+                      <th>Désignation</th>
+                      <th style={{ width: 110 }}>Quantité</th>
+                      <th style={{ width: 150 }}>Prix unit. HT</th>
+                      <th style={{ width: 140 }}>Montant HT</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {avoirForm.lignes.map((l, i) => (
+                      <tr key={i} style={{ opacity: l.inclus ? 1 : 0.55 }}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={l.inclus}
+                            onChange={(e) => changeAvoirLigne(i, 'inclus', e.target.checked)}
+                            aria-label={`Créditer ${l.designation}`}
+                          />
+                        </td>
+                        <td>{l.designation}</td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={l.quantite}
+                            disabled={!l.inclus}
+                            onChange={(e) => changeAvoirLigne(i, 'quantite', e.target.value)}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={l.prix_unitaire}
+                            disabled={!l.inclus}
+                            onChange={(e) => changeAvoirLigne(i, 'prix_unitaire', e.target.value)}
+                          />
+                        </td>
+                        <td>{l.inclus ? formatPrice(Math.round((parseFloat(l.quantite) || 0) * (parseFloat(l.prix_unitaire) || 0))) : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              <div style={{ marginTop: '1rem', textAlign: 'right', lineHeight: 1.8 }}>
+                <div>Total HT de l'avoir : <strong>{formatPrice(t.total_ht)} FCFA</strong></div>
+                {t.tva > 0 && <div>TVA : <strong>{formatPrice(t.tva)} FCFA</strong></div>}
+                <div style={{ fontSize: '1.1rem' }}>Total TTC de l'avoir : <strong>{formatPrice(t.total_ttc)} FCFA</strong></div>
+                {depasse && (
+                  <div style={{ color: '#b91c1c' }}>
+                    Ce montant dépasse le reste à créditer ({formatPrice(reste)} FCFA).
+                  </div>
+                )}
+              </div>
+
+              <div className="form-actions">
+                <button type="button" className="btn btn-secondary" onClick={closeAvoir}>
+                  Annuler
+                </button>
+                <button type="submit" className="btn btn-primary" disabled={avoirEnCours || depasse || t.total_ttc <= 0}>
+                  Créer l'avoir
+                </button>
+              </div>
+            </form>
+          );
+        })()}
+      </Modal>
+
       {/* Modal Conversion Proforma */}
       <Modal
         isOpen={convertModalOpen}
@@ -287,7 +1279,29 @@ const Factures = () => {
           {proformas.length === 0 ? (
             <p className="empty-message">Aucune proforma disponible pour conversion</p>
           ) : (
-            <table className="data-table">
+            <>
+              <div className="form-group" style={{ marginBottom: '1rem', maxWidth: '260px' }}>
+                <label htmlFor="convert-date">Date de la facture</label>
+                <input
+                  id="convert-date"
+                  type="date"
+                  className="form-control"
+                  value={convertDate}
+                  onChange={(e) => setConvertDate(e.target.value)}
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: '1rem', maxWidth: '420px' }}>
+                <label htmlFor="convert-search">Rechercher une proforma</label>
+                <input
+                  id="convert-search"
+                  type="text"
+                  className="form-control"
+                  value={convertSearchTerm}
+                  onChange={(e) => setConvertSearchTerm(e.target.value)}
+                  placeholder="Tapez numéro, client ou objet"
+                />
+              </div>
+              <table className="data-table">
               <thead>
                 <tr>
                   <th>N°</th>
@@ -298,7 +1312,7 @@ const Factures = () => {
                 </tr>
               </thead>
               <tbody>
-                {proformas.map((proforma) => (
+                {filteredProformasForConvert.map((proforma) => (
                   <tr key={proforma.id}>
                     <td>{proforma.numero}</td>
                     <td>{formatDate(proforma.date)}</td>
@@ -314,8 +1328,14 @@ const Factures = () => {
                     </td>
                   </tr>
                 ))}
+                {filteredProformasForConvert.length === 0 && (
+                  <tr>
+                    <td colSpan="5" className="empty-state">Aucune proforma ne correspond à la recherche.</td>
+                  </tr>
+                )}
               </tbody>
             </table>
+            </>
           )}
         </div>
       </Modal>
@@ -350,7 +1370,14 @@ const Factures = () => {
               <tbody>
                 {selectedFacture.lignes.map((ligne, index) => (
                   <tr key={index}>
-                    <td>{ligne.designation}</td>
+                    <td>
+                      {ligne.designation}
+                      {ligne.description ? (
+                        <div style={{ whiteSpace: 'pre-line', color: '#64748b', fontSize: '0.8rem', marginTop: 2 }}>
+                          {ligne.description}
+                        </div>
+                      ) : null}
+                    </td>
                     <td>{ligne.unite}</td>
                     <td>{ligne.quantite}</td>
                     <td>{formatPrice(ligne.prix_unitaire)}</td>
@@ -366,7 +1393,7 @@ const Factures = () => {
                 <strong>{formatPrice(selectedFacture.total_ht)} FCFA</strong>
               </div>
               <div className="totaux-row">
-                <span>TVA (18%) :</span>
+                <span>TVA ({selectedFacture.total_ht ? Math.round((selectedFacture.tva / selectedFacture.total_ht) * 100) : 18}%) :</span>
                 <strong>{formatPrice(selectedFacture.tva)} FCFA</strong>
               </div>
               <div className="totaux-row total">
@@ -377,8 +1404,150 @@ const Factures = () => {
           </div>
         </Modal>
       )}
+
+      {situationsModalOpen && situationsFacture && (
+        <Modal
+          isOpen={situationsModalOpen}
+          onClose={() => setSituationsModalOpen(false)}
+          title={`Facturation par situation — ${situationsFacture.numero}`}
+          size="large"
+        >
+          <div className="form">
+            <p style={{ color: '#64748b', marginTop: 0 }}>
+              Base TTC du marché : <strong>{formatPrice(situationsFacture.total_ttc)} FCFA</strong> — Déjà facturé : <strong>{tauxDejaEmis}%</strong> — Reste à facturer : <strong>{tauxRestant}%</strong>
+            </p>
+
+            {situations.length > 0 && (
+              <table className="data-table" style={{ marginBottom: 16 }}>
+                <thead>
+                  <tr>
+                    <th>N°</th>
+                    <th>Taux</th>
+                    <th>Montant TTC</th>
+                    <th>Statut</th>
+                    <th>Date de paiement</th>
+                    <th style={{ textAlign: 'right' }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {situations.map((s, idx) => (
+                    <tr key={s.id}>
+                      <td className="font-semibold">
+                        {s.numero}
+                        {idx === 0 && situationsFacture.tva > 0 && (
+                          <div style={{ fontSize: 11, color: '#7c3aed', fontWeight: 500 }}>TVA incluse</div>
+                        )}
+                      </td>
+                      <td>{s.taux}%</td>
+                      <td>{formatPrice(s.montant_ttc)} FCFA</td>
+                      <td>
+                        {s.statut_paiement === 'payee' ? (
+                          <span className="badge badge-success">Payée</span>
+                        ) : (
+                          <span className="badge badge-warning">Non payée</span>
+                        )}
+                      </td>
+                      <td>{s.date_paiement ? formatDate(s.date_paiement) : '-'}</td>
+                      <td style={{ textAlign: 'right' }}>
+                        <div className="action-buttons">
+                          <button
+                            className="btn-icon"
+                            style={{ color: s.statut_paiement === 'payee' ? '#f59e0b' : '#10b981' }}
+                            onClick={() => handleToggleSituationPaid(s)}
+                            title={s.statut_paiement === 'payee' ? 'Annuler le paiement' : 'Marquer payée'}
+                          >
+                            {s.statut_paiement === 'payee' ? <RotateCcw size={15} /> : <CheckCircle size={15} />}
+                          </button>
+                          <button className="btn-icon btn-icon-success" title="Imprimer" onClick={() => handlePrintSituation(s, true)}>
+                            <Printer size={15} />
+                          </button>
+                          <button className="btn-icon btn-icon-info" title="Télécharger PDF" onClick={() => handlePrintSituation(s, false)}>
+                            <Download size={15} />
+                          </button>
+                          <button className="btn-icon btn-icon-danger" title="Supprimer" onClick={() => handleDeleteSituation(s)}>
+                            <X size={15} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {tauxRestant > 0 ? (
+              <div className="form-row" style={{ alignItems: 'flex-end' }}>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>Nouveau taux à facturer (%)</label>
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                    {[10, 50, 95].filter((t) => t <= tauxRestant).map((t) => (
+                      <button key={t} type="button" className="btn btn-secondary btn-sm" onClick={() => setNouveauTaux(String(t))}>
+                        {t}%
+                      </button>
+                    ))}
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => setNouveauTaux(String(tauxRestant))}>
+                      Solde ({tauxRestant}%)
+                    </button>
+                  </div>
+                  <input
+                    type="number"
+                    min="0.01"
+                    max={tauxRestant}
+                    step="0.01"
+                    value={nouveauTaux}
+                    onChange={(e) => setNouveauTaux(e.target.value)}
+                    placeholder={`Ex : ${tauxRestant}`}
+                  />
+                </div>
+                <button type="button" className="btn btn-primary" onClick={handleAddSituation}>
+                  <Plus size={16} />
+                  Créer la facture de situation
+                </button>
+              </div>
+            ) : (
+              <p style={{ color: '#10b981', fontWeight: 600 }}>100 % du marché a été facturé via les situations ci-dessus.</p>
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {paymentTarget && (
+        <Modal
+          isOpen={!!paymentTarget}
+          onClose={() => setPaymentTarget(null)}
+          title="Date du paiement"
+          size="small"
+        >
+          <form className="form" onSubmit={handleConfirmPayment}>
+            <p style={{ margin: '0 0 12px', color: '#64748b' }}>
+              Paiement de {paymentTarget.type === 'facture' ? 'la facture' : 'la situation'}{' '}
+              <strong>{paymentTarget.item.numero}</strong>
+            </p>
+            <div className="form-group">
+              <label htmlFor="facture-payment-date">Date effective du paiement *</label>
+              <input
+                id="facture-payment-date"
+                type="date"
+                value={paymentDate}
+                onChange={(event) => setPaymentDate(event.target.value)}
+                required
+              />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+              <button type="button" className="btn btn-secondary" onClick={() => setPaymentTarget(null)}>
+                Annuler
+              </button>
+              <button type="submit" className="btn btn-primary">
+                <CheckCircle size={16} />
+                Enregistrer le paiement
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
     </div>
   );
 };
+
 
 export default Factures;

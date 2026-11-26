@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Save, Download, Upload } from 'lucide-react';
+import { Save, Download, Upload, Lock, ShieldCheck, ShieldOff, KeyRound, Copy, FolderOpen, X } from 'lucide-react';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
@@ -13,13 +13,189 @@ const Parametres = () => {
   const [parametres, setParametres] = useState({});
   const [isSaving, setIsSaving] = useState(false);
 
+  // Sécurité (mot de passe de l'application)
+  const [security, setSecurity] = useState({ enabled: false, hasPassword: false });
+  const [pwdCurrent, setPwdCurrent] = useState('');
+  const [pwdNew, setPwdNew] = useState('');
+  const [pwdConfirm, setPwdConfirm] = useState('');
+  const [isSavingPwd, setIsSavingPwd] = useState(false);
+
+  // Licence / période d'essai
+  const [licenseStatus, setLicenseStatus] = useState(null);
+  const [statutSauvegarde, setStatutSauvegarde] = useState(null);
+  const [activationCode, setActivationCode] = useState('');
+  const [isActivating, setIsActivating] = useState(false);
+
   useEffect(() => {
     loadParametres();
+    loadSecurity();
+    loadLicense();
+    loadStatutSauvegarde();
   }, []);
+
+  const loadStatutSauvegarde = async () => {
+    try {
+      setStatutSauvegarde(await window.electronAPI.database.getStatutSauvegarde());
+    } catch {
+      setStatutSauvegarde(null);
+    }
+  };
+
+  const formatDateHeure = (iso) => (iso
+    ? new Date(iso).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
+    : 'aucune pour le moment');
+
+  // Le second dossier est enregistré directement par le processus principal :
+  // on met aussi à jour l'état local, pour que « Enregistrer les paramètres »
+  // ne réécrive pas l'ancienne valeur.
+  const handleChoisirDossier = async () => {
+    try {
+      const result = await window.electronAPI.database.choisirDossierSauvegarde();
+      if (result.canceled) return;
+      setParametres((prev) => ({ ...prev, sauvegarde_dossier_secondaire: result.dossier }));
+      toast.success('Second dossier de sauvegarde enregistré. Une première copie y a été faite.');
+      loadStatutSauvegarde();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Impossible d\'utiliser ce dossier.'));
+    }
+  };
+
+  const handleRetirerDossier = async () => {
+    const ok = await confirm({
+      title: 'Retirer le second dossier',
+      message: 'Les sauvegardes ne seront plus copiées dans ce dossier. Les copies déjà faites y restent. Continuer ?',
+      confirmText: 'Retirer',
+      danger: false,
+    });
+    if (!ok) return;
+    try {
+      await window.electronAPI.database.retirerDossierSauvegarde();
+      setParametres((prev) => {
+        const { sauvegarde_dossier_secondaire: _retire, ...reste } = prev;
+        return reste;
+      });
+      loadStatutSauvegarde();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors du retrait du dossier.'));
+    }
+  };
 
   const loadParametres = async () => {
     const params = await window.electronAPI.parametres.getAll();
     setParametres(params);
+  };
+
+  const loadSecurity = async () => {
+    try {
+      const status = await window.electronAPI.security.getStatus();
+      setSecurity(status);
+    } catch (error) {
+      // silencieux : la section sécurité reste à l'état par défaut
+    }
+  };
+
+  const loadLicense = async () => {
+    try {
+      const status = await window.electronAPI.license.getStatus();
+      setLicenseStatus(status);
+    } catch (error) {
+      // module licence indisponible : section masquée
+    }
+  };
+
+  const handleCopyMachineId = async () => {
+    if (!licenseStatus) return;
+    try {
+      await navigator.clipboard.writeText(licenseStatus.machineId);
+      toast.success('ID machine copié dans le presse-papiers.');
+    } catch {
+      toast.error('Impossible de copier automatiquement.');
+    }
+  };
+
+  const handleActivateLicense = async (e) => {
+    e.preventDefault();
+    if (!activationCode.trim()) {
+      toast.error("Saisissez le code d'activation reçu.");
+      return;
+    }
+    setIsActivating(true);
+    try {
+      const res = await window.electronAPI.license.activate(activationCode.trim());
+      if (res.success) {
+        toast.success('Licence activée avec succès — merci !');
+        setActivationCode('');
+        loadLicense();
+      } else {
+        toast.error(res.message || "Code d'activation invalide.");
+      }
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Erreur lors de l'activation."));
+    } finally {
+      setIsActivating(false);
+    }
+  };
+
+  const resetPwdFields = () => {
+    setPwdCurrent('');
+    setPwdNew('');
+    setPwdConfirm('');
+  };
+
+  const handleSavePassword = async (e) => {
+    e.preventDefault();
+    if (pwdNew.length < 4) {
+      toast.error('Le mot de passe doit contenir au moins 4 caractères.');
+      return;
+    }
+    if (pwdNew !== pwdConfirm) {
+      toast.error('Les deux mots de passe ne correspondent pas.');
+      return;
+    }
+    setIsSavingPwd(true);
+    try {
+      await window.electronAPI.security.setPassword({
+        currentPassword: pwdCurrent,
+        newPassword: pwdNew,
+      });
+      toast.success(
+        security.hasPassword
+          ? 'Mot de passe mis à jour avec succès.'
+          : 'Mot de passe activé avec succès.'
+      );
+      resetPwdFields();
+      loadSecurity();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de l\'enregistrement du mot de passe.'));
+    } finally {
+      setIsSavingPwd(false);
+    }
+  };
+
+  const handleDisablePassword = async () => {
+    const ok = await confirm({
+      title: 'Désactiver le mot de passe',
+      message: 'L\'application ne sera plus protégée par mot de passe au démarrage. Continuer ?',
+      confirmText: 'Désactiver',
+      danger: true,
+    });
+    if (!ok) return;
+
+    if (!pwdCurrent) {
+      toast.error('Veuillez saisir le mot de passe actuel pour confirmer la désactivation.');
+      return;
+    }
+    setIsSavingPwd(true);
+    try {
+      await window.electronAPI.security.disable(pwdCurrent);
+      toast.success('Mot de passe désactivé.');
+      resetPwdFields();
+      loadSecurity();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la désactivation du mot de passe.'));
+    } finally {
+      setIsSavingPwd(false);
+    }
   };
 
   const handleChange = (key, value) => {
@@ -27,6 +203,45 @@ const Parametres = () => {
       ...parametres,
       [key]: value
     });
+  };
+
+  const handleImageUpload = (key, successMessage) => (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast.error('Veuillez choisir un fichier image (PNG, JPG...).');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error('Image trop volumineuse (2 Mo maximum).');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      handleChange(key, reader.result);
+      toast.success(successMessage);
+    };
+    reader.onerror = () => toast.error('Impossible de lire le fichier image.');
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const handleSignatureUpload = handleImageUpload(
+    'signature_image',
+    'Image du cachet chargée. Cliquez sur « Enregistrer » pour la conserver.'
+  );
+
+  const handleLogoUpload = handleImageUpload(
+    'entreprise_logo',
+    'Logo chargé. Cliquez sur « Enregistrer » pour la conserver.'
+  );
+
+  const handleRemoveSignature = () => {
+    handleChange('signature_image', '');
+  };
+
+  const handleRemoveLogo = () => {
+    handleChange('entreprise_logo', '');
   };
 
   const handleSubmit = async (e) => {
@@ -38,6 +253,8 @@ const Parametres = () => {
       for (const [key, value] of Object.entries(parametres)) {
         await window.electronAPI.parametres.update(key, value);
       }
+
+      window.dispatchEvent(new Event('app:settings-updated'));
       
       toast.success('Paramètres enregistrés avec succès.');
     } catch (error) {
@@ -92,6 +309,60 @@ const Parametres = () => {
         <form onSubmit={handleSubmit} className="form" style={{ padding: '2rem' }}>
           <div className="form-section">
             <h3 className="form-section-title">Informations de l'entreprise</h3>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>Logo de l'entreprise</label>
+                <small style={{ color: '#6b7280', fontSize: '0.875rem', marginBottom: '0.5rem', display: 'block' }}>
+                  Ce logo sera utilisé dans la barre latérale et dans les PDF.
+                </small>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                  <label className="btn btn-secondary" style={{ cursor: 'pointer', marginBottom: 0 }}>
+                    <Upload size={18} />
+                    Choisir un logo
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleLogoUpload}
+                      style={{ display: 'none' }}
+                    />
+                  </label>
+                  {parametres.entreprise_logo ? (
+                    <button type="button" className="btn btn-danger" onClick={handleRemoveLogo}>
+                      Retirer le logo
+                    </button>
+                  ) : null}
+                </div>
+                {parametres.entreprise_logo ? (
+                  <div
+                    style={{
+                      marginTop: '1rem',
+                      padding: '0.75rem',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: '8px',
+                      display: 'inline-block',
+                      background: '#f9fafb',
+                    }}
+                  >
+                    <img
+                      src={parametres.entreprise_logo}
+                      alt="Logo de l'entreprise"
+                      style={{ maxWidth: '220px', maxHeight: '120px', display: 'block' }}
+                    />
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="form-group">
+                <label>Sous-titre de l'application</label>
+                <input
+                  type="text"
+                  value={parametres.application_sous_titre || ''}
+                  onChange={(e) => handleChange('application_sous_titre', e.target.value)}
+                  placeholder="Gestion Facturation"
+                />
+              </div>
+            </div>
             
             <div className="form-group">
               <label>Nom de l'entreprise</label>
@@ -101,6 +372,26 @@ const Parametres = () => {
                 onChange={(e) => handleChange('entreprise_nom', e.target.value)}
                 required
               />
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>Slogan — ligne 1</label>
+                <input
+                  type="text"
+                  value={parametres.entreprise_slogan1 || ''}
+                  onChange={(e) => handleChange('entreprise_slogan1', e.target.value)}
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Slogan — ligne 2</label>
+                <input
+                  type="text"
+                  value={parametres.entreprise_slogan2 || ''}
+                  onChange={(e) => handleChange('entreprise_slogan2', e.target.value)}
+                />
+              </div>
             </div>
 
             <div className="form-row">
@@ -170,6 +461,95 @@ const Parametres = () => {
                   onChange={(e) => handleChange('entreprise_utb', e.target.value)}
                 />
               </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>Slogan pied de page — ligne 1</label>
+                <input
+                  type="text"
+                  value={parametres.entreprise_slogan_pied1 || ''}
+                  onChange={(e) => handleChange('entreprise_slogan_pied1', e.target.value)}
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Slogan pied de page — ligne 2</label>
+                <input
+                  type="text"
+                  value={parametres.entreprise_slogan_pied2 || ''}
+                  onChange={(e) => handleChange('entreprise_slogan_pied2', e.target.value)}
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="form-section">
+            <h3 className="form-section-title">Signataire &amp; Cachet</h3>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>Titre du signataire</label>
+                <input
+                  type="text"
+                  value={parametres.signataire_titre || ''}
+                  onChange={(e) => handleChange('signataire_titre', e.target.value)}
+                  placeholder="Le Directeur,"
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Nom du signataire</label>
+                <input
+                  type="text"
+                  value={parametres.signataire_nom || ''}
+                  onChange={(e) => handleChange('signataire_nom', e.target.value)}
+                  placeholder="Koffi KAVEGE"
+                />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label>Image du cachet et de la signature (scan)</label>
+              <small style={{ color: '#6b7280', fontSize: '0.875rem', marginBottom: '0.5rem', display: 'block' }}>
+                Importez une image (PNG de préférence, fond transparent) qui sera placée automatiquement
+                au-dessus du nom du signataire sur les proformas et factures.
+              </small>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                <label className="btn btn-secondary" style={{ cursor: 'pointer', marginBottom: 0 }}>
+                  <Upload size={18} />
+                  Choisir une image
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleSignatureUpload}
+                    style={{ display: 'none' }}
+                  />
+                </label>
+                {parametres.signature_image ? (
+                  <button type="button" className="btn btn-danger" onClick={handleRemoveSignature}>
+                    Retirer l'image
+                  </button>
+                ) : null}
+              </div>
+              {parametres.signature_image ? (
+                <div
+                  style={{
+                    marginTop: '1rem',
+                    padding: '0.75rem',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '8px',
+                    display: 'inline-block',
+                    background: '#f9fafb',
+                  }}
+                >
+                  <img
+                    src={parametres.signature_image}
+                    alt="Cachet et signature"
+                    style={{ maxWidth: '220px', maxHeight: '120px', display: 'block' }}
+                  />
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -256,6 +636,57 @@ const Parametres = () => {
                 Restaurer une sauvegarde
               </button>
             </div>
+
+            <h4 style={{ margin: '1.5rem 0 0.5rem' }}>Sauvegardes automatiques</h4>
+            <p style={{ color: '#6b7280', fontSize: '0.875rem', marginTop: 0 }}>
+              Une copie est faite toutes les 15 minutes et à chaque fermeture de l'application.
+              {statutSauvegarde && (
+                <>
+                  <br />
+                  Dossier : <code>{statutSauvegarde.principal.dossier}</code> — dernière sauvegarde : {formatDateHeure(statutSauvegarde.principal.derniere)}
+                </>
+              )}
+            </p>
+
+            <p style={{ color: '#6b7280', fontSize: '0.875rem' }}>
+              Ce dossier est sur le même disque que l'application : si l'ordinateur tombe en panne, il est perdu
+              avec elle. Choisissez un second dossier sur une clé USB, un disque externe ou un dossier
+              synchronisé (Google Drive, OneDrive…) pour y recevoir aussi chaque sauvegarde.
+            </p>
+            {statutSauvegarde?.secondaire ? (
+              <div
+                style={{
+                  padding: '0.75rem 1rem',
+                  borderRadius: 8,
+                  marginBottom: '0.75rem',
+                  background: statutSauvegarde.secondaire.accessible ? '#ecfdf5' : '#fef2f2',
+                  color: statutSauvegarde.secondaire.accessible ? '#065f46' : '#991b1b',
+                  fontSize: '0.875rem',
+                }}
+              >
+                Second dossier : <code>{statutSauvegarde.secondaire.dossier}</code>
+                <br />
+                {statutSauvegarde.secondaire.accessible
+                  ? `Dernière copie : ${formatDateHeure(statutSauvegarde.secondaire.derniere)}`
+                  : 'Dossier inaccessible (clé USB débranchée ?) : les copies reprendront dès qu\'il sera de nouveau disponible.'}
+              </div>
+            ) : (
+              <p style={{ color: '#b45309', fontSize: '0.875rem', fontWeight: 600 }}>
+                Aucun second dossier configuré.
+              </p>
+            )}
+            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-secondary" onClick={handleChoisirDossier}>
+                <FolderOpen size={20} />
+                {statutSauvegarde?.secondaire ? 'Changer de second dossier' : 'Choisir un second dossier'}
+              </button>
+              {statutSauvegarde?.secondaire && (
+                <button type="button" className="btn btn-secondary" onClick={handleRetirerDossier}>
+                  <X size={20} />
+                  Retirer
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="form-actions">
@@ -270,6 +701,166 @@ const Parametres = () => {
           </div>
         </form>
       </div>
+
+      <div className="content-card" style={{ marginTop: '1.5rem' }}>
+        <div className="form" style={{ padding: '2rem' }}>
+          <div className="form-section" style={{ marginBottom: 0 }}>
+            <h3 className="form-section-title">
+              <Lock size={18} style={{ verticalAlign: '-3px', marginRight: '0.4rem' }} />
+              Sécurité — Mot de passe de l'application
+            </h3>
+
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                marginBottom: '1rem',
+                fontSize: '0.9rem',
+                fontWeight: 600,
+                color: security.enabled ? '#16a34a' : '#6b7280',
+              }}
+            >
+              {security.enabled ? <ShieldCheck size={18} /> : <ShieldOff size={18} />}
+              {security.enabled
+                ? 'Protection activée : un mot de passe est demandé au démarrage.'
+                : 'Protection désactivée : aucun mot de passe n\'est demandé.'}
+            </div>
+
+            <p style={{ color: '#6b7280', fontSize: '0.875rem', marginBottom: '1rem' }}>
+              {security.hasPassword
+                ? 'Pour modifier ou désactiver le mot de passe, saisissez d\'abord le mot de passe actuel.'
+                : 'Définissez un mot de passe pour protéger l\'accès à l\'application au démarrage (minimum 4 caractères).'}
+            </p>
+
+            <form onSubmit={handleSavePassword}>
+              {security.hasPassword && (
+                <div className="form-group">
+                  <label>Mot de passe actuel</label>
+                  <input
+                    type="password"
+                    value={pwdCurrent}
+                    onChange={(e) => setPwdCurrent(e.target.value)}
+                    autoComplete="current-password"
+                    placeholder="••••••••"
+                  />
+                </div>
+              )}
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>{security.hasPassword ? 'Nouveau mot de passe' : 'Mot de passe'}</label>
+                  <input
+                    type="password"
+                    value={pwdNew}
+                    onChange={(e) => setPwdNew(e.target.value)}
+                    autoComplete="new-password"
+                    placeholder="••••••••"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Confirmer le mot de passe</label>
+                  <input
+                    type="password"
+                    value={pwdConfirm}
+                    onChange={(e) => setPwdConfirm(e.target.value)}
+                    autoComplete="new-password"
+                    placeholder="••••••••"
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
+                <button type="submit" className="btn btn-primary" disabled={isSavingPwd}>
+                  <ShieldCheck size={20} />
+                  {isSavingPwd
+                    ? 'Enregistrement...'
+                    : security.hasPassword
+                    ? 'Mettre à jour le mot de passe'
+                    : 'Activer le mot de passe'}
+                </button>
+
+                {security.enabled && (
+                  <button
+                    type="button"
+                    className="btn btn-danger"
+                    onClick={handleDisablePassword}
+                    disabled={isSavingPwd}
+                  >
+                    <ShieldOff size={20} />
+                    Désactiver
+                  </button>
+                )}
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      {/* ===== Licence ===== */}
+      {licenseStatus && (
+        <div className="content-card" style={{ marginTop: '1.5rem' }}>
+          <div className="form" style={{ padding: '2rem' }}>
+            <div className="form-section" style={{ marginBottom: 0 }}>
+              <h3 className="form-section-title">
+                <KeyRound size={18} style={{ verticalAlign: '-3px', marginRight: '0.4rem' }} />
+                Licence
+              </h3>
+
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  marginBottom: '1rem',
+                  fontSize: '0.9rem',
+                  fontWeight: 600,
+                  color: licenseStatus.activated ? '#16a34a' : licenseStatus.expired ? '#dc2626' : '#f59e0b',
+                }}
+              >
+                <ShieldCheck size={18} />
+                {licenseStatus.activated
+                  ? 'Licence activée — utilisation illimitée sur cet ordinateur.'
+                  : licenseStatus.expired
+                  ? `Période d'essai terminée (${licenseStatus.trialDays} jours).`
+                  : `Période d'essai : ${licenseStatus.daysLeft} jour(s) restant(s) sur ${licenseStatus.trialDays}.`}
+              </div>
+
+              <div className="form-group">
+                <label>ID de cet ordinateur (à communiquer pour l'activation)</label>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <input type="text" value={licenseStatus.machineId} readOnly style={{ fontFamily: 'monospace', fontWeight: 700, maxWidth: '260px' }} />
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={handleCopyMachineId} title="Copier">
+                    <Copy size={16} />
+                    Copier
+                  </button>
+                </div>
+              </div>
+
+              {!licenseStatus.activated && (
+                <form onSubmit={handleActivateLicense}>
+                  <div className="form-group">
+                    <label>Code d'activation</label>
+                    <textarea
+                      value={activationCode}
+                      onChange={(e) => setActivationCode(e.target.value)}
+                      placeholder="Collez ici le code d'activation reçu de IN-TEL SERVICES…"
+                      rows={3}
+                      spellCheck={false}
+                      style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}
+                    />
+                  </div>
+                  <button type="submit" className="btn btn-primary" disabled={isActivating}>
+                    <KeyRound size={20} />
+                    {isActivating ? 'Vérification…' : 'Activer la licence'}
+                  </button>
+                </form>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

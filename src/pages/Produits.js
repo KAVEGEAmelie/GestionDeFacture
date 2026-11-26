@@ -1,16 +1,30 @@
-import React, { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Search } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Plus, Edit2, Trash2 } from 'lucide-react';
 import Modal from '../components/modals/Modal';
+import FilterBar from '../components/Filters/FilterBar';
+import PeriodFilter from '../components/Filters/PeriodFilter';
+import { inDateRange, inNumberRange } from '../utils/dateFilters';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import { matchesWordPrefix } from '../utils/search';
+import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
+import SearchableSelect from '../components/Inputs/SearchableSelect';
 import './Clients.css';
+
+const UNIT_PRESETS = ['Unité', 'Pièce', 'Lot', 'Gros', 'Kilogramme', 'Mètre', 'Litre', 'Heure', 'Jour'];
 
 const Produits = () => {
   const toast = useToast();
   const confirm = useConfirm();
   const [produits, setProduits] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [uniteFilter, setUniteFilter] = useState('toutes');
+  const [prixMin, setPrixMin] = useState('');
+  const [prixMax, setPrixMax] = useState('');
+  const [sortConfig, setSortConfig] = useState({ key: 'designation', direction: 'asc' });
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduit, setEditingProduit] = useState(null);
   const [formData, setFormData] = useState({
@@ -41,8 +55,20 @@ const Produits = () => {
     
     const data = {
       ...formData,
-      prix_unitaire: parseFloat(formData.prix_unitaire)
+      prix_unitaire: parseFloat(formData.prix_unitaire) || 0
     };
+
+    // Empêcher les doublons (même désignation, insensible à la casse/espaces)
+    const designationNorm = (data.designation || '').trim().toLowerCase();
+    const doublon = produits.find(
+      (p) =>
+        (p.designation || '').trim().toLowerCase() === designationNorm &&
+        (!editingProduit || p.id !== editingProduit.id)
+    );
+    if (doublon) {
+      toast.error('Un produit avec cette désignation existe déjà.');
+      return;
+    }
 
     if (editingProduit) {
       try {
@@ -110,13 +136,78 @@ const Produits = () => {
     setEditingProduit(null);
   };
 
-  const filteredProduits = produits.filter(produit =>
-    produit.designation.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const unitesDisponibles = Array.from(
+    new Set([
+      ...UNIT_PRESETS,
+      ...produits.map((p) => String(p.unite || '').trim()).filter(Boolean),
+    ])
+  ).sort((a, b) => a.localeCompare(b, 'fr', { sensitivity: 'base' }));
+
+  const filteredProduits = produits.filter((produit) => {
+    const term = searchTerm.toLowerCase().trim();
+    const matchSearch =
+      !term ||
+      matchesWordPrefix(produit.designation, term) ||
+      matchesWordPrefix(produit.description, term);
+    const matchUnite = uniteFilter === 'toutes' || produit.unite === uniteFilter;
+    const matchPrix = inNumberRange(produit.prix_unitaire, prixMin, prixMax);
+    const matchDate = inDateRange(produit.created_at, dateFrom, dateTo);
+    return matchSearch && matchUnite && matchPrix && matchDate;
+  });
+
+  const sortedFilteredProduits = useMemo(() => {
+    const items = [...filteredProduits];
+    const { key, direction } = sortConfig;
+    const factor = direction === 'asc' ? 1 : -1;
+    return items.sort((a, b) => {
+      if (key === 'prix_unitaire') {
+        return ((Number(a.prix_unitaire) || 0) - (Number(b.prix_unitaire) || 0)) * factor;
+      }
+      return String(a[key] || '').localeCompare(String(b[key] || ''), 'fr', { sensitivity: 'base' }) * factor;
+    });
+  }, [filteredProduits, sortConfig]);
+
+  const toggleSort = (key) => {
+    setSortConfig((prev) =>
+      prev.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: 'asc' }
+    );
+  };
+
+  const sortMark = (key) => {
+    if (sortConfig.key !== key) return ' ↕';
+    return sortConfig.direction === 'asc' ? ' ↑' : ' ↓';
+  };
+
+  const activeCount =
+    (uniteFilter !== 'toutes' ? 1 : 0) +
+    (prixMin !== '' || prixMax !== '' ? 1 : 0) +
+    (dateFrom || dateTo ? 1 : 0);
+
+  const resetFilters = () => {
+    setUniteFilter('toutes');
+    setPrixMin('');
+    setPrixMax('');
+    setDateFrom('');
+    setDateTo('');
+  };
 
   const formatPrice = (price) => {
     return new Intl.NumberFormat('fr-FR').format(price);
   };
+
+  const selection = useBulkSelection(sortedFilteredProduits);
+  const handleBulkDelete = () =>
+    bulkDelete({
+      ids: selection.selectedIds,
+      deleteFn: (id) => window.electronAPI.produits.delete(id),
+      confirm,
+      toast,
+      reload: loadProduits,
+      clear: selection.clear,
+      labels: { confirmTitle: 'Supprimer les produits', singular: 'produit', plural: 'produits' },
+    });
 
   return (
     <div className="page fade-in">
@@ -125,46 +216,121 @@ const Produits = () => {
           <h1>Gestion des Produits</h1>
           <p className="subtitle">Gérez votre catalogue de produits</p>
         </div>
-        <button className="btn btn-primary" onClick={openModal}>
-          <Plus size={20} />
-          Nouveau produit
-        </button>
+        <div className="header-actions">
+          {selection.count > 0 && (
+            <button className="btn btn-danger bulk-delete-btn" onClick={handleBulkDelete}>
+              <Trash2 size={18} />
+              Supprimer la sélection ({selection.count})
+            </button>
+          )}
+          <button className="btn btn-primary" onClick={openModal}>
+            <Plus size={20} />
+            Nouveau produit
+          </button>
+        </div>
       </div>
 
       <div className="content-card">
-        <div className="search-bar">
-          <Search size={20} />
-          <input
-            type="text"
-            placeholder="Rechercher un produit..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+        <FilterBar
+          searchValue={searchTerm}
+          onSearchChange={setSearchTerm}
+          searchPlaceholder="Rechercher un produit (désignation, description)..."
+          activeCount={activeCount}
+          onReset={resetFilters}
+        >
+          <div className="filter-group">
+            <label>Unité</label>
+            <input
+              className="filter-select"
+              list="produits-unites-filter-list"
+              placeholder="Toutes les unités"
+              value={uniteFilter === 'toutes' ? '' : uniteFilter}
+              onChange={(e) => setUniteFilter(e.target.value.trim() || 'toutes')}
+            />
+            <datalist id="produits-unites-filter-list">
+              {unitesDisponibles.map((u) => (
+                <option key={u} value={u} />
+              ))}
+            </datalist>
+          </div>
+
+          <div className="filter-group">
+            <label>Prix unitaire (FCFA)</label>
+            <div className="filter-range">
+              <input
+                type="number"
+                min="0"
+                placeholder="Min"
+                value={prixMin}
+                onChange={(e) => setPrixMin(e.target.value)}
+              />
+              <span>—</span>
+              <input
+                type="number"
+                min="0"
+                placeholder="Max"
+                value={prixMax}
+                onChange={(e) => setPrixMax(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <PeriodFilter
+            label="Date de création"
+            from={dateFrom}
+            to={dateTo}
+            onChange={(f, t) => {
+              setDateFrom(f);
+              setDateTo(t);
+            }}
           />
-        </div>
+        </FilterBar>
 
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>Désignation</th>
-                <th>Prix unitaire</th>
-                <th>Unité</th>
-                <th>Description</th>
+                <th className="select-col">
+                  <input
+                    type="checkbox"
+                    checked={selection.allSelected}
+                    onChange={selection.toggleAll}
+                    title="Tout sélectionner"
+                  />
+                </th>
+                <th onClick={() => toggleSort('designation')} style={{ cursor: 'pointer' }}>Désignation{sortMark('designation')}</th>
+                <th onClick={() => toggleSort('prix_unitaire')} style={{ cursor: 'pointer' }}>Prix unitaire{sortMark('prix_unitaire')}</th>
+                <th onClick={() => toggleSort('unite')} style={{ cursor: 'pointer' }}>Unité{sortMark('unite')}</th>
+                <th onClick={() => toggleSort('description')} style={{ cursor: 'pointer' }}>Description{sortMark('description')}</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredProduits.length === 0 ? (
+              {sortedFilteredProduits.length === 0 ? (
                 <tr>
-                  <td colSpan="5" className="empty-state">
-                    {searchTerm ? 'Aucun produit trouvé' : 'Aucun produit enregistré'}
+                  <td colSpan="6" className="empty-state">
+                    {searchTerm || activeCount > 0 ? 'Aucun produit trouvé' : 'Aucun produit enregistré'}
                   </td>
                 </tr>
               ) : (
-                filteredProduits.map((produit) => (
+                sortedFilteredProduits.map((produit) => (
                   <tr key={produit.id}>
+                    <td className="select-col">
+                      <input
+                        type="checkbox"
+                        checked={selection.isSelected(produit.id)}
+                        onChange={() => selection.toggle(produit.id)}
+                        title="Sélectionner"
+                      />
+                    </td>
                     <td className="font-semibold">{produit.designation}</td>
-                    <td>{formatPrice(produit.prix_unitaire)} FCFA</td>
+                    <td>
+                      {produit.prix_unitaire > 0 ? (
+                        `${formatPrice(produit.prix_unitaire)} FCFA`
+                      ) : (
+                        <span className="badge badge-warning">À fixer</span>
+                      )}
+                    </td>
                     <td>{produit.unite}</td>
                     <td>{produit.description || '-'}</td>
                     <td>
@@ -214,36 +380,30 @@ const Produits = () => {
 
           <div className="form-row">
             <div className="form-group">
-              <label>Prix unitaire * (FCFA)</label>
+              <label>Prix unitaire (FCFA)</label>
               <input
                 type="number"
                 name="prix_unitaire"
                 value={formData.prix_unitaire}
                 onChange={handleInputChange}
-                required
                 min="0"
                 step="0.01"
-                placeholder="Ex: 1500"
+                placeholder="Optionnel — à fixer selon le client"
               />
             </div>
 
             <div className="form-group">
-              <label>Unité *</label>
-              <select
-                name="unite"
+              <label>Unité</label>
+              <SearchableSelect
+                options={unitesDisponibles.map((unite) => ({ value: unite, label: unite }))}
                 value={formData.unite}
-                onChange={handleInputChange}
-                required
-              >
-                <option value="Unité">Unité</option>
-                <option value="Pièce">Pièce</option>
-                <option value="Lot">Lot</option>
-                <option value="Kg">Kilogramme</option>
-                <option value="Mètre">Mètre</option>
-                <option value="Litre">Litre</option>
-                <option value="Heure">Heure</option>
-                <option value="Jour">Jour</option>
-              </select>
+                onChange={(uniteValue, option) =>
+                  setFormData((prev) => ({ ...prev, unite: option?.label || uniteValue }))
+                }
+                placeholder="Rechercher une unité"
+                noOptionsText="Aucune unité"
+                allowCustomValue
+              />
             </div>
           </div>
 

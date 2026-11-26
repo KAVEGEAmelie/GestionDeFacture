@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
-import { CheckCircle, AlertCircle, Info, X } from 'lucide-react';
+import { CheckCircle, AlertCircle, AlertTriangle, Info, X } from 'lucide-react';
 import './Toast.css';
 
 const ToastContext = createContext(null);
@@ -17,6 +17,7 @@ let idCounter = 0;
 const icons = {
   success: <CheckCircle size={20} />,
   error: <AlertCircle size={20} />,
+  warning: <AlertTriangle size={20} />,
   info: <Info size={20} />,
 };
 
@@ -40,6 +41,7 @@ export const ToastProvider = ({ children }) => {
     show,
     success: (msg, duration) => show(msg, 'success', duration),
     error: (msg, duration) => show(msg, 'error', duration ?? 5000),
+    warning: (msg, duration) => show(msg, 'warning', duration ?? 6000),
     info: (msg, duration) => show(msg, 'info', duration),
     remove,
   }), [show, remove]);

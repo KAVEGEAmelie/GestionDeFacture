@@ -1,9 +1,12 @@
-import React, { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Search } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Plus, Edit2, Trash2 } from 'lucide-react';
 import Modal from '../components/modals/Modal';
+import FilterBar from '../components/Filters/FilterBar';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import { matchesWordPrefix } from '../utils/search';
+import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
 import './Clients.css';
 
 const Clients = () => {
@@ -11,6 +14,8 @@ const Clients = () => {
   const confirm = useConfirm();
   const [clients, setClients] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [searchField, setSearchField] = useState('tous');
+  const [sortConfig, setSortConfig] = useState({ key: 'nom', direction: 'asc' });
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingClient, setEditingClient] = useState(null);
   const [formData, setFormData] = useState({
@@ -18,7 +23,8 @@ const Clients = () => {
     adresse: '',
     telephone: '',
     email: '',
-    nif: ''
+    nif: '',
+    tva_applicable: true
   });
 
   // Charger les clients
@@ -32,9 +38,10 @@ const Clients = () => {
   };
 
   const handleInputChange = (e) => {
+    const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
     setFormData({
       ...formData,
-      [e.target.name]: e.target.value
+      [e.target.name]: value
     });
   };
 
@@ -63,7 +70,8 @@ const Clients = () => {
       adresse: client.adresse || '',
       telephone: client.telephone || '',
       email: client.email || '',
-      nif: client.nif || ''
+      nif: client.nif || '',
+      tva_applicable: client.tva_applicable === 1
     });
     setIsModalOpen(true);
   };
@@ -92,7 +100,8 @@ const Clients = () => {
       adresse: '',
       telephone: '',
       email: '',
-      nif: ''
+      nif: '',
+      tva_applicable: true
     });
     setIsModalOpen(true);
   };
@@ -102,11 +111,74 @@ const Clients = () => {
     setEditingClient(null);
   };
 
-  const filteredClients = clients.filter(client =>
-    client.nom.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (client.telephone && client.telephone.includes(searchTerm)) ||
-    (client.email && client.email.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  const matchField = (client, field, term) => {
+    switch (field) {
+      case 'nom':
+        return matchesWordPrefix(client.nom, term);
+      case 'email':
+        return matchesWordPrefix(client.email, term);
+      case 'telephone':
+        return matchesWordPrefix(client.telephone, term);
+      case 'nif':
+        return matchesWordPrefix(client.nif, term);
+      case 'adresse':
+        return matchesWordPrefix(client.adresse, term);
+      default:
+        return (
+          matchesWordPrefix(client.nom, term) ||
+          matchesWordPrefix(client.email, term) ||
+          matchesWordPrefix(client.telephone, term) ||
+          matchesWordPrefix(client.nif, term) ||
+          matchesWordPrefix(client.adresse, term)
+        );
+    }
+  };
+
+  const filteredClients = clients.filter((client) => {
+    const term = searchTerm.toLowerCase().trim();
+    if (!term) return true;
+    return matchField(client, searchField, term);
+  });
+
+  const sortedClients = useMemo(() => {
+    const items = [...filteredClients];
+    const { key, direction } = sortConfig;
+    const factor = direction === 'asc' ? 1 : -1;
+    return items.sort((a, b) =>
+      String(a[key] || '').localeCompare(String(b[key] || ''), 'fr', { sensitivity: 'base' }) * factor
+    );
+  }, [filteredClients, sortConfig]);
+
+  const toggleSort = (key) => {
+    setSortConfig((prev) =>
+      prev.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: 'asc' }
+    );
+  };
+
+  const sortMark = (key) => {
+    if (sortConfig.key !== key) return ' ↕';
+    return sortConfig.direction === 'asc' ? ' ↑' : ' ↓';
+  };
+
+  const activeCount = searchField !== 'tous' ? 1 : 0;
+
+  const resetFilters = () => {
+    setSearchField('tous');
+  };
+
+  const selection = useBulkSelection(sortedClients);
+  const handleBulkDelete = () =>
+    bulkDelete({
+      ids: selection.selectedIds,
+      deleteFn: (id) => window.electronAPI.clients.delete(id),
+      confirm,
+      toast,
+      reload: loadClients,
+      clear: selection.clear,
+      labels: { confirmTitle: 'Supprimer les clients', singular: 'client', plural: 'clients' },
+    });
 
   return (
     <div className="page fade-in">
@@ -115,45 +187,83 @@ const Clients = () => {
           <h1>Gestion des Clients</h1>
           <p className="subtitle">Gérez votre base de clients</p>
         </div>
-        <button className="btn btn-primary" onClick={openModal}>
-          <Plus size={20} />
-          Nouveau client
-        </button>
+        <div className="header-actions">
+          {selection.count > 0 && (
+            <button className="btn btn-danger bulk-delete-btn" onClick={handleBulkDelete}>
+              <Trash2 size={18} />
+              Supprimer la sélection ({selection.count})
+            </button>
+          )}
+          <button className="btn btn-primary" onClick={openModal}>
+            <Plus size={20} />
+            Nouveau client
+          </button>
+        </div>
       </div>
 
       <div className="content-card">
-        <div className="search-bar">
-          <Search size={20} />
-          <input
-            type="text"
-            placeholder="Rechercher un client..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
-        </div>
+        <FilterBar
+          searchValue={searchTerm}
+          onSearchChange={setSearchTerm}
+          searchPlaceholder="Rechercher un client (nom, email, téléphone, NIF, adresse)..."
+          activeCount={activeCount}
+          onReset={resetFilters}
+        >
+          <div className="filter-group">
+            <label>Rechercher dans le champ</label>
+            <select
+              className="filter-select"
+              value={searchField}
+              onChange={(e) => setSearchField(e.target.value)}
+            >
+              <option value="tous">Tous les champs</option>
+              <option value="nom">Nom / Raison sociale</option>
+              <option value="email">Email</option>
+              <option value="telephone">Téléphone</option>
+              <option value="nif">NIF</option>
+              <option value="adresse">Adresse</option>
+            </select>
+          </div>
+        </FilterBar>
 
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>Nom</th>
-                <th>Téléphone</th>
-                <th>Email</th>
-                <th>Adresse</th>
-                <th>NIF</th>
+                <th className="select-col">
+                  <input
+                    type="checkbox"
+                    checked={selection.allSelected}
+                    onChange={selection.toggleAll}
+                    title="Tout sélectionner"
+                  />
+                </th>
+                <th onClick={() => toggleSort('nom')} style={{ cursor: 'pointer' }}>Nom{sortMark('nom')}</th>
+                <th onClick={() => toggleSort('telephone')} style={{ cursor: 'pointer' }}>Téléphone{sortMark('telephone')}</th>
+                <th onClick={() => toggleSort('email')} style={{ cursor: 'pointer' }}>Email{sortMark('email')}</th>
+                <th onClick={() => toggleSort('adresse')} style={{ cursor: 'pointer' }}>Adresse{sortMark('adresse')}</th>
+                <th onClick={() => toggleSort('nif')} style={{ cursor: 'pointer' }}>NIF{sortMark('nif')}</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredClients.length === 0 ? (
+              {sortedClients.length === 0 ? (
                 <tr>
-                  <td colSpan="6" className="empty-state">
+                  <td colSpan="7" className="empty-state">
                     {searchTerm ? 'Aucun client trouvé' : 'Aucun client enregistré'}
                   </td>
                 </tr>
               ) : (
-                filteredClients.map((client) => (
+                sortedClients.map((client) => (
                   <tr key={client.id}>
+                    <td className="select-col">
+                      <input
+                        type="checkbox"
+                        checked={selection.isSelected(client.id)}
+                        onChange={() => selection.toggle(client.id)}
+                        title="Sélectionner"
+                      />
+                    </td>
                     <td className="font-semibold">{client.nom}</td>
                     <td>{client.telephone || '-'}</td>
                     <td>{client.email || '-'}</td>

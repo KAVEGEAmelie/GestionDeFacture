@@ -1,6 +1,6 @@
 {
   "name": "gestion-facturation",
-  "version": "1.0.0",
+  "version": "1.5.0",
   "description": "Application de gestion de facturation pour In-Tel Services",
   "main": "main.js",
   "homepage": "./",
@@ -10,11 +10,16 @@
   },
   "scripts": {
     "start": "electron .",
-    "dev": "concurrently \"npm run dev:react\" \"wait-on http://localhost:3000 && cross-env ELECTRON_START_URL=http://localhost:3000 electron .\"",
+    "rebuild:native": "(cd \"node_modules/better-sqlite3\" && npx prebuild-install -r electron -t 28.3.3) || electron-rebuild -f -w better-sqlite3 -v 28.3.3",
+    "predev": "npm run rebuild:native",
+    "dev": "concurrently \"npm run dev:react\" \"wait-on http://localhost:3000 && cross-env ELECTRON_START_URL=http://localhost:3000 electron . --no-sandbox\"",
     "dev:react": "react-scripts start",
     "build": "react-scripts build",
     "postinstall": "electron-builder install-app-deps",
-    "package": "npm run build && electron-builder"
+    "package": "npm run build && electron-builder",
+    "postpackage": "npm run rebuild:native",
+    "license:generate": "node scripts/generate-license.js",
+    "test:regression": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/tests/regression.cjs"
   },
   "build": {
     "appId": "com.intelservices.facturation",
@@ -24,7 +29,7 @@
       "build/**/*",
       "main.js",
       "preload.js",
-      "database.db",
+      "license/**/*",
       "src/assets/**/*",
       "node_modules/**/*"
     ],
@@ -49,7 +54,7 @@
         "AppImage",
         "deb"
       ],
-      "icon": "src/assets/logo.png",
+      "icon": "src/assets/icon-linux.png",
       "category": "Office"
     },
     "extraMetadata": {
@@ -62,9 +67,11 @@
     "jspdf": "^2.5.1",
     "jspdf-autotable": "^3.8.2",
     "lucide-react": "^0.263.1",
+    "mammoth": "^1.12.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.21.0"
+    "react-router-dom": "^6.21.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",

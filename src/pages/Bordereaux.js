@@ -1,33 +1,156 @@
-import React, { useState, useEffect } from 'react';
-import { Eye, Trash2, Printer, Download, Search } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Eye, Trash2, Printer, Download, Plus, X, FileText, Edit2 } from 'lucide-react';
 import Modal from '../components/modals/Modal';
+import FilterBar from '../components/Filters/FilterBar';
+import PeriodFilter from '../components/Filters/PeriodFilter';
+import { inDateRange, today, anneeAnterieure } from '../utils/dateFilters';
 import { generateBordereauPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import { matchesWordPrefix } from '../utils/search';
+import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
+import SearchableSelect from '../components/Inputs/SearchableSelect';
 import './Clients.css';
 import './Proformas.css';
 
 const Bordereaux = () => {
   const toast = useToast();
   const confirm = useConfirm();
+  const navigate = useNavigate();
   const [bordereaux, setBordereaux] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [produits, setProduits] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [parametres, setParametres] = useState({});
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [selectedBordereau, setSelectedBordereau] = useState(null);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [editingBordereau, setEditingBordereau] = useState(null);
+  const emptyLigne = { designation: '', quantite: '' };
+  const [createForm, setCreateForm] = useState({
+    date: today(),
+    client_id: '',
+    lignes: [{ ...emptyLigne }]
+  });
 
   useEffect(() => {
     loadData();
   }, []);
 
   const loadData = async () => {
-    const [bordereauxData, parametresData] = await Promise.all([
+    const [bordereauxData, parametresData, clientsData, produitsData] = await Promise.all([
       window.electronAPI.bordereaux.getAll(),
-      window.electronAPI.parametres.getAll()
+      window.electronAPI.parametres.getAll(),
+      window.electronAPI.clients.getAll(),
+      window.electronAPI.produits.getAll()
     ]);
     setBordereaux(bordereauxData);
     setParametres(parametresData);
+    setClients(clientsData || []);
+    setProduits(produitsData || []);
+  };
+
+  const produitOptions = useMemo(() => {
+    return [...produits]
+      .sort((a, b) => String(a.designation || '').localeCompare(String(b.designation || ''), 'fr', { sensitivity: 'base' }))
+      .map((p) => ({ value: p.designation, label: p.designation }));
+  }, [produits]);
+
+  const openCreateModal = () => {
+    setEditingBordereau(null);
+    setCreateForm({
+      date: today(),
+      client_id: '',
+      lignes: [{ ...emptyLigne }]
+    });
+    setCreateModalOpen(true);
+  };
+
+  const openEditModal = async (bordereau) => {
+    try {
+      const full = await window.electronAPI.bordereaux.getById(bordereau.id);
+      setEditingBordereau(full);
+      setCreateForm({
+        date: full.date,
+        client_id: String(full.client_id),
+        lignes: (full.lignes || []).length > 0
+          ? full.lignes.map((l) => ({ designation: l.designation, quantite: String(l.quantite) }))
+          : [{ ...emptyLigne }]
+      });
+      setCreateModalOpen(true);
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Impossible de charger le bordereau.'));
+    }
+  };
+
+  const updateLigne = (index, field, value) => {
+    setCreateForm((prev) => {
+      const lignes = prev.lignes.map((l, i) => (i === index ? { ...l, [field]: value } : l));
+      return { ...prev, lignes };
+    });
+  };
+
+  const addLigne = () => {
+    setCreateForm((prev) => ({ ...prev, lignes: [...prev.lignes, { ...emptyLigne }] }));
+  };
+
+  const removeLigne = (index) => {
+    setCreateForm((prev) => ({
+      ...prev,
+      lignes: prev.lignes.length > 1 ? prev.lignes.filter((_, i) => i !== index) : prev.lignes
+    }));
+  };
+
+  const handleCreateSubmit = async (e) => {
+    e.preventDefault();
+    if (!createForm.client_id) {
+      toast.error('Sélectionnez un client.');
+      return;
+    }
+    const lignes = createForm.lignes
+      .filter((l) => l.designation.trim())
+      .map((l) => ({ designation: l.designation.trim(), quantite: parseFloat(l.quantite) || 0 }));
+    if (lignes.length === 0) {
+      toast.error('Ajoutez au moins une ligne avec une désignation.');
+      return;
+    }
+    const annee = !editingBordereau && anneeAnterieure(createForm.date);
+    if (annee) {
+      const ok = await confirm({
+        title: `Bordereau daté de ${annee}`,
+        message: `Ce bordereau est daté de ${annee} : son numéro commencera par ${annee}/. Vérifiez la date avant de continuer.`,
+        confirmText: 'Créer le bordereau',
+        danger: false,
+      });
+      if (!ok) return;
+    }
+    try {
+      if (editingBordereau) {
+        await window.electronAPI.bordereaux.update(editingBordereau.id, {
+          date: createForm.date,
+          client_id: parseInt(createForm.client_id, 10),
+          lignes
+        });
+        toast.success(`Bordereau ${editingBordereau.numero} modifié avec succès.`);
+      } else {
+        const res = await window.electronAPI.bordereaux.create({
+          date: createForm.date,
+          client_id: parseInt(createForm.client_id, 10),
+          lignes
+        });
+        toast.success(`Bordereau ${res.numero} créé avec succès.`);
+      }
+      setCreateModalOpen(false);
+      setEditingBordereau(null);
+      loadData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Erreur lors de l'enregistrement du bordereau."));
+    }
   };
 
   const handleView = async (bordereau) => {
@@ -72,12 +195,114 @@ const Bordereaux = () => {
 
   const filteredBordereaux = bordereaux.filter((b) => {
     const term = searchTerm.toLowerCase();
-    return (
+    const matchSearch =
       !term ||
-      (b.numero && b.numero.toLowerCase().includes(term)) ||
-      (b.client_nom && b.client_nom.toLowerCase().includes(term))
-    );
+      matchesWordPrefix(b.numero, term) ||
+      matchesWordPrefix(b.client_nom, term);
+    const matchDate = inDateRange(b.date, dateFrom, dateTo);
+    return matchSearch && matchDate;
   });
+
+  const sortedFilteredBordereaux = useMemo(() => {
+    const items = [...filteredBordereaux];
+    const { key, direction } = sortConfig;
+    const factor = direction === 'asc' ? 1 : -1;
+    return items.sort((a, b) => {
+      if (key === 'date') {
+        return ((new Date(a.date).getTime() || 0) - (new Date(b.date).getTime() || 0)) * factor;
+      }
+      return String(a[key] || '').localeCompare(String(b[key] || ''), 'fr', { sensitivity: 'base' }) * factor;
+    });
+  }, [filteredBordereaux, sortConfig]);
+
+  const toggleSort = (key) => {
+    setSortConfig((prev) =>
+      prev.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: key === 'date' ? 'desc' : 'asc' }
+    );
+  };
+
+  const sortMark = (key) => {
+    if (sortConfig.key !== key) return ' ↕';
+    return sortConfig.direction === 'asc' ? ' ↑' : ' ↓';
+  };
+
+  const activeCount = dateFrom || dateTo ? 1 : 0;
+
+  const resetFilters = () => {
+    setDateFrom('');
+    setDateTo('');
+  };
+
+  const selection = useBulkSelection(sortedFilteredBordereaux);
+  const handleBulkDelete = () =>
+    bulkDelete({
+      ids: selection.selectedIds,
+      deleteFn: (id) => window.electronAPI.bordereaux.delete(id),
+      confirm,
+      toast,
+      reload: loadData,
+      clear: selection.clear,
+      labels: { confirmTitle: 'Supprimer les bordereaux', singular: 'bordereau', plural: 'bordereaux' },
+    });
+
+  // Fusionner les bordereaux sélectionnés en une proforma (prix à saisir)
+  const handleCreateProformaFromSelection = async () => {
+    if (selection.count === 0) {
+      toast.error('Sélectionnez au moins un bordereau.');
+      return;
+    }
+    try {
+      const fulls = await Promise.all(
+        selection.selectedIds.map((id) => window.electronAPI.bordereaux.getById(id))
+      );
+
+      // Tous les bordereaux doivent appartenir au même client
+      const clientIds = Array.from(new Set(fulls.map((b) => b.client_id)));
+      if (clientIds.length > 1) {
+        toast.error('Les bordereaux sélectionnés doivent appartenir au même client.');
+        return;
+      }
+
+      const ok = await confirm({
+        title: 'Créer une proforma',
+        message: `Créer une proforma à partir de ${fulls.length} bordereau(x) (${fulls.map((b) => b.numero).join(', ')}) ? Les lignes seront regroupées et vous pourrez saisir les prix avant d'enregistrer.`,
+        confirmText: 'Continuer',
+        danger: false,
+      });
+      if (!ok) return;
+
+      // Regrouper les lignes : même désignation => quantités additionnées
+      const merged = new Map();
+      fulls.forEach((b) => {
+        (b.lignes || []).forEach((l) => {
+          const key = String(l.designation || '').trim().toLowerCase();
+          if (merged.has(key)) {
+            merged.get(key).quantite += Number(l.quantite) || 0;
+          } else {
+            merged.set(key, {
+              designation: l.designation,
+              quantite: Number(l.quantite) || 0,
+            });
+          }
+        });
+      });
+
+      selection.clear();
+      navigate('/proformas', {
+        state: {
+          prefill: {
+            client_id: String(clientIds[0]),
+            objet: `Livraisons ${fulls.map((b) => b.numero).join(', ')}`,
+            lignes: Array.from(merged.values()),
+          },
+        },
+      });
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Erreur lors de la préparation de la proforma.'));
+    }
+  };
 
   return (
     <div className="page fade-in">
@@ -86,38 +311,80 @@ const Bordereaux = () => {
           <h1>Bordereaux de Livraison</h1>
           <p className="subtitle">Gérez vos bordereaux de livraison</p>
         </div>
+        <div className="header-actions">
+          {selection.count > 0 && (
+            <>
+              <button className="btn btn-secondary" onClick={handleCreateProformaFromSelection}>
+                <FileText size={18} />
+                Créer une proforma ({selection.count})
+              </button>
+              <button className="btn btn-danger bulk-delete-btn" onClick={handleBulkDelete}>
+                <Trash2 size={18} />
+                Supprimer la sélection ({selection.count})
+              </button>
+            </>
+          )}
+          <button className="btn btn-primary" onClick={openCreateModal}>
+            <Plus size={18} />
+            Nouveau bordereau
+          </button>
+        </div>
       </div>
 
       <div className="content-card">
-        <div className="search-bar">
-          <Search size={20} />
-          <input
-            type="text"
-            placeholder="Rechercher par numéro ou client..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+        <FilterBar
+          searchValue={searchTerm}
+          onSearchChange={setSearchTerm}
+          searchPlaceholder="Rechercher par numéro ou client..."
+          activeCount={activeCount}
+          onReset={resetFilters}
+        >
+          <PeriodFilter
+            label="Date du bordereau"
+            from={dateFrom}
+            to={dateTo}
+            onChange={(f, t) => {
+              setDateFrom(f);
+              setDateTo(t);
+            }}
           />
-        </div>
+        </FilterBar>
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>N°</th>
-                <th>Date</th>
-                <th>Client</th>
+                <th className="select-col">
+                  <input
+                    type="checkbox"
+                    checked={selection.allSelected}
+                    onChange={selection.toggleAll}
+                    title="Tout sélectionner"
+                  />
+                </th>
+                <th onClick={() => toggleSort('numero')} style={{ cursor: 'pointer' }}>N°{sortMark('numero')}</th>
+                <th onClick={() => toggleSort('date')} style={{ cursor: 'pointer' }}>Date{sortMark('date')}</th>
+                <th onClick={() => toggleSort('client_nom')} style={{ cursor: 'pointer' }}>Client{sortMark('client_nom')}</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredBordereaux.length === 0 ? (
+              {sortedFilteredBordereaux.length === 0 ? (
                 <tr>
-                  <td colSpan="4" className="empty-state">
-                    {searchTerm ? 'Aucun bordereau trouvé' : 'Aucun bordereau enregistré'}
+                  <td colSpan="5" className="empty-state">
+                    {searchTerm || activeCount > 0 ? 'Aucun bordereau trouvé' : 'Aucun bordereau enregistré'}
                   </td>
                 </tr>
               ) : (
-                filteredBordereaux.map((bordereau) => (
+                sortedFilteredBordereaux.map((bordereau) => (
                   <tr key={bordereau.id}>
+                    <td className="select-col">
+                      <input
+                        type="checkbox"
+                        checked={selection.isSelected(bordereau.id)}
+                        onChange={() => selection.toggle(bordereau.id)}
+                        title="Sélectionner"
+                      />
+                    </td>
                     <td className="font-semibold">{bordereau.numero}</td>
                     <td>{formatDate(bordereau.date)}</td>
                     <td>{bordereau.client_nom}</td>
@@ -129,6 +396,14 @@ const Bordereaux = () => {
                           title="Voir"
                         >
                           <Eye size={16} />
+                        </button>
+                        <button
+                          className="btn-icon"
+                          style={{ color: '#f59e0b' }}
+                          onClick={() => openEditModal(bordereau)}
+                          title="Modifier"
+                        >
+                          <Edit2 size={16} />
                         </button>
                         <button
                           className="btn-icon btn-icon-success"
@@ -160,6 +435,88 @@ const Bordereaux = () => {
           </table>
         </div>
       </div>
+
+      {/* Modal Création / Modification bordereau */}
+      <Modal
+        isOpen={createModalOpen}
+        onClose={() => { setCreateModalOpen(false); setEditingBordereau(null); }}
+        title={editingBordereau ? `Modifier le bordereau ${editingBordereau.numero}` : 'Nouveau bordereau de livraison'}
+        size="large"
+      >
+        <form onSubmit={handleCreateSubmit} className="form">
+          <div className="form-row">
+            <div className="form-group">
+              <label>Date *</label>
+              <input
+                type="date"
+                value={createForm.date}
+                onChange={(e) => setCreateForm((prev) => ({ ...prev, date: e.target.value }))}
+                required
+              />
+            </div>
+            <div className="form-group">
+              <label>Client *</label>
+              <SearchableSelect
+                options={clients.map((c) => ({ value: String(c.id), label: c.nom }))}
+                value={createForm.client_id}
+                onChange={(clientId) => setCreateForm((prev) => ({ ...prev, client_id: clientId }))}
+                placeholder="Rechercher un client"
+                noOptionsText="Aucun client correspondant"
+              />
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>Lignes du bordereau *</label>
+            {createForm.lignes.map((ligne, index) => (
+              <div key={index} className="form-row" style={{ alignItems: 'flex-end', marginBottom: '0.5rem' }}>
+                <div className="form-group" style={{ flex: 3, marginBottom: 0 }}>
+                  <SearchableSelect
+                    options={produitOptions}
+                    value={ligne.designation}
+                    onChange={(designation, option) => updateLigne(index, 'designation', option?.label || designation)}
+                    placeholder="Rechercher un produit ou saisir une désignation"
+                    noOptionsText="Aucun produit correspondant"
+                    allowCustomValue
+                  />
+                </div>
+                <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    placeholder="Quantité"
+                    value={ligne.quantite}
+                    onChange={(e) => updateLigne(index, 'quantite', e.target.value)}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="btn-icon btn-icon-danger"
+                  onClick={() => removeLigne(index)}
+                  title="Retirer cette ligne"
+                  disabled={createForm.lignes.length === 1}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            ))}
+            <button type="button" className="btn btn-secondary btn-sm" onClick={addLigne}>
+              <Plus size={16} />
+              Ajouter une ligne
+            </button>
+          </div>
+
+          <div className="form-actions">
+            <button type="button" className="btn btn-secondary" onClick={() => { setCreateModalOpen(false); setEditingBordereau(null); }}>
+              Annuler
+            </button>
+            <button type="submit" className="btn btn-primary">
+              {editingBordereau ? 'Enregistrer les modifications' : 'Créer le bordereau'}
+            </button>
+          </div>
+        </form>
+      </Modal>
 
       {/* Modal Visualisation */}
       {selectedBordereau && (

@@ -1,6 +1,31 @@
-import jsPDF from 'jspdf';
+ import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 import { getLogoDataURL } from './logo';
+
+// Affiche une ligne de texte centrée composée de segments [{ text, bold }],
+// en réduisant la taille de police jusqu'à ce que le tout tienne dans maxWidth.
+const drawCenteredRichText = (doc, segments, centerX, y, maxWidth, startSize, minSize) => {
+  let fontSize = startSize;
+  const totalWidth = () => {
+    let w = 0;
+    for (const seg of segments) {
+      doc.setFont('helvetica', seg.bold ? 'bolditalic' : 'italic');
+      w += doc.getTextWidth(seg.text);
+    }
+    return w;
+  };
+  doc.setFontSize(fontSize);
+  while (totalWidth() > maxWidth && fontSize > minSize) {
+    fontSize -= 0.25;
+    doc.setFontSize(fontSize);
+  }
+  let x = centerX - totalWidth() / 2;
+  for (const seg of segments) {
+    doc.setFont('helvetica', seg.bold ? 'bolditalic' : 'italic');
+    doc.text(seg.text, x, y);
+    x += doc.getTextWidth(seg.text);
+  }
+};
 
 // Fonction utilitaire pour formater les nombres avec des espaces insécables
 const formatNumber = (number) => {
@@ -39,7 +64,10 @@ const nombreEnLettres = (nombre) => {
   const dixaines = ['', 'dix', 'vingt', 'trente', 'quarante', 'cinquante', 'soixante', 'soixante-dix', 'quatre-vingt', 'quatre-vingt-dix'];
   const special = ['dix', 'onze', 'douze', 'treize', 'quatorze', 'quinze', 'seize'];
   
-  const convertirNombreMoins1000 = (n) => {
+  // « vingt » et « cent » ne prennent le pluriel qu'en fin de nombre :
+  // « quatre-vingts », « deux cents », mais « quatre-vingt mille »,
+  // « deux cent mille ». pluriel = false quand « mille » suit.
+  const convertirNombreMoins1000 = (n, pluriel = true) => {
     if (n === 0) return '';
     if (n < 10) return unites[n];
     if (n >= 10 && n < 17) return special[n - 10];
@@ -51,7 +79,7 @@ const nombreEnLettres = (nombre) => {
       const un = n % 10;
       if (n === 71) return 'soixante et onze';
       if (n >= 70 && n < 80) return 'soixante-' + convertirNombreMoins1000(n - 60);
-      if (n === 80) return 'quatre-vingts';
+      if (n === 80) return pluriel ? 'quatre-vingts' : 'quatre-vingt';
       if (n > 80 && n < 90) return 'quatre-vingt-' + unites[un];
       if (n >= 90) return 'quatre-vingt-' + convertirNombreMoins1000(n - 80);
       return dixaines[diz] + (un > 0 ? (un === 1 && diz !== 8 ? ' et ' : '-') + unites[un] : '');
@@ -59,28 +87,40 @@ const nombreEnLettres = (nombre) => {
     if (n >= 100) {
       const cent = Math.floor(n / 100);
       const reste = n % 100;
-      return (cent === 1 ? 'cent' : unites[cent] + ' cent' + (cent > 1 && reste === 0 ? 's' : '')) +
-             (reste > 0 ? ' ' + convertirNombreMoins1000(reste) : '');
+      return (cent === 1 ? 'cent' : unites[cent] + ' cent' + (pluriel && reste === 0 ? 's' : '')) +
+             (reste > 0 ? ' ' + convertirNombreMoins1000(reste, pluriel) : '');
     }
     return '';
   };
 
   const convertirNombre = (n) => {
     if (n === 0) return 'zéro';
-    
-    const millions = Math.floor(n / 1000000);
-    const milliers = Math.floor((n % 1000000) / 1000);
+
+    const billions = Math.floor(n / 1e12);
+    const milliards = Math.floor((n % 1e12) / 1e9);
+    const millions = Math.floor((n % 1e9) / 1e6);
+    const milliers = Math.floor((n % 1e6) / 1000);
     const centaines = n % 1000;
-    
+
     let resultat = '';
-    
+
+    if (billions > 0) {
+      resultat += (billions === 1 ? 'un billion' : convertirNombreMoins1000(billions) + ' billions');
+    }
+
+    if (milliards > 0) {
+      if (resultat) resultat += ' ';
+      resultat += (milliards === 1 ? 'un milliard' : convertirNombreMoins1000(milliards) + ' milliards');
+    }
+
     if (millions > 0) {
+      if (resultat) resultat += ' ';
       resultat += (millions === 1 ? 'un million' : convertirNombreMoins1000(millions) + ' millions');
     }
     
     if (milliers > 0) {
       if (resultat) resultat += ' ';
-      resultat += (milliers === 1 ? 'mille' : convertirNombreMoins1000(milliers) + ' mille');
+      resultat += (milliers === 1 ? 'mille' : convertirNombreMoins1000(milliers, false) + ' mille');
     }
     
     if (centaines > 0) {
@@ -91,768 +131,3317 @@ const nombreEnLettres = (nombre) => {
     return resultat.charAt(0).toUpperCase() + resultat.slice(1);
   };
 
-  const partieEntiere = Math.floor(nombre);
-  const partieDecimale = Math.round((nombre - partieEntiere) * 100);
-  
-  let resultat = convertirNombre(partieEntiere);
-  if (partieDecimale > 0) {
-    resultat += ' virgule ' + convertirNombre(partieDecimale);
-  }
-  
-  return resultat;
+  // Montants en francs CFA : pas de subdivision, on arrondit à l'unité
+  // (les anciens documents peuvent contenir des décimales de TVA).
+  return convertirNombre(Math.round(Number(nombre) || 0));
 };
 
-// Génération PDF Proforma
-export const generateProformaPDF = async (proforma, parametres) => {
+// Taux de TVA à afficher : celui enregistré sur le document (figé à sa
+// création), sinon celui des paramètres. 0 est un taux valide.
+const tauxTvaDuDocument = (document, parametres = {}) => {
+  const candidats = [document && document.tva_taux, parametres.tva_taux];
+  for (const valeur of candidats) {
+    const taux = parseFloat(valeur);
+    if (Number.isFinite(taux) && taux >= 0) return taux;
+  }
+  return 18;
+};
+
+// Palette de couleurs de la charte In-Tel Services
+const COLORS = {
+  navy: [13, 42, 92],        // Bleu marine principal (titres, en-têtes)
+  navySoft: [28, 86, 158],   // Bleu accent (valeurs, totaux)
+  red: [214, 30, 24],        // Rouge (numéro, date, remise)
+  ink: [55, 60, 70],         // Texte courant
+  grey: [120, 125, 135],     // Texte secondaire
+  boxBg: [240, 244, 250],    // Fond clair des encadrés / lignes alternées
+  line: [205, 212, 224],     // Lignes fines
+  white: [255, 255, 255]
+};
+
+const MARGIN = 12; // marge intérieure du contenu
+
+// Trace un chemin polygonal fermé et rempli (utilitaire icônes)
+const fillPoly = (doc, pts) => {
+  const rel = [];
+  for (let i = 1; i < pts.length; i++) {
+    rel.push([pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]]);
+  }
+  doc.lines(rel, pts[0][0], pts[0][1], [1, 1], 'F', true);
+};
+
+// --- Petits pictogrammes des coordonnées (centre = x,y) ---
+const iconPin = (doc, x, y) => {
+  doc.setFillColor(...COLORS.navy);
+  doc.circle(x, y - 0.5, 1.15, 'F');
+  doc.triangle(x - 1.1, y - 0.1, x + 1.1, y - 0.1, x, y + 1.7, 'F');
+  doc.setFillColor(...COLORS.white);
+  doc.circle(x, y - 0.5, 0.42, 'F');
+};
+const iconPhone = (doc, x, y) => {
+  doc.setFillColor(...COLORS.navy);
+  doc.roundedRect(x - 1, y - 1.7, 2, 3.4, 0.4, 0.4, 'F');
+  doc.setFillColor(...COLORS.white);
+  doc.rect(x - 0.55, y - 1.15, 1.1, 2, 'F');
+};
+const iconMail = (doc, x, y) => {
+  doc.setFillColor(...COLORS.navy);
+  doc.rect(x - 1.7, y - 1.15, 3.4, 2.3, 'F');
+  doc.setDrawColor(...COLORS.white);
+  doc.setLineWidth(0.25);
+  doc.line(x - 1.7, y - 1.15, x, y + 0.15);
+  doc.line(x + 1.7, y - 1.15, x, y + 0.15);
+};
+
+// --- Cadre extérieur de la page ---
+const drawPageFrame = (doc) => {
+  const w = doc.internal.pageSize.getWidth();
+  const h = doc.internal.pageSize.getHeight();
+  doc.setDrawColor(...COLORS.line);
+  doc.setLineWidth(0.6);
+  doc.roundedRect(6, 6, w - 12, h - 12, 3, 3, 'S');
+};
+
+// --- En-tête commun (logo + identité + coordonnées + RCCM/NIF + filet) ---
+const drawHeader = async (doc, parametres, options = {}) => {
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const contentLeft = MARGIN;
+  const rightX = pageWidth - MARGIN;
+
+  // LOGO
+  const logo = await getLogoDataURL(parametres?.entreprise_logo || '');
+  let textX = contentLeft;
+  if (logo) {
+    const logoW = 30;
+    const logoH = (logo.height / logo.width) * logoW;
+    doc.addImage(logo.dataUrl, 'PNG', contentLeft, 9, logoW, logoH);
+    textX = contentLeft + logoW + 6;
+  }
+
+  // Nom de l'entreprise
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(25);
+  doc.setTextColor(...COLORS.navy);
+  doc.text(`${parametres.entreprise_nom || 'IN-TEL SERVICES'}`, textX, 19);
+
+  // Slogan (2 lignes)
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(...COLORS.navySoft);
+  doc.text(`${parametres.entreprise_slogan1 || 'Solutions Réseaux • Télécommunications'}`, textX, 26.5);
+  doc.text(`${parametres.entreprise_slogan2 || 'Sécurité Électronique • Énergie'}`, textX, 32);
+
+  // Coordonnées avec icônes
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(...COLORS.ink);
+  const cY = 38.5;
+  const gap = 5;
+  iconPin(doc, textX + 1.5, cY - 1);
+  doc.text(`${parametres.entreprise_adresse || 'Bè-Klikamé, Lomé – TOGO'}`, textX + 5, cY);
+  iconPhone(doc, textX + 1.5, cY + gap - 1);
+  const tel = parametres.entreprise_tel || '+228 90 00 00 00';
+  const cel = parametres.entreprise_cel || '99 00 00 00';
+  doc.text(`${tel} / ${cel}`, textX + 5, cY + gap);
+  iconMail(doc, textX + 1.5, cY + gap * 2 - 1);
+  doc.text(`${parametres.entreprise_email || 'contact@intelservices.tg'}`, textX + 5, cY + gap * 2);
+
+  // Séparateur vertical + bloc RCCM / NIF à droite
+  const dividerX = pageWidth - 70;
+  doc.setDrawColor(...COLORS.line);
+  doc.setLineWidth(0.5);
+  doc.line(dividerX, 14, dividerX, 49);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(...COLORS.ink);
+  if (options.vignette) {
+    // RCCM / NIF remontés pour laisser place au carré "vignette" en dessous
+    doc.text(`RCCM : ${parametres.entreprise_rccm || 'TG-LOM-2020-B-12345'}`, dividerX + 4, 20);
+    doc.text(`NIF : ${parametres.entreprise_nif || '1001304567'}`, dividerX + 4, 26);
+    // Carré "vignette" (emplacement du timbre fiscal), centré dans le bloc droit
+    const vSize = 20; // 2 cm × 2 cm
+    const vX = dividerX + (rightX - dividerX - vSize) / 2;
+    const vY = 28;
+    doc.setDrawColor(...COLORS.navySoft);
+    doc.setLineWidth(0.5);
+    doc.setLineDashPattern([1.2, 1.2], 0);
+    doc.rect(vX, vY, vSize, vSize, 'S');
+    doc.setLineDashPattern([], 0);
+  } else {
+    doc.text(`RCCM : ${parametres.entreprise_rccm || 'TG-LOM-2020-B-12345'}`, dividerX + 4, 27);
+    doc.text(`NIF : ${parametres.entreprise_nif || '1001304567'}`, dividerX + 4, 33);
+  }
+
+  // Filet horizontal épais
+  const ruleY = 53;
+  doc.setDrawColor(...COLORS.navy);
+  doc.setLineWidth(1.1);
+  doc.line(contentLeft, ruleY, rightX, ruleY);
+
+  return { contentLeft, rightX, headerBottom: ruleY };
+};
+
+// --- Titre centré avec traits décoratifs ---
+const drawTitle = (doc, title, y) => {
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const cx = pageWidth / 2;
+  doc.setFont('helvetica', 'bold');
+  let fontSize = 24;
+  doc.setFontSize(fontSize);
+  const maxWidth = pageWidth - MARGIN * 2 - 18;
+  while (doc.getTextWidth(title) > maxWidth && fontSize > 16) {
+    fontSize -= 0.5;
+    doc.setFontSize(fontSize);
+  }
+  doc.setTextColor(...COLORS.navy);
+  doc.text(title, cx, y, { align: 'center' });
+  const halfW = doc.getTextWidth(title) / 2;
+  doc.setDrawColor(...COLORS.navy);
+  doc.setLineWidth(0.8);
+  const lineY = y - 2.5;
+  doc.line(MARGIN + 6, lineY, cx - halfW - 8, lineY);
+  doc.line(cx + halfW + 8, lineY, pageWidth - MARGIN - 6, lineY);
+  return y + 6;
+};
+
+// --- Numéro + date (centré, aligné en 3 colonnes : label | : | valeur) ---
+const drawNumDate = (doc, { label, numero, date, centerX, rightX, y }) => {
+  doc.setFontSize(12);
+  doc.setFont('helvetica', 'bold');
+
+  const colonGap = 2.5;   // espace label -> ":"
+  const afterColon = 3;   // espace ":" -> valeur
+  const colonW = doc.getTextWidth(':');
+
+  // Dessine un couple "label : valeur" en colonnes fixes
+  const drawPair = (lbl, val, labelRightX, yy) => {
+    const colonX = labelRightX + colonGap;
+    const valueX = colonX + colonW + afterColon;
+    doc.setTextColor(...COLORS.navy);
+    doc.text(lbl, labelRightX, yy, { align: 'right' });
+    doc.text(':', colonX, yy);
+    doc.setTextColor(...COLORS.red);
+    doc.text(`${val}`, valueX, yy);
+  };
+
+  // N° centré autour de centerX (ligne 1)
+  const numLabelW = doc.getTextWidth(label);
+  const numValueW = doc.getTextWidth(`${numero}`);
+  const numTotalW = numLabelW + colonGap + colonW + afterColon + numValueW;
+  const numLabelRightX = centerX - numTotalW / 2 + numLabelW;
+  drawPair(label, numero, numLabelRightX, y);
+
+  // Date à droite, sur une LIGNE SÉPARÉE en dessous (alignée bord droit du box Objet)
+  const dateLabelW = doc.getTextWidth('Date');
+  const dateValueW = doc.getTextWidth(`${date}`);
+  const dateValueX = rightX - 12 - dateValueW;
+  const dateLabelRightX = dateValueX - afterColon - colonW - colonGap + dateLabelW;
+  drawPair('Date', date, dateLabelRightX, y + 9);
+
+  return y + 9;
+};
+
+// --- Encadré Client (titre au-dessus + box label : valeur) ---
+const drawClientBox = (doc, x, y, w, client, options = {}) => {
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(...COLORS.navy);
+  doc.text('Client :', x, y);
+
+  const rows = [];
+  rows.push(['Structure', client.client_nom || '']);
+  if (options.simple) {
+    if (client.client_adresse) rows.push(['Adresse', client.client_adresse]);
+    if (client.client_telephone) rows.push(['Contact', client.client_telephone]);
+  } else {
+    if (client.client_adresse) rows.push(['Adresse', client.client_adresse]);
+    if (client.client_telephone) rows.push(['Téléphone', client.client_telephone]);
+    if (client.client_email) rows.push(['Email', client.client_email]);
+    if (client.client_nif) rows.push(['NIF', client.client_nif]);
+  }
+
+  const boxY = y + 3;
+  const rowH = 7;
+  const boxH = rows.length * rowH + 4;
+  doc.setDrawColor(...COLORS.line);
+  doc.setFillColor(...COLORS.white);
+  doc.setLineWidth(0.5);
+  doc.roundedRect(x, boxY, w, boxH, 2, 2, 'S');
+
+  doc.setFontSize(9.5);
+  let ry = boxY + 7;
+  rows.forEach(([label, value]) => {
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...COLORS.navy);
+    doc.text(label, x + 5, ry);
+    doc.setTextColor(...COLORS.ink);
+    doc.text(':', x + 32, ry);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`${value}`, x + 36, ry);
+    ry += rowH;
+  });
+  return boxY + boxH;
+};
+
+// --- Encadré Objet (titre au-dessus + box texte) ---
+const drawObjetBox = (doc, x, y, w, objet, minH) => {
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(...COLORS.navy);
+  doc.text('Objet :', x, y);
+
+  const boxY = y + 3;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9.5);
+  doc.setTextColor(...COLORS.ink);
+  const lines = doc.splitTextToSize(`${objet || ''}`, w - 10);
+  const boxH = Math.max(minH || 0, lines.length * 5 + 8);
+  doc.setDrawColor(...COLORS.line);
+  doc.setLineWidth(0.5);
+  doc.roundedRect(x, boxY, w, boxH, 2, 2, 'S');
+  doc.text(lines, x + 5, boxY + 7);
+  return boxY + boxH;
+};
+
+// --- Tableau des totaux (à droite) avec barre TOTAL TTC ---
+const drawTotals = (doc, x, y, w, data, tauxTVA, compact = false) => {
+  doc.setFontSize(9.5);
+  let ry = y + 5;
+  const lineH = compact ? 5.5 : 6.5;
+  const row = (label, value, opts = {}) => {
+    doc.setFont('helvetica', opts.bold ? 'bold' : 'normal');
+    doc.setTextColor(...(opts.color || COLORS.ink));
+    doc.text(label, x + 2, ry);
+    doc.text(`${value}`, x + w - 2, ry, { align: 'right' });
+    ry += lineH;
+  };
+  // Le détail n'est affiché que s'il apporte de l'information (sinon il
+  // répète le TOTAL HT) : matériel + prestations/remise éventuelles
+  const hasDetail = data.prestations > 0 || data.remise > 0;
+  if (hasDetail) {
+    row('TOTAL MATÉRIEL HT', formatNumber(data.total_materiel_ht || 0));
+    if (data.prestations > 0) {
+      row('PRESTATIONS', formatNumber(data.prestations));
+    }
+    if (data.remise > 0) {
+      row('REMISE', '- ' + formatNumber(data.remise), { color: COLORS.red });
+    }
+    // séparateur
+    doc.setDrawColor(...COLORS.line);
+    doc.setLineWidth(0.4);
+    doc.line(x, ry - lineH + 2.5, x + w, ry - lineH + 2.5);
+  }
+
+  // Sans TVA : pas de ligne TVA ni de TOTAL TTC, la barre finale affiche le TOTAL HT
+  const sansTva = !(parseFloat(data.tva) > 0);
+  const barH = 9;
+  if (sansTva) {
+    doc.setFillColor(...COLORS.navy);
+    doc.rect(x, ry - 4, w, barH, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(...COLORS.white);
+    doc.text('TOTAL HT', x + 3, ry + 2);
+    doc.text(`${formatNumber(data.total_ht)}`, x + w - 3, ry + 2, { align: 'right' });
+    return ry + 5;
+  }
+
+  row('TOTAL HT', formatNumber(data.total_ht), { bold: true, color: COLORS.navySoft });
+  row(`TVA (${tauxTVA}%)`, formatNumber(data.tva || 0), { color: COLORS.ink });
+
+  // Barre TOTAL TTC
+  doc.setFillColor(...COLORS.navy);
+  doc.rect(x, ry - 4, w, barH, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(...COLORS.white);
+  doc.text('TOTAL TTC', x + 3, ry + 2);
+  doc.text(`${formatNumber(data.total_ttc)}`, x + w - 3, ry + 2, { align: 'right' });
+  return ry + 5;
+};
+
+// Hauteur réelle du bloc totaux (doit suivre la logique de drawTotals)
+const totalsHeight = (data, compact = false) => {
+  const lineH = compact ? 5.5 : 6.5;
+  let n = 0;
+  if (data.prestations > 0 || data.remise > 0) {
+    n += 1; // TOTAL MATÉRIEL HT
+    if (data.prestations > 0) n += 1;
+    if (data.remise > 0) n += 1;
+  }
+  if (parseFloat(data.tva) > 0) n += 2; // TOTAL HT + TVA
+  return 5 + n * lineH + 10; // offset initial + lignes + barre finale
+};
+
+// --- Encadré "somme en lettres" (à gauche) ---
+const drawAmountInWords = (doc, x, y, w, h, intro, montantTTC, suffixe = 'TTC') => {
+  doc.setDrawColor(...COLORS.navy);
+  doc.setLineWidth(0.5);
+  doc.roundedRect(x, y, w, h, 2, 2, 'S');
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9.5);
+  doc.setTextColor(...COLORS.navySoft);
+  doc.text(intro, x + 5, y + 8);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(12);
+  doc.setTextColor(...COLORS.navy);
+  const phrase = `${nombreEnLettres(montantTTC)} (${formatNumber(montantTTC)}) Francs CFA ${suffixe}.`;
+  const lines = doc.splitTextToSize(phrase, w - 10);
+  doc.text(lines, x + 5, y + 16);
+};
+
+// --- Signature (à droite, sous les totaux) ---
+const drawSignature = (doc, centerX, y, parametres = {}, withCachet = false, compact = false) => {
+  const titre = parametres.signataire_titre || 'Le Directeur,';
+  const nom = parametres.signataire_nom || 'Koffi KAVEGE';
+  const img = parametres.signature_image;
+
+  const titreY = y + 2;
+  const nomY = y + (compact ? 16 : 20);
+
+  // 1) Cachet/signature dessiné EN PREMIER (en dessous) pour que le texte
+  //    reste lisible par-dessus, même si le scan a un fond blanc opaque.
+  if (withCachet && img) {
+    try {
+      const props = doc.getImageProperties(img);
+      const maxW = 40;
+      const maxH = 28;
+      let w = maxW;
+      let h = (props.height / props.width) * w;
+      if (h > maxH) {
+        h = maxH;
+        w = (props.width / props.height) * h;
+      }
+      const cx = centerX + 12;
+      const cyCenter = (y + nomY) / 2 + 1;
+      doc.addImage(img, cx - w / 2, cyCenter - h / 2, w, h);
+    } catch (e) {
+      // image invalide : on garde uniquement le texte ci-dessous
+    }
+  }
+
+  // 2) Titre par-dessus le cachet
+  doc.setFont('helvetica', 'bolditalic');
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.navy);
+  doc.text(titre, centerX, titreY, { align: 'center' });
+
+  // 3) Nom par-dessus le cachet
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.setTextColor(...COLORS.navy);
+  doc.text(nom, centerX, nomY, { align: 'center' });
+};
+
+// --- Icône de service (cercle bleu + glyphe blanc) ---
+const drawServiceIcon = (doc, cx, cy, r, type) => {
+  // Pastille ronde bleu marine
+  doc.setFillColor(...COLORS.navy);
+  doc.circle(cx, cy, r, 'F');
+
+  const white = COLORS.white;
+  const navy = COLORS.navy;
+
+  if (type === 'camera') {
+    // Corps de la caméra
+    doc.setFillColor(...white);
+    doc.roundedRect(cx - 2.3, cy - 1.1, 4.6, 2.9, 0.5, 0.5, 'F');
+    // Bossage du viseur
+    doc.rect(cx - 1.3, cy - 1.9, 1.7, 0.9, 'F');
+    // Objectif
+    doc.setFillColor(...navy);
+    doc.circle(cx + 0.1, cy + 0.35, 0.95, 'F');
+    doc.setFillColor(...white);
+    doc.circle(cx + 0.1, cy + 0.35, 0.4, 'F');
+    // Flash
+    doc.setFillColor(...navy);
+    doc.circle(cx - 1.6, cy - 0.2, 0.32, 'F');
+  } else if (type === 'network') {
+    // Liens entre les nœuds
+    doc.setDrawColor(...white);
+    doc.setLineWidth(0.4);
+    doc.line(cx, cy - 1.7, cx - 2, cy + 1.6);
+    doc.line(cx, cy - 1.7, cx + 2, cy + 1.6);
+    doc.line(cx - 2, cy + 1.6, cx + 2, cy + 1.6);
+    // Nœuds
+    doc.setFillColor(...white);
+    doc.circle(cx, cy - 1.7, 0.95, 'F');       // haut
+    doc.circle(cx - 2, cy + 1.6, 0.95, 'F');   // bas gauche
+    doc.circle(cx + 2, cy + 1.6, 0.95, 'F');   // bas droite
+  } else if (type === 'antenna') {
+    // Wifi : point de base + 2 arcs (chevrons)
+    doc.setFillColor(...white);
+    doc.circle(cx, cy + 1.9, 0.75, 'F');
+    doc.setDrawColor(...white);
+    doc.setLineWidth(0.5);
+    // arc intérieur
+    doc.line(cx - 1.3, cy + 0.5, cx, cy - 0.4);
+    doc.line(cx, cy - 0.4, cx + 1.3, cy + 0.5);
+    // arc extérieur
+    doc.line(cx - 2.3, cy - 0.1, cx, cy - 2);
+    doc.line(cx, cy - 2, cx + 2.3, cy - 0.1);
+  } else if (type === 'energy') {
+    // Éclair
+    doc.setFillColor(...white);
+    fillPoly(doc, [
+      [cx + 0.7, cy - 2.6],
+      [cx - 2, cy + 0.5],
+      [cx - 0.2, cy + 0.5],
+      [cx - 0.7, cy + 2.6],
+      [cx + 2, cy - 0.5],
+      [cx + 0.2, cy - 0.5]
+    ]);
+  }
+};
+
+// --- Pied de page commun (sceau + slogan + icônes + décor d'angle) ---
+const drawFooter = (doc, parametres = {}) => {
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const baseY = pageHeight - 15;
+
+  // Filet de séparation au-dessus du pied de page
+  doc.setDrawColor(...COLORS.line);
+  doc.setLineWidth(0.4);
+  doc.line(MARGIN, pageHeight - 24, pageWidth - MARGIN, pageHeight - 24);
+
+  // Petit décor d'angle discret en bas à droite
+  doc.setFillColor(...COLORS.navySoft);
+  fillPoly(doc, [
+    [pageWidth - 6, pageHeight - 6],
+    [pageWidth - 30, pageHeight - 6],
+    [pageWidth - 6, pageHeight - 22]
+  ]);
+  doc.setFillColor(...COLORS.navy);
+  fillPoly(doc, [
+    [pageWidth - 6, pageHeight - 6],
+    [pageWidth - 18, pageHeight - 6],
+    [pageWidth - 6, pageHeight - 14]
+  ]);
+
+  // Sceau (médaille) à gauche
+  const sealX = MARGIN + 4;
+  doc.setFillColor(...COLORS.navy);
+  doc.circle(sealX, baseY, 3.4, 'F');
+  doc.setFillColor(...COLORS.white);
+  doc.circle(sealX, baseY - 0.3, 1.2, 'F');
+  doc.setFillColor(...COLORS.navy);
+  doc.circle(sealX, baseY - 0.3, 0.5, 'F');
+  doc.setFillColor(...COLORS.navy);
+  doc.triangle(sealX - 1.7, baseY + 2, sealX - 0.4, baseY + 2, sealX - 1.05, baseY + 4.5, 'F');
+  doc.triangle(sealX + 0.4, baseY + 2, sealX + 1.7, baseY + 2, sealX + 1.05, baseY + 4.5, 'F');
+
+  // Slogan
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(9);
+  doc.setTextColor(...COLORS.navy);
+  doc.text(`${parametres.entreprise_slogan_pied1 || 'Votre partenaire en réseaux informatiques,'}`, sealX + 8, baseY - 1.5);
+  doc.text(`${parametres.entreprise_slogan_pied2 || 'télécommunications et sécurité électronique.'}`, sealX + 8, baseY + 3);
+
+  // 4 icônes de services à droite (avant le décor d'angle)
+  const r = 3.6;
+  const startX = 140;
+  const step = 11;
+  const types = ['camera', 'network', 'antenna', 'energy'];
+  types.forEach((t, i) => {
+    drawServiceIcon(doc, startX + i * step, baseY, r, t);
+  });
+};
+
+// --- Date au format long français : "19 Juin 2026" ---
+const formatDateLong = (dateInput) => {
+  const d = new Date(dateInput);
+  if (Number.isNaN(d.getTime())) return '';
+  const mois = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+    'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
+  return `${d.getDate()} ${mois[d.getMonth()]} ${d.getFullYear()}`;
+};
+
+// --- N° et Date empilés et alignés à droite (libellés/colonnes calés) ---
+const drawNumDateRight = (doc, { label = 'N°', numero, date, rightX, y }) => {
+  doc.setFontSize(12);
+  doc.setFont('helvetica', 'bold');
+  const colonGap = 2.5;
+  const afterColon = 3;
+  const colonW = doc.getTextWidth(':');
+  const maxValueW = Math.max(doc.getTextWidth(`${numero}`), doc.getTextWidth(`${date}`));
+  const valueX = rightX - maxValueW;
+  const colonX = valueX - afterColon - colonW;
+  const labelRightX = colonX - colonGap;
+
+  const drawPair = (lbl, val, yy) => {
+    doc.setTextColor(...COLORS.navy);
+    doc.text(lbl, labelRightX, yy, { align: 'right' });
+    doc.text(':', colonX, yy);
+    doc.setTextColor(...COLORS.red);
+    doc.text(`${val}`, valueX, yy);
+  };
+
+  drawPair(label, numero, y);
+  drawPair('Date', date, y + 8);
+  return y + 8;
+};
+
+// --- Encadré "Conditions de paiement" (bas de la facture) ---
+const drawConditionsBox = (doc, x, y, w) => {
+  const h = 24;
+  doc.setDrawColor(...COLORS.line);
+  doc.setLineWidth(0.5);
+  doc.roundedRect(x, y, w, h, 2, 2, 'S');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9.5);
+  doc.setTextColor(...COLORS.navy);
+  doc.text('CONDITIONS DE PAIEMENT', x + 5, y + 7);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(...COLORS.ink);
+  doc.text('Paiement comptant ou par virement bancaire.', x + 5, y + 14);
+  doc.text('Échéance :  ____ / ____ / ________', x + 5, y + 20);
+  return y + h;
+};
+
+// --- Encadré "Observations" (bordereau) ---
+const drawObservationsBox = (doc, x, y, w, texte) => {
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(...COLORS.navy);
+  doc.text('Observations :', x, y);
+
+  const boxY = y + 3;
+  const boxH = 14;
+  doc.setDrawColor(...COLORS.line);
+  doc.setLineWidth(0.5);
+  doc.roundedRect(x, boxY, w, boxH, 2, 2, 'S');
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9.5);
+  doc.setTextColor(...COLORS.ink);
+  const lines = doc.splitTextToSize(`${texte || ''}`, w - 10);
+  doc.text(lines, x + 5, boxY + 7);
+  return boxY + boxH;
+};
+
+// --- Bloc "Certification de livraison" (bordereau) ---
+const drawCertification = (doc, x, rightX, y, annee) => {
+  const w = rightX - x;
+  const centerX = x + w / 2;
+
+  // Titre centré
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(12);
+  doc.setTextColor(...COLORS.navy);
+  doc.text('CERTIFICATION DE LIVRAISON', centerX, y, { align: 'center' });
+
+  // Texte "Je soussigné(e) ... certifie avoir reçu ..."
+  let ty = y + 8;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.ink);
+  const intro = 'Je soussigné(e) ';
+  const fin = ' certifie avoir reçu les matériels';
+  doc.text(intro, x, ty);
+  const introW = doc.getTextWidth(intro);
+  const finW = doc.getTextWidth(fin);
+  // ligne de pointillés entre l'intro et la fin
+  doc.setDrawColor(...COLORS.line);
+  doc.setLineWidth(0.4);
+  doc.line(x + introW + 1, ty + 1, rightX - finW - 1, ty + 1);
+  doc.text(fin, rightX - finW, ty);
+  ty += 6;
+  doc.text('mentionnés ci-dessus en bon état.', x, ty);
+
+  // Deux cadres : LIVREUR / RÉCEPTIONNAIRE
+  ty += 5;
+  const gap = 8;
+  const cadreW = (w - gap) / 2;
+  const cadreH = 30;
+  const drawCadre = (cx, titre, withCachet) => {
+    doc.setDrawColor(...COLORS.line);
+    doc.setLineWidth(0.5);
+    doc.roundedRect(cx, ty, cadreW, cadreH, 2, 2, 'S');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.setTextColor(...COLORS.navy);
+    doc.text(titre, cx + 5, ty + 7);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(...COLORS.ink);
+    doc.text('Nom :  ______________________', cx + 5, ty + 14);
+    doc.text(`Date :  ____ / ____ / ${annee}`, cx + 5, ty + 20);
+    if (withCachet) {
+      doc.text('Signature & Cachet :', cx + 5, ty + 26);
+      doc.setDrawColor(...COLORS.line);
+      doc.rect(cx + cadreW - 33, ty + 21, 28, 7, 'S');
+    } else {
+      doc.text('Signature :  ________________', cx + 5, ty + 26);
+    }
+  };
+  drawCadre(x, 'LIVREUR', false);
+  drawCadre(x + cadreW + gap, 'RÉCEPTIONNAIRE', true);
+
+  return ty + cadreH;
+};
+
+// --- Corps de tableau avec sections (lots de travaux) ---
+// Si des lignes portent un titre de section, construit : bandeau de titre
+// pleine largeur, numérotation redémarrant à 1 dans chaque section, puis
+// ligne « Sous TOTAL n ». Sans section : numérotation continue classique.
+const buildSectionedBody = (lignes, nbCols, mapLigne, getMontant) => {
+  const hasSections = (lignes || []).some((l) => (l.section_titre || '').trim());
+  if (!hasSections) {
+    return (lignes || []).map((l, i) => mapLigne(l, i + 1));
+  }
+
+  const body = [];
+  let sectionIdx = 0;
+  let i = 0;
+  while (i < lignes.length) {
+    const titre = (lignes[i].section_titre || '').trim();
+    const group = [];
+    while (i < lignes.length && (lignes[i].section_titre || '').trim() === titre) {
+      group.push(lignes[i]);
+      i++;
+    }
+
+    if (titre) {
+      sectionIdx += 1;
+      body.push([{
+        content: titre,
+        colSpan: nbCols,
+        styles: {
+          fillColor: [224, 231, 255],
+          textColor: COLORS.navy,
+          fontStyle: 'bold',
+          halign: 'center',
+          fontSize: 9,
+        },
+      }]);
+    }
+
+    group.forEach((l, j) => body.push(mapLigne(l, j + 1)));
+
+    if (titre && getMontant) {
+      const sousTotal = group.reduce((s, l) => s + (getMontant(l) || 0), 0);
+      body.push([
+        {
+          content: `Sous TOTAL ${sectionIdx}`,
+          colSpan: nbCols - 1,
+          styles: { halign: 'center', fontStyle: 'bold', fillColor: COLORS.boxBg, textColor: COLORS.navy },
+        },
+        {
+          content: formatNumber(sousTotal),
+          styles: { halign: 'right', fontStyle: 'bold', fillColor: COLORS.boxBg, textColor: COLORS.navy },
+        },
+      ]);
+    }
+  }
+  return body;
+};
+
+// Cellule désignation enrichie : titre en gras + description détaillée en dessous.
+// autoTable ne mélange pas les polices dans une cellule : on pré-découpe les lignes
+// (le gras étant plus large que le normal) puis on dessine manuellement.
+const richDesignationCell = (doc, ligne, cellWidth, cellPadding) => {
+  const desc = String(ligne.description || '').trim();
+  if (!desc) return ligne.designation;
+  const innerW = cellWidth - cellPadding * 2;
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'bold');
+  const rich = doc.splitTextToSize(String(ligne.designation || ''), innerW)
+    .map((t) => ({ text: t, bold: true, center: true }));
+  rich.push({ text: '', bold: false, center: false });
+  desc.split(/\n/).forEach((p) => {
+    const trimmed = p.trim();
+    if (!trimmed) { rich.push({ text: '', bold: false, center: false }); return; }
+    const bold = /:\s*$/.test(trimmed); // sous-titre type « MédicalSoft: » en gras
+    doc.setFont('helvetica', bold ? 'bold' : 'normal');
+    doc.splitTextToSize(p, innerW).forEach((l) => rich.push({ text: l, bold, center: false }));
+  });
+  doc.setFont('helvetica', 'normal');
+  return {
+    content: rich.map((r) => r.text).join('\n'),
+    styles: { valign: 'top' },
+    _rich: rich,
+  };
+};
+
+// Hooks autoTable : suppression du rendu par défaut puis dessin mixte gras/normal
+const richCellHooks = (doc) => ({
+  willDrawCell: (data) => {
+    if (data.section === 'body' && data.cell.raw && data.cell.raw._rich) data.cell.text = [];
+  },
+  didDrawCell: (data) => {
+    if (data.section !== 'body' || !data.cell.raw || !data.cell.raw._rich) return;
+    const rich = data.cell.raw._rich;
+    const factor = typeof doc.getLineHeightFactor === 'function' ? doc.getLineHeightFactor() : 1.15;
+    const lh = (9 * factor) / doc.internal.scaleFactor;
+    const xLeft = data.cell.x + data.cell.padding('left');
+    const xCenter = data.cell.x + data.cell.width / 2;
+    let ty = data.cell.y + data.cell.padding('top') + lh * 0.8;
+    doc.setFontSize(9);
+    doc.setTextColor(...COLORS.ink);
+    rich.forEach((r) => {
+      if (r.text) {
+        doc.setFont('helvetica', r.bold ? 'bold' : 'normal');
+        if (r.center) doc.text(r.text, xCenter, ty, { align: 'center' });
+        else doc.text(r.text, xLeft, ty);
+      }
+      ty += lh;
+    });
+  },
+});
+
+// Génération PDF Proforma — rendu en deux passes : si le bloc bas déborde de
+// peu, on re-rend tout en mode compact (espacements resserrés) pour tenir sur
+// une page avant de se résoudre à un saut de page.
+export const generateProformaPDF = async (proforma, parametres, options = {}) => {
+  const normal = await renderProformaPDF(proforma, parametres, options, false);
+  if (normal) return normal;
+  return renderProformaPDF(proforma, parametres, options, true);
+};
+
+const renderProformaPDF = async (proforma, parametres, options, compact) => {
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
-  let yPos = 15;
+  const tauxTVA = tauxTvaDuDocument(proforma, parametres);
 
-  // LOGO à gauche
-  const logo = await getLogoDataURL();
-  const textX = logo ? 38 : 15; // décalage du texte si le logo est présent
-  if (logo) {
-    const logoW = 22;
-    const logoH = (logo.height / logo.width) * logoW;
-    doc.addImage(logo.dataUrl, 'PNG', 14, yPos - 8, logoW, logoH);
-  }
+  drawPageFrame(doc);
+  const { contentLeft, rightX, headerBottom } = await drawHeader(doc, parametres);
 
-  // EN-TÊTE - Titre "In-Tel Services" à gauche
-  doc.setFontSize(24);
-  doc.setFont('times', 'bold');
-  doc.setTextColor(0, 51, 102); // Bleu marine pour "In-Tel"
-  doc.text('In-Tel ', textX, yPos);
-  
-  // "Services" en vert
-  doc.setTextColor(0, 128, 0);
-  doc.text('Services', textX + doc.getTextWidth('In-Tel '), yPos);
+  // Titre
+  let yPos = drawTitle(doc, options.titre || 'FACTURE PROFORMA', headerBottom + (compact ? 7 : 11));
 
-  // Encadré à droite avec les services - AGRANDI
-  const rightX = pageWidth - 15;
-  const boxLeft = pageWidth - 78;
-  const boxTop = yPos - 7;
-  doc.setDrawColor(255, 140, 0); // Orange
-  doc.setLineWidth(0.8);
-  doc.rect(boxLeft, boxTop, 63, 22);
-  
-  doc.setFontSize(8);
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(0, 0, 0);
-  doc.text('Services & Intégration Réseau - Maintenance', rightX - 2, yPos - 3, { align: 'right' });
-  doc.text('Télécommunication - Audit - Conseil Système', rightX - 2, yPos + 1.5, { align: 'right' });
-  doc.text('de Sécurité -Vente de Matériels Informatique -', rightX - 2, yPos + 6, { align: 'right' });
-  doc.text('Formation', rightX - 2, yPos + 10.5, { align: 'right' });
-
-  yPos += 8;
-
-  // Coordonnées sous le titre
-  doc.setFontSize(7);
-  doc.setFont('times', 'italic');
-  doc.setTextColor(0, 0, 0);
-  doc.text(`20 Av. du RPT Face le Grand Collège du Plateau 04BP Lomé-TOGO`, textX, yPos);
-  yPos += 3.5;
-  doc.text(`Tél. (+228) 22 22 14 54 – Cel. 90 11 66 86/99 32 98 98`, textX, yPos);
-  yPos += 3.5;
-  doc.text(`E-Mail: infos_its@yahoo.fr`, textX, yPos);
-
-  yPos += 6;
-
-  // Ligne de séparation horizontale avec point bleu à droite
-  doc.setDrawColor(0, 51, 102); // Bleu marine
-  doc.setLineWidth(1);
-  doc.line(textX, yPos, boxLeft, yPos);
-  // Point bleu à droite de la ligne (début du rectangle orange)
-  doc.setFillColor(0, 51, 102);
-  doc.circle(boxLeft, yPos, 2, 'F');
-
-  yPos += 8;
-
-  // Bloc d'informations administratives à gauche
-  doc.setFontSize(7);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(0, 0, 0);
-  doc.text(`RCCM :`, 15, yPos);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`${parametres.entreprise_rccm || 'TG-LOM 2013 A 6170'}`, 28, yPos);
-  
-  yPos += 4;
-  doc.setFont('helvetica', 'bold');
-  doc.text(`NIF :`, 15, yPos);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`${parametres.entreprise_nif || '1000278436'}`, 24, yPos);
-  
-  yPos += 4;
-  doc.setFont('helvetica', 'bold');
-  doc.text(`TEL.`, 15, yPos);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`${parametres.entreprise_tel || '+228 22 51 66 86'} ${parametres.entreprise_cel || 'CEL. 90 11 66 86'}`, 24, yPos);
-  
-  yPos += 4;
-  doc.text(`04BP144 LOME ADIDOGOME-TOGO`, 15, yPos);
-  
-  yPos += 4;
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(0, 51, 102); // Bleu marine comme un lien
-  doc.text(`E-Mail`, 15, yPos);
-  doc.setTextColor(0, 0, 0);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`${parametres.entreprise_email || 'infos_its@gmail.com'}`, 26, yPos);
-  
-  yPos += 4;
-  doc.text(`UTB N° ${parametres.entreprise_utb || '010350245170210119'}`, 15, yPos);
-
-  // PROFORMA au centre - DESCENDU
-  yPos -= 16; // Position ajustée pour descendre le titre
-  doc.setFontSize(26);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(0, 51, 102); // Bleu marine
-  doc.text('PROFORMA', pageWidth / 2, yPos, { align: 'center' });
-  
-  yPos += 8;
-  
-  // Numéro en rouge SOUS PROFORMA
-  doc.setFontSize(12);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(255, 0, 0);
-  doc.text(`N° ${proforma.numero}`, pageWidth / 2, yPos, { align: 'center' });
-
-  // Date à droite - DESCENDUE au niveau du numéro
-  doc.setFontSize(9);
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(0, 0, 0);
+  // N° (centré sous le titre) / Date (décalée à droite)
   const dateStr = new Date(proforma.date).toLocaleDateString('fr-FR');
-  doc.text(`Date:  ${dateStr}`, rightX, yPos, { align: 'right' });
+  drawNumDate(doc, { label: 'N°', numero: proforma.numero, date: dateStr, centerX: pageWidth / 2, rightX, y: yPos + 6 });
 
-  yPos += 12;
+  // Client (gauche) + Objet (droite)
+  const blockY = yPos + (compact ? 19 : 24);
+  const clientW = 92;
+  const objetX = contentLeft + clientW + 8;
+  const objetW = rightX - objetX;
+  const clientBottom = drawClientBox(doc, contentLeft, blockY, clientW, proforma);
+  const objetBottom = drawObjetBox(doc, objetX, blockY, objetW, proforma.objet, 0);
 
-  // Section Client à droite
-  doc.setFontSize(11);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(0, 0, 255);
-  doc.text('Client', rightX - 50, yPos);
-  
-  doc.setFontSize(9);
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(0, 0, 0);
-  doc.text(`Nom       :  ${proforma.client_nom}`, rightX - 50, yPos + 6);
-  doc.text(`Adresse  :  ${proforma.client_adresse || ''}`, rightX - 50, yPos + 11);
-
-  yPos += 20;
-
-  // Objet
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(9);
-  doc.text(`Objet`, 15, yPos);
-  doc.setFont('helvetica', 'italic');
-  doc.text(`: ${proforma.objet}`, 26, yPos);
-
-  yPos += 8;
+  yPos = Math.max(clientBottom, objetBottom) + (compact ? 5 : 8);
 
   // Tableau des lignes
-  const tableData = proforma.lignes.map((ligne, index) => [
-    index + 1,
-    ligne.designation,
-    ligne.unite,
-    ligne.quantite,
-    formatNumber(ligne.prix_unitaire),
-    formatNumber(ligne.montant)
-  ]);
+  const tableData = buildSectionedBody(
+    proforma.lignes,
+    6,
+    (l, n) => [
+      n, richDesignationCell(doc, l, 84, compact ? 1.6 : 2.2), l.unite, l.quantite,
+      formatNumber(l.prix_unitaire), formatNumber(l.montant)
+    ],
+    (l) => parseFloat(l.montant) || 0
+  );
+  const qteTotal = proforma.lignes.reduce((s, l) => s + (parseFloat(l.quantite) || 0), 0);
+  const montantTotal = proforma.lignes.reduce((s, l) => s + (parseFloat(l.montant) || 0), 0);
 
   doc.autoTable({
     startY: yPos,
-    head: [['Réf', 'Désignation', 'Unité', 'Quantité', 'Prix Unitaire', 'Montant']],
+    head: [['N°', 'DÉSIGNATION', 'UNITÉ', 'QTÉ', 'PRIX UNITAIRE\n(FCFA)', 'MONTANT\n(FCFA)']],
     body: tableData,
+    foot: [[
+      { content: 'TOTAL', colSpan: 3, styles: { halign: 'center' } },
+      { content: formatNumber(qteTotal), styles: { halign: 'center' } },
+      '',
+      { content: formatNumber(montantTotal), styles: { halign: 'right' } }
+    ]],
+    showHead: 'firstPage',
+    showFoot: 'lastPage',
     theme: 'grid',
     headStyles: {
-      fillColor: [200, 200, 200],
-      textColor: [0, 0, 0],
-      fontStyle: 'bold',
-      fontSize: 8
+      fillColor: COLORS.navy, textColor: COLORS.white, fontStyle: 'bold',
+      fontSize: 8.5, halign: 'center', valign: 'middle', cellPadding: compact ? 1.8 : 2.5
     },
-    bodyStyles: {
-      fontSize: 8
+    bodyStyles: { fontSize: 9, cellPadding: compact ? 1.6 : 2.2, textColor: COLORS.ink, valign: 'middle' },
+    footStyles: {
+      fillColor: COLORS.boxBg, textColor: COLORS.navy, fontStyle: 'bold', fontSize: 9.5
     },
     columnStyles: {
       0: { cellWidth: 10, halign: 'center' },
-      1: { cellWidth: 70 },
-      2: { cellWidth: 20, halign: 'center' },
-      3: { cellWidth: 20, halign: 'center' },
-      4: { cellWidth: 30, halign: 'right' },
-      5: { cellWidth: 30, halign: 'right' }
+      1: { cellWidth: 84 },
+      2: { cellWidth: 18, halign: 'center' },
+      3: { cellWidth: 12, halign: 'center' },
+      4: { cellWidth: 31, halign: 'right' },
+      5: { cellWidth: 31, halign: 'right' }
     },
-    margin: { left: 15, right: 15, bottom: 35 }
+    styles: { lineColor: COLORS.line, lineWidth: 0.15 },
+    rowPageBreak: 'avoid',
+    ...richCellHooks(doc),
+    margin: { left: MARGIN, right: MARGIN, bottom: 26 },
+    didDrawPage: () => { drawPageFrame(doc); drawFooter(doc, parametres); }
   });
 
-  yPos = doc.lastAutoTable.finalY + 5;
+  yPos = doc.lastAutoTable.finalY + (compact ? 3 : 6);
 
-  // Si le bloc final (signature + totaux + pied de page) ne tient pas
-  // sur la page courante, on passe à une nouvelle page.
-  const blocFinHauteur = 60;
-  if (yPos + blocFinHauteur > pageHeight - 25) {
+  // Bloc bas : somme en lettres (gauche) + totaux (droite)
+  const totalsW = 86;
+  const totalsX = rightX - totalsW;
+  const wordsW = totalsX - contentLeft - 8;
+  const wordsH = 34;
+  const footerTop = pageHeight - 24;
+
+  // Le bloc bas est indivisible ; hauteurs exactes (signature : nom à +20,
+  // cachet éventuel jusqu'à +25) pour ne basculer que si ça ne tient vraiment pas.
+  const SIG_GAP = compact ? 5 : 8;
+  const sigH = options.withCachet === true ? (compact ? 21 : 25) : (compact ? 17 : 21);
+  const blocH = Math.max(wordsH, totalsHeight(proforma, compact) + SIG_GAP + sigH);
+  if (yPos + blocH > footerTop - 1) {
+    // Passe normale : on abandonne pour retenter en compact
+    if (!compact) return null;
     doc.addPage();
-    yPos = 20;
+    drawPageFrame(doc);
+    drawFooter(doc, parametres);
+    yPos = 30;
   }
 
-  // Signature à gauche
-  const signatureYPos = yPos;
-  doc.setFontSize(9);
-  doc.setFont('helvetica', 'italic');
-  doc.text('Le Directeur,', 15, signatureYPos);
-  doc.setFont('helvetica', 'bold');
-  doc.text('Koffi KAVEGE', 15, signatureYPos + 15);
+  drawAmountInWords(doc, contentLeft, yPos, wordsW, wordsH,
+    options.sommeIntro || 'Arrêtée la présente facture proforma à la somme de :',
+    proforma.total_ttc, parseFloat(proforma.tva) > 0 ? 'TTC' : 'HT');
 
-  // Tableau des totaux à droite
-  const tauxTVA = parametres.tva_taux || 18;
-  const totauxData = [
-    ['TOTAL MAT HT.', formatNumber(proforma.total_materiel_ht || 0)],
-    ['Prestations', formatNumber(proforma.prestations || 0)],
-    ['Remise', proforma.remise > 0 ? '- ' + formatNumber(proforma.remise) : ''],
-    ['TOTAL HT', formatNumber(proforma.total_ht)],
-    [`TVA ${tauxTVA}%`, formatNumber(proforma.tva)],
-    ['TOTAL TTC', formatNumber(proforma.total_ttc)]
-  ];
+  const totalsBottom = drawTotals(doc, totalsX, yPos, totalsW, {
+    total_materiel_ht: proforma.total_materiel_ht,
+    prestations: proforma.prestations,
+    remise: proforma.remise,
+    total_ht: proforma.total_ht,
+    tva: proforma.tva,
+    total_ttc: proforma.total_ttc
+  }, tauxTVA, compact);
 
-  doc.autoTable({
-    startY: yPos,
-    body: totauxData,
-    theme: 'grid',
-    tableWidth: 95,
-    margin: { left: pageWidth - 110 },
-    styles: {
-      fontSize: 9,
-      cellPadding: 2,
-      lineColor: [0, 0, 0],
-      lineWidth: 0.5
-    },
-    columnStyles: {
-      0: { 
-        cellWidth: 50, 
-        fontStyle: 'bold',
-        halign: 'left'
-      },
-      1: { 
-        cellWidth: 45, 
-        halign: 'right'
-      }
-    },
-    didParseCell: function(data) {
-      // Dernière ligne en gras et avec fond jaune
-      if (data.row.index === 5) {
-        data.cell.styles.fontStyle = 'bold';
-        data.cell.styles.fillColor = [255, 255, 0];
-      }
-    }
-  });
+  // Signature centrée sous les totaux (colonne de droite : pas besoin
+  // d'attendre le bas de l'encadré somme en lettres, à gauche)
+  drawSignature(doc, totalsX + totalsW / 2, totalsBottom + SIG_GAP, parametres, options.withCachet === true, compact);
 
-  // Pied de page avec cadre - sur une seule ligne, centré
-  yPos = pageHeight - 25;
-  doc.setFont('helvetica', 'italic');
-  const montantEnLettres = nombreEnLettres(proforma.total_ttc);
-  const piedPage = `Arrêtée la présente facture proforma à la somme de : ${montantEnLettres} (${formatNumber(proforma.total_ttc)}) Francs CFA TTC.`;
-  // Réduit la taille de la police jusqu'à ce que le texte tienne sur une seule ligne
-  let piedFontSize = 7;
-  const maxPiedWidth = pageWidth - 36;
-  doc.setFontSize(piedFontSize);
-  while (doc.getTextWidth(piedPage) > maxPiedWidth && piedFontSize > 4.5) {
-    piedFontSize -= 0.25;
-    doc.setFontSize(piedFontSize);
-  }
-  // Encadré pour le pied de page
-  doc.setDrawColor(0, 0, 0);
-  doc.setLineWidth(0.5);
-  doc.rect(15, yPos - 3, pageWidth - 30, 10);
-  doc.text(piedPage, pageWidth / 2, yPos + 3, { align: 'center' });
+  // Pied de page commun
+  drawFooter(doc, parametres);
 
   return doc;
 };
 
 // Génération PDF Facture (similaire à Proforma)
+// Génération PDF Facture — rendu en deux passes comme la proforma :
+// passe normale, puis passe compacte si le bloc bas déborde de peu.
 export const generateFacturePDF = async (facture, parametres) => {
+  const normal = await renderFacturePDF(facture, parametres, false);
+  if (normal) return normal;
+  return renderFacturePDF(facture, parametres, true);
+};
+
+// Facture d'avoir : même présentation que la facture, avec la référence de
+// la facture d'origine et le motif dans l'objet, sans conditions de paiement.
+export const generateAvoirPDF = async (avoir, parametres) => {
+  const dateFacture = avoir.facture_date ? ` du ${formatDateLong(avoir.facture_date)}` : '';
+  const document = {
+    ...avoir,
+    objet: `Avoir sur la facture N° ${avoir.facture_numero || ''}${dateFacture}${avoir.facture_objet ? ` (${avoir.facture_objet})` : ''}. Motif : ${avoir.motif || ''}`,
+  };
+  const options = {
+    titre: "FACTURE D'AVOIR",
+    phraseArrete: 'Arrêté le présent avoir à la somme de :',
+    sansConditions: true,
+  };
+  const normal = await renderFacturePDF(document, parametres, false, options);
+  if (normal) return normal;
+  return renderFacturePDF(document, parametres, true, options);
+};
+
+const renderFacturePDF = async (facture, parametres, compact, options = {}) => {
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
-  let yPos = 15;
+  const tauxTVA = tauxTvaDuDocument(facture, parametres);
 
-  // LOGO à gauche
-  const logo = await getLogoDataURL();
-  const textX = logo ? 38 : 15; // décalage du texte si le logo est présent
-  if (logo) {
-    const logoW = 22;
-    const logoH = (logo.height / logo.width) * logoW;
-    doc.addImage(logo.dataUrl, 'PNG', 14, yPos - 8, logoW, logoH);
-  }
+  drawPageFrame(doc);
+  const { contentLeft, rightX, headerBottom } = await drawHeader(doc, parametres, { vignette: true });
 
-  // EN-TÊTE - Titre "In-Tel Services" à gauche
-  doc.setFontSize(24);
-  doc.setFont('times', 'bold');
-  doc.setTextColor(0, 51, 102); // Bleu marine pour "In-Tel"
-  doc.text('In-Tel ', textX, yPos);
-  
-  // "Services" en vert
-  doc.setTextColor(0, 128, 0);
-  doc.text('Services', textX + doc.getTextWidth('In-Tel '), yPos);
+  // Titre
+  let yPos = drawTitle(doc, options.titre || 'FACTURE', headerBottom + (compact ? 7 : 11));
 
-  // Encadré à droite avec les services - AGRANDI
-  const rightX = pageWidth - 15;
-  const boxLeft = pageWidth - 78;
-  const boxTop = yPos - 7;
-  doc.setDrawColor(255, 140, 0); // Orange
-  doc.setLineWidth(0.8);
-  doc.rect(boxLeft, boxTop, 63, 22);
-  
-  doc.setFontSize(8);
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(0, 0, 0);
-  doc.text('Services & Intégration Réseau - Maintenance', rightX - 2, yPos - 3, { align: 'right' });
-  doc.text('Télécommunication - Audit - Conseil Système', rightX - 2, yPos + 1.5, { align: 'right' });
-  doc.text('de Sécurité -Vente de Matériels Informatique -', rightX - 2, yPos + 6, { align: 'right' });
-  doc.text('Formation', rightX - 2, yPos + 10.5, { align: 'right' });
+  // N° (centré sous le titre) / Date (décalée à droite) — même disposition que la proforma
+  const dateStr = formatDateLong(facture.date);
+  drawNumDate(doc, { label: 'N°', numero: facture.numero, date: dateStr, centerX: pageWidth / 2, rightX, y: yPos + 6 });
 
-  yPos += 8;
+  // Client (gauche)
+  const blockY = yPos + (compact ? 19 : 24);
+  const clientW = 92;
+  const clientBottom = drawClientBox(doc, contentLeft, blockY, clientW, facture);
 
-  // Coordonnées sous le titre
-  doc.setFontSize(7);
-  doc.setFont('times', 'italic');
-  doc.setTextColor(0, 0, 0);
-  doc.text(`20 Av. du RPT Face le Grand Collège du Plateau 04BP Lomé-TOGO`, textX, yPos);
-  yPos += 3.5;
-  doc.text(`Tél. (+228) 22 22 14 54 – Cel. 90 11 66 86/99 32 98 98`, textX, yPos);
-  yPos += 3.5;
-  doc.text(`E-Mail: infos_its@yahoo.fr`, textX, yPos);
-
-  yPos += 6;
-
-  // Ligne de séparation horizontale avec point bleu à droite
-  doc.setDrawColor(0, 51, 102); // Bleu marine
-  doc.setLineWidth(1);
-  doc.line(textX, yPos, boxLeft, yPos);
-  // Point bleu à droite de la ligne (début du rectangle orange)
-  doc.setFillColor(0, 51, 102);
-  doc.circle(boxLeft, yPos, 2, 'F');
-
-  yPos += 8;
-
-  // Bloc d'informations administratives à gauche
-  doc.setFontSize(7);
+  // Objet en ligne, sous l'encadré client
+  let objetY = clientBottom + (compact ? 5 : 7);
   doc.setFont('helvetica', 'bold');
-  doc.setTextColor(0, 0, 0);
-  doc.text(`RCCM :`, 15, yPos);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`${parametres.entreprise_rccm || 'TG-LOM 2013 A 6170'}`, 28, yPos);
-  
-  yPos += 4;
-  doc.setFont('helvetica', 'bold');
-  doc.text(`NIF :`, 15, yPos);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`${parametres.entreprise_nif || '1000278436'}`, 24, yPos);
-  
-  yPos += 4;
-  doc.setFont('helvetica', 'bold');
-  doc.text(`TEL.`, 15, yPos);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`${parametres.entreprise_tel || '+228 22 51 66 86'} ${parametres.entreprise_cel || 'CEL. 90 11 66 86'}`, 24, yPos);
-  
-  yPos += 4;
-  doc.text(`04BP144 LOME ADIDOGOME-TOGO`, 15, yPos);
-  
-  yPos += 4;
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(0, 51, 102); // Bleu marine comme un lien
-  doc.text(`E-Mail`, 15, yPos);
-  doc.setTextColor(0, 0, 0);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`${parametres.entreprise_email || 'infos_its@gmail.com'}`, 26, yPos);
-  
-  yPos += 4;
-  doc.text(`UTB N° ${parametres.entreprise_utb || '010350245170210119'}`, 15, yPos);
-
-  // FACTURE au centre - DESCENDU
-  yPos -= 16; // Position ajustée pour descendre le titre
-  doc.setFontSize(26);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(0, 51, 102); // Bleu marine
-  doc.text('FACTURE', pageWidth / 2, yPos, { align: 'center' });
-  
-  yPos += 8;
-  
-  // Numéro en rouge SOUS FACTURE
-  doc.setFontSize(12);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(255, 0, 0);
-  doc.text(`N° ${facture.numero}`, pageWidth / 2, yPos, { align: 'center' });
-
-  // Cadre de vignette (timbre fiscal) en haut à droite, au-dessus de la date
-  const vignetteW = 25; // Largeur d'un timbre fiscal
-  const vignetteH = 30; // Hauteur d'un timbre fiscal
-  const vignetteX = rightX - vignetteW;
-  const vignetteY = yPos - 14;
-  doc.setDrawColor(0, 0, 0);
-  doc.setLineWidth(0.5);
-  doc.rect(vignetteX, vignetteY, vignetteW, vignetteH);
-
-  // Date à droite - juste en dessous du cadre
-  doc.setFontSize(9);
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(0, 0, 0);
-  const dateStr = new Date(facture.date).toLocaleDateString('fr-FR');
-  const dateY = vignetteY + vignetteH + 6;
-  doc.text(`Date:  ${dateStr}`, rightX, dateY, { align: 'right' });
-
-  // Section Client - placée sous la date pour ne pas chevaucher le cadre
-  yPos = dateY + 8;
   doc.setFontSize(11);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(0, 0, 255);
-  doc.text('Client', rightX - 55, yPos);
-  
-  doc.setFontSize(9);
+  doc.setTextColor(...COLORS.navy);
+  doc.text('Objet :', contentLeft, objetY);
+  const objetLabelW = doc.getTextWidth('Objet :  ');
   doc.setFont('helvetica', 'normal');
-  doc.setTextColor(0, 0, 0);
-  doc.text(`Nom       :  ${facture.client_nom}`, rightX - 55, yPos + 6);
-  doc.text(`Adresse  :  ${facture.client_adresse || ''}`, rightX - 55, yPos + 11);
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.ink);
+  const objetLines = doc.splitTextToSize(`${facture.objet || ''}`, rightX - contentLeft - objetLabelW);
+  doc.text(objetLines, contentLeft + objetLabelW, objetY);
+  yPos = objetY + Math.max(6, objetLines.length * 5);
 
-  yPos += 20;
-
-  // Objet
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(9);
-  doc.text(`Objet`, 15, yPos);
-  doc.setFont('helvetica', 'italic');
-  doc.text(`: ${facture.objet}`, 26, yPos);
-
-  yPos += 8;
-
-  const tableData = facture.lignes.map((ligne, index) => [
-    index + 1,
-    ligne.designation,
-    ligne.unite,
-    ligne.quantite,
-    formatNumber(ligne.prix_unitaire),
-    formatNumber(ligne.montant)
-  ]);
+  // Tableau des lignes
+  const tableData = buildSectionedBody(
+    facture.lignes,
+    6,
+    (l, n) => [
+      n, richDesignationCell(doc, l, 84, compact ? 1.6 : 2.2), l.unite, l.quantite,
+      formatNumber(l.prix_unitaire), formatNumber(l.montant)
+    ],
+    (l) => parseFloat(l.montant) || 0
+  );
+  const qteTotal = facture.lignes.reduce((s, l) => s + (parseFloat(l.quantite) || 0), 0);
+  const montantTotal = facture.lignes.reduce((s, l) => s + (parseFloat(l.montant) || 0), 0);
 
   doc.autoTable({
     startY: yPos,
-    head: [['Réf', 'Désignation', 'Unité', 'Quantité', 'Prix Unitaire', 'Montant']],
+    head: [['N°', 'DÉSIGNATION', 'UNITÉ', 'QTÉ', 'PRIX UNIT.\n(FCFA)', 'MONTANT\n(FCFA)']],
     body: tableData,
+    foot: [[
+      { content: 'TOTAL', colSpan: 3, styles: { halign: 'center' } },
+      { content: formatNumber(qteTotal), styles: { halign: 'center' } },
+      '',
+      { content: formatNumber(montantTotal), styles: { halign: 'right' } }
+    ]],
+    showHead: 'firstPage',
+    showFoot: 'lastPage',
     theme: 'grid',
     headStyles: {
-      fillColor: [200, 200, 200],
-      textColor: [0, 0, 0],
-      fontStyle: 'bold',
-      fontSize: 8
+      fillColor: COLORS.navy, textColor: COLORS.white, fontStyle: 'bold',
+      fontSize: 8.5, halign: 'center', valign: 'middle', cellPadding: compact ? 1.8 : 2.5
     },
-    bodyStyles: {
-      fontSize: 8
+    bodyStyles: { fontSize: 9, cellPadding: compact ? 1.6 : 2.2, textColor: COLORS.ink, valign: 'middle' },
+    footStyles: {
+      fillColor: COLORS.boxBg, textColor: COLORS.navy, fontStyle: 'bold', fontSize: 9.5
     },
     columnStyles: {
       0: { cellWidth: 10, halign: 'center' },
-      1: { cellWidth: 70 },
-      2: { cellWidth: 20, halign: 'center' },
-      3: { cellWidth: 20, halign: 'center' },
-      4: { cellWidth: 30, halign: 'right' },
-      5: { cellWidth: 30, halign: 'right' }
+      1: { cellWidth: 84 },
+      2: { cellWidth: 18, halign: 'center' },
+      3: { cellWidth: 12, halign: 'center' },
+      4: { cellWidth: 31, halign: 'right' },
+      5: { cellWidth: 31, halign: 'right' }
     },
-    margin: { left: 15, right: 15, bottom: 35 }
+    styles: { lineColor: COLORS.line, lineWidth: 0.15 },
+    rowPageBreak: 'avoid',
+    ...richCellHooks(doc),
+    margin: { left: MARGIN, right: MARGIN, top: 18, bottom: 26 },
+    // Sur chaque page (y compris les pages de continuation) : bordure + pied de page
+    didDrawPage: () => { drawPageFrame(doc); drawFooter(doc, parametres); }
   });
 
-  yPos = doc.lastAutoTable.finalY + 5;
+  yPos = doc.lastAutoTable.finalY + (compact ? 3 : 6);
 
-  // Si le bloc final (signature + totaux + pied de page) ne tient pas
-  // sur la page courante, on passe à une nouvelle page.
-  const blocFinHauteur = 60;
-  if (yPos + blocFinHauteur > pageHeight - 25) {
+  // Bloc bas : somme en lettres (gauche) + totaux (droite)
+  const totalsW = 86;
+  const totalsX = rightX - totalsW;
+  const wordsW = totalsX - contentLeft - 8;
+  const wordsH = 32;
+  const footerTop = pageHeight - 24;
+
+  // Le bloc bas est indivisible ; hauteurs exactes des deux colonnes
+  const condGap = compact ? 4 : 6;
+  const condH = 22;
+  const SIG_GAP = compact ? 5 : 8;
+  const sigH = compact ? 17 : 21;
+  const blocBasH = Math.max(wordsH + condGap + condH, totalsHeight(facture, compact) + SIG_GAP + sigH);
+  if (yPos + blocBasH > footerTop - 1) {
+    // Passe normale : on abandonne pour retenter en compact
+    if (!compact) return null;
     doc.addPage();
-    yPos = 20;
+    drawPageFrame(doc);
+    drawFooter(doc, parametres);
+    yPos = 30;
   }
 
-  // Signature à gauche
-  const signatureYPos = yPos;
-  doc.setFontSize(9);
-  doc.setFont('helvetica', 'italic');
-  doc.text('Le Directeur,', 15, signatureYPos);
-  doc.setFont('helvetica', 'bold');
-  doc.text('Koffi KAVEGE', 15, signatureYPos + 15);
+  drawAmountInWords(doc, contentLeft, yPos, wordsW, wordsH,
+    options.phraseArrete || 'Arrêtée la présente facture à la somme de :',
+    facture.total_ttc, parseFloat(facture.tva) > 0 ? 'TTC' : 'HT');
 
-  // Tableau des totaux à droite
-  const tauxTVA = parametres.tva_taux || 18;
-  const totauxData = [
-    ['TOTAL MAT HT.', formatNumber(facture.total_materiel_ht || 0)],
-    ['Prestations', formatNumber(facture.prestations || 0)],
-    ['Remise', facture.remise > 0 ? '- ' + formatNumber(facture.remise) : ''],
-    ['TOTAL HT', formatNumber(facture.total_ht)],
-    [`TVA ${tauxTVA}%`, formatNumber(facture.tva)],
-    ['TOTAL TTC', formatNumber(facture.total_ttc)]
-  ];
+  const totalsBottom = drawTotals(doc, totalsX, yPos, totalsW, {
+    total_materiel_ht: facture.total_materiel_ht,
+    prestations: facture.prestations,
+    remise: facture.remise,
+    total_ht: facture.total_ht,
+    tva: facture.tva,
+    total_ttc: facture.total_ttc
+  }, tauxTVA, compact);
 
-  doc.autoTable({
-    startY: yPos,
-    body: totauxData,
-    theme: 'grid',
-    tableWidth: 95,
-    margin: { left: pageWidth - 110 },
-    styles: {
-      fontSize: 9,
-      cellPadding: 2,
-      lineColor: [0, 0, 0],
-      lineWidth: 0.5
-    },
-    columnStyles: {
-      0: { 
-        cellWidth: 50, 
-        fontStyle: 'bold',
-        halign: 'left'
-      },
-      1: { 
-        cellWidth: 45, 
-        halign: 'right'
-      }
-    },
-    didParseCell: function(data) {
-      // Dernière ligne en gras et avec fond jaune
-      if (data.row.index === 5) {
-        data.cell.styles.fontStyle = 'bold';
-        data.cell.styles.fillColor = [255, 255, 0];
-      }
-    }
-  });
-
-  // Pied de page avec cadre - sur une seule ligne, centré
-  yPos = pageHeight - 25;
-  doc.setFont('helvetica', 'italic');
-  const montantEnLettres = nombreEnLettres(facture.total_ttc);
-  const piedPage = `Arrêtée la présente facture à la somme de : ${montantEnLettres} (${formatNumber(facture.total_ttc)}) Francs CFA TTC.`;
-  // Réduit la taille de la police jusqu'à ce que le texte tienne sur une seule ligne
-  let piedFontSize = 7;
-  const maxPiedWidth = pageWidth - 36;
-  doc.setFontSize(piedFontSize);
-  while (doc.getTextWidth(piedPage) > maxPiedWidth && piedFontSize > 4.5) {
-    piedFontSize -= 0.25;
-    doc.setFontSize(piedFontSize);
+  // Conditions de paiement (gauche, sous la somme en lettres)
+  if (!options.sansConditions) {
+    drawConditionsBox(doc, contentLeft, yPos + wordsH + condGap, wordsW);
   }
-  // Encadré pour le pied de page
-  doc.setDrawColor(0, 0, 0);
-  doc.setLineWidth(0.5);
-  doc.rect(15, yPos - 3, pageWidth - 30, 10);
-  doc.text(piedPage, pageWidth / 2, yPos + 3, { align: 'center' });
+
+  // Signature centrée sous les totaux (colonne de droite, indépendante du bloc gauche)
+  drawSignature(doc, totalsX + totalsW / 2, totalsBottom + SIG_GAP, parametres, false, compact);
+
+  // (Le pied de page est dessiné sur chaque page via didDrawPage / la page de débordement)
 
   return doc;
 };
 
-// Génération PDF Bordereau
+// Génération PDF Facture de situation (paiement partiel par pourcentage)
+// situation = { numero, date, taux, montant_ht, tva, montant_ttc }
+// facture = { numero, objet, client_nom, total_ttc, tva }
+// options = { estPremiere, cumulTaux, cumulTtc }
+//   estPremiere : 1ère situation de la facture -> elle porte toute la TVA de la facture
+//   cumulTaux / cumulTtc : cumul des situations jusqu'à celle-ci incluse (pour le solde)
+// Toujours : Montant HT + TVA = TOTAL TTC de la présente facture.
+export const generateFactureSituationPDF = async (situation, facture, parametres, options = {}) => {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  drawPageFrame(doc);
+  const { contentLeft, rightX, headerBottom } = await drawHeader(doc, parametres, { vignette: true });
+
+  const taux = Number(situation.taux) || 0;
+  const estPremiere = options.estPremiere !== false;
+  const cumulTaux = Number(options.cumulTaux ?? taux) || 0;
+  const totalMarche = Math.round(Number(facture.total_ttc) || 0);
+  const montantTtc = Math.round(Number(situation.montant_ttc) || 0);
+  const cumulTtc = Math.round(Number(options.cumulTtc ?? montantTtc) || 0);
+  const reste = Math.max(0, Math.round((100 - cumulTaux) * 100) / 100);
+  const estSolde = reste <= 0.01;
+  const tauxAvant = Math.max(0, Math.round((cumulTaux - taux) * 100) / 100);
+  const finGarantie = estSolde && taux <= 5.01 && tauxAvant >= 94.99;
+  const modeTva = options.modeTva === 'prorata' ? 'prorata' : 'premiere';
+  const sansTva = !facture.tva || facture.tva <= 0;
+  const tvaTotale = modeTva === 'prorata'
+    ? Math.min(Math.round(Number(situation.tva) || 0), montantTtc)
+    : estPremiere && !sansTva
+      ? Math.min(Math.round(Number(facture.tva) || 0), montantTtc)
+    : 0;
+  const baseHt = montantTtc - tvaTotale;
+  const tvaReglee = modeTva === 'prorata'
+    ? Math.min(tvaTotale, Math.round(Number(situation.tva_a_verser) || tvaTotale / 2))
+    : Math.round(tvaTotale / 2);
+  const quittance = tvaTotale - tvaReglee;
+  const netAPayer = Math.max(0, montantTtc - (modeTva === 'prorata' || estPremiere ? quittance : 0));
+  const montantPrecedent = Math.max(0, cumulTtc - montantTtc);
+  const retenueGarantie = Math.max(0, totalMarche - montantTtc);
+  const titre = finGarantie
+    ? `FACTURE - SOLDE DE ${taux}% APRÈS GARANTIE`
+    : estSolde
+      ? `FACTURE - SOLDE DE ${taux}%`
+      : `FACTURE - RÈGLEMENT DE ${taux}%`;
+
+  let yPos = drawTitle(doc, titre, headerBottom + 11);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10.5);
+  doc.setTextColor(...COLORS.ink);
+  doc.text(`N° : ${situation.numero}`, rightX, yPos + 2, { align: 'right' });
+  yPos += 10;
+
+  // Client / Objet / Date / Échéance facturée
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.navy);
+  doc.text('Client :', contentLeft, yPos);
+  doc.text('Objet :', contentLeft, yPos + 7);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(...COLORS.ink);
+  doc.text(String(facture.client_nom || ''), contentLeft + 16, yPos);
+  const objetLines = doc.splitTextToSize(String(facture.objet || ''), 110);
+  doc.text(objetLines, contentLeft + 16, yPos + 7);
+
+  const dateISO = String(situation.date || '').slice(0, 10);
+  const dateParts = dateISO.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const dateTxt = dateParts
+    ? `${dateParts[3]}/${dateParts[2]}/${dateParts[1]}`
+    : situation.date ? new Date(situation.date).toLocaleDateString('fr-FR') : '';
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(...COLORS.navy);
+  doc.text('Date :', rightX - 60, yPos);
+  doc.text('Échéance facturée :', finGarantie ? rightX - 80 : rightX - 60, yPos + 7);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(...COLORS.ink);
+  doc.text(dateTxt || '____/____/______', rightX, yPos, { align: 'right' });
+  doc.text(finGarantie ? `${taux} % - fin de garantie` : `${taux} %`, rightX, yPos + 7, { align: 'right' });
+
+  yPos += 14;
+  doc.setDrawColor(...COLORS.line);
+  doc.setLineWidth(0.4);
+  doc.line(contentLeft, yPos, rightX, yPos);
+  yPos += 8;
+
+  // Tableau de situation : ventilation TVA sur la première tranche, puis retenue sans TVA.
+  const lignesSituation = modeTva === 'prorata'
+    ? [
+        ['Montant total TTC du marché', formatNumber(totalMarche)],
+        [`Montant de la tranche de ${taux} % du TTC`, formatNumber(montantTtc)],
+        ['Base HT comprise dans la présente facture', formatNumber(baseHt)],
+        [`TVA de la tranche (${tauxTvaDuDocument(facture, parametres)} %)`, formatNumber(tvaTotale)],
+        ['- 50 % de la TVA à régler à In-Tel Services', formatNumber(tvaReglee)],
+        ["- 50 % de la TVA faisant l'objet d'une quittance", formatNumber(quittance)],
+        [`Montant brut de la facture de ${taux} %`, formatNumber(montantTtc)],
+        ['Déduction : 50 % de la TVA / quittance', `- ${formatNumber(quittance)}`],
+        ['NET À PAYER À IN-TEL SERVICES', formatNumber(netAPayer)],
+        [`Solde restant après cette tranche (${reste} %)`, formatNumber(Math.max(0, totalMarche - cumulTtc))],
+      ]
+    : estPremiere
+    ? [
+        ['Montant total TTC du marché', formatNumber(totalMarche)],
+        [`Montant de la tranche de ${taux} % du TTC`, formatNumber(montantTtc)],
+        ['Base HT comprise dans la présente facture', formatNumber(baseHt)],
+        [`TVA totale (${tauxTvaDuDocument(facture, parametres)} %) acquittée sur cette première tranche`, formatNumber(tvaTotale)],
+        ['- 50 % de la TVA à régler à In-Tel Services', formatNumber(tvaReglee)],
+        ["- 50 % de la TVA faisant l'objet d'une quittance", formatNumber(quittance)],
+        [`Montant brut de la facture de ${taux} %`, formatNumber(montantTtc)],
+        ['Déduction : 50 % de la TVA / quittance', `- ${formatNumber(quittance)}`],
+        ['NET À PAYER À IN-TEL SERVICES', formatNumber(netAPayer)],
+        [reste === 5
+          ? 'Retenue de garantie de 5 % à payer après garantie'
+          : `Solde restant à payer après cette tranche (${reste} %)`, formatNumber(retenueGarantie)],
+      ]
+    : [
+        ['Montant total TTC du marché', formatNumber(totalMarche)],
+        [`Première tranche brute facturée (${tauxAvant} %)`, formatNumber(montantPrecedent)],
+        [`Retenue de garantie - solde de ${taux} %`, formatNumber(montantTtc)],
+        ['TVA sur le présent solde', '0'],
+        [finGarantie ? 'TOTAL À PAYER APRÈS GARANTIE' : 'TOTAL À PAYER POUR CETTE SITUATION', formatNumber(netAPayer)],
+      ];
+  const affichePremiereTranche = modeTva === 'premiere' && estPremiere;
+  const lignesAccentuees = affichePremiereTranche || modeTva === 'prorata'
+    ? new Set([1, 3, 6, 8, 9])
+    : new Set([2, 4]);
+  const indexNetAPayer = modeTva === 'premiere' && !estPremiere ? 4 : 8;
+  if (affichePremiereTranche) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(...COLORS.navy);
+    doc.text('SITUATION DE FACTURATION - PREMIÈRE TRANCHE', contentLeft, yPos);
+    yPos += 5;
+  }
+  doc.autoTable({
+    startY: yPos,
+    head: [['DÉSIGNATION', 'MONTANT (FCFA)']],
+    body: lignesSituation.map((row, index) => row.map((content, columnIndex) => ({
+      content,
+      styles: index === indexNetAPayer && columnIndex === 1
+        ? { fontStyle: 'bold', fillColor: [219, 234, 254], textColor: COLORS.navy }
+        : lignesAccentuees.has(index) ? { fontStyle: 'bold' } : {},
+    }))),
+    theme: 'grid',
+    headStyles: {
+      fillColor: COLORS.navy, textColor: COLORS.white, fontStyle: 'bold',
+      fontSize: 9, halign: 'center', valign: 'middle', cellPadding: 2.5
+    },
+    bodyStyles: { fontSize: 9.2, cellPadding: 1.25, textColor: COLORS.ink, valign: 'middle' },
+    columnStyles: {
+      0: { cellWidth: 135, halign: 'left' },
+      1: { cellWidth: 51, halign: 'right' },
+    },
+    styles: { lineColor: COLORS.line, lineWidth: 0.15 },
+    margin: { left: contentLeft, right: MARGIN },
+  });
+
+  yPos = doc.lastAutoTable.finalY + 7;
+
+  // Somme en lettres
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.ink);
+  const lettres = nombreEnLettres(netAPayer);
+  const introSomme = estPremiere
+    ? 'Arrêtée la présente facture nette à payer à la somme de :'
+    : 'Arrêtée la présente facture à la somme de :';
+  doc.text(introSomme, contentLeft, yPos);
+  yPos += 6;
+  const lettresLines = doc.splitTextToSize(`${lettres} (${formatNumber(netAPayer)}) Francs CFA.`, rightX - contentLeft);
+  doc.setFont('helvetica', 'bold');
+  doc.text(lettresLines, contentLeft, yPos);
+  yPos += lettresLines.length * 5.5 + 6;
+
+  // Texte explicatif (évolue selon qu'il s'agit d'un acompte ou du solde final)
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9.5);
+  doc.setTextColor(...COLORS.ink);
+  const explicatif = modeTva === 'prorata'
+    ? `Note fiscale : la TVA est répartie au prorata des tranches. Pour cette facture de ${taux} %, ${formatNumber(tvaReglee)} F CFA (50 %) sont à régler à In-Tel Services et ${formatNumber(quittance)} F CFA (50 %) font l'objet d'une quittance.`
+    : estPremiere
+      ? `Note fiscale : la TVA totale du marché, soit ${formatNumber(tvaTotale)} F CFA, est entièrement constatée sur la présente facture : ${formatNumber(tvaReglee)} F CFA (50 %) sont réglés à In-Tel Services et ${formatNumber(quittance)} F CFA (50 %) font l'objet d'une quittance. La retenue de garantie de ${reste} % sera donc réglée sans TVA supplémentaire.`
+      : `Mention : Cette facture correspond exclusivement à la libération de la retenue de garantie de ${taux} %. Aucune TVA supplémentaire n'est ajoutée, la TVA totale de ${formatNumber(Number(facture.tva) || 0)} F CFA ayant déjà été constatée et acquittée dans le cadre de la facture de règlement de ${tauxAvant} %.`;
+  const explicatifLines = doc.splitTextToSize(explicatif, rightX - contentLeft);
+  doc.text(explicatifLines, contentLeft, yPos);
+  yPos += explicatifLines.length * 5 + 14;
+
+  // Signature
+  drawSignature(doc, rightX - 35, yPos, parametres, false, false);
+
+  drawFooter(doc, parametres);
+
+  return doc;
+};
+
+// Génération PDF Bordereau (design moderne, cohérent avec proforma/facture)
 export const generateBordereauPDF = async (bordereau, parametres) => {
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
-  let yPos = 15;
 
-  // LOGO à gauche
-  const logo = await getLogoDataURL();
-  const textX = logo ? 38 : 15; // décalage du texte si le logo est présent
-  if (logo) {
-    const logoW = 22;
-    const logoH = (logo.height / logo.width) * logoW;
-    doc.addImage(logo.dataUrl, 'PNG', 14, yPos - 8, logoW, logoH);
+  drawPageFrame(doc);
+  const { contentLeft, rightX, headerBottom } = await drawHeader(doc, parametres);
+
+  // Titre
+  let yPos = drawTitle(doc, 'BORDEREAU DE LIVRAISON', headerBottom + 11);
+
+  // BL N° (centré sous le titre) / Date (décalée à droite) — même disposition que proforma/facture
+  const dateStr = formatDateLong(bordereau.date);
+  drawNumDate(doc, { label: 'BL N°', numero: bordereau.numero, date: dateStr, centerX: pageWidth / 2, rightX, y: yPos + 6 });
+
+  // Client (gauche)
+  const blockY = yPos + 20;
+  const clientW = 92;
+  const clientBottom = drawClientBox(doc, contentLeft, blockY, clientW, bordereau, { simple: true });
+
+  yPos = clientBottom + 6;
+
+  // Tableau des lignes livrées
+  const tableData = buildSectionedBody(
+    bordereau.lignes,
+    4,
+    (l, n) => [n, l.designation, l.quantite, ''],
+    null
+  );
+  const qteTotal = bordereau.lignes.reduce((s, l) => s + (parseFloat(l.quantite) || 0), 0);
+
+  doc.autoTable({
+    startY: yPos,
+    head: [['N°', 'DÉSIGNATION', 'QTÉ LIVRÉE', 'OBSERVATIONS']],
+    body: tableData,
+    foot: [[
+      { content: 'TOTAL', colSpan: 2, styles: { halign: 'center' } },
+      { content: formatNumber(qteTotal), styles: { halign: 'center' } },
+      ''
+    ]],
+    showHead: 'firstPage',
+    showFoot: 'lastPage',
+    theme: 'grid',
+    headStyles: {
+      fillColor: COLORS.navy, textColor: COLORS.white, fontStyle: 'bold',
+      fontSize: 8.5, halign: 'center', valign: 'middle', cellPadding: 2.5
+    },
+    bodyStyles: { fontSize: 9, cellPadding: 2.0, textColor: COLORS.ink, valign: 'middle' },
+    footStyles: {
+      fillColor: COLORS.boxBg, textColor: COLORS.navy, fontStyle: 'bold', fontSize: 9.5
+    },
+    columnStyles: {
+      0: { cellWidth: 12, halign: 'center' },
+      1: { cellWidth: 96 },
+      2: { cellWidth: 30, halign: 'center' },
+      3: { cellWidth: 48 }
+    },
+    styles: { lineColor: COLORS.line, lineWidth: 0.15 },
+    margin: { left: MARGIN, right: MARGIN, top: 18, bottom: 26 },
+    // Sur chaque page (y compris les pages de continuation) : bordure + pied de page
+    didDrawPage: () => { drawPageFrame(doc); drawFooter(doc, parametres); }
+  });
+
+  yPos = doc.lastAutoTable.finalY + 8;
+
+  // Bloc bas (observations + certification) en flux normal:
+  // s'il ne tient pas, il va en page suivante en haut de la zone utile.
+  const obsH = 17;     // hauteur "Observations :" + encadré
+  const certH = 50;    // hauteur du bloc "Certification de livraison"
+  const gap = 6;
+  const blocBasH = obsH + gap + certH;
+  const footerTop = pageHeight - 24;
+  let blocTop = yPos;
+  if (blocTop + blocBasH > footerTop - 2) {
+    doc.addPage();
+    drawPageFrame(doc);
+    drawFooter(doc, parametres);
+    blocTop = 30;
   }
 
-  // EN-TÊTE - Titre "In-Tel Services" à gauche
-  doc.setFontSize(24);
-  doc.setFont('times', 'bold');
-  doc.setTextColor(0, 51, 102); // Bleu marine pour "In-Tel"
-  doc.text('In-Tel ', textX, yPos);
-  
-  // "Services" en vert
-  doc.setTextColor(0, 128, 0);
-  doc.text('Services', textX + doc.getTextWidth('In-Tel '), yPos);
+  // Encadré Observations
+  const obsBottom = drawObservationsBox(doc, contentLeft, blocTop, rightX - contentLeft,
+    'Matériels livrés en bon état conformément au devis et à la commande du client.');
 
-  // Encadré à droite avec les services - AGRANDI
-  const rightX = pageWidth - 15;
-  const boxLeft = pageWidth - 78;
-  const boxTop = yPos - 7;
-  doc.setDrawColor(255, 140, 0); // Orange
-  doc.setLineWidth(0.8);
-  doc.rect(boxLeft, boxTop, 63, 22);
-  
-  doc.setFontSize(8);
+  // Bloc Certification de livraison
+  const annee = new Date(bordereau.date).getFullYear() || new Date().getFullYear();
+  drawCertification(doc, contentLeft, rightX, obsBottom + gap, annee);
+
+  // (Le pied de page est dessiné sur chaque page via didDrawPage / la page de débordement)
+
+  return doc;
+};
+
+// =====================================================================
+//  ATTESTATION DE SERVICE FAIT
+// =====================================================================
+const drawWrappedParagraph = (doc, text, x, y, width, options = {}) => {
+  const {
+    fontSize = 10.5,
+    fontStyle = 'normal',
+    color = COLORS.ink,
+    lineHeight = 6,
+    align = 'left',
+    bold = false,
+  } = options;
+
+  const normalizeAlign = (value) => {
+    const allowed = new Set(['left', 'center', 'right', 'justify']);
+    return allowed.has(value) ? value : 'left';
+  };
+
+  const splitWordsByWidth = (source, maxWidth) => {
+    const words = String(source || '').trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return [];
+
+    const lines = [];
+    let lineWords = [];
+    words.forEach((word) => {
+      const candidate = lineWords.length ? `${lineWords.join(' ')} ${word}` : word;
+      if (doc.getTextWidth(candidate) <= maxWidth) {
+        lineWords.push(word);
+      } else {
+        if (lineWords.length) lines.push(lineWords);
+        lineWords = [word];
+      }
+    });
+    if (lineWords.length) lines.push(lineWords);
+    return lines;
+  };
+
+  const rawText = String(text || '').replace(/\r/g, '');
+  const manualLines = rawText.split('\n');
+  doc.setFont('helvetica', bold ? 'bold' : fontStyle);
+  doc.setFontSize(fontSize);
+  doc.setTextColor(...color);
+
+  const safeAlign = normalizeAlign(align);
+
+  const drawSingleLine = (lineText) => {
+    const wrapped = doc.splitTextToSize(String(lineText || '').trim(), width);
+    wrapped.forEach((line) => {
+      const anchorX = safeAlign === 'center' ? x + width / 2 : safeAlign === 'right' ? x + width : x;
+      doc.text(line, anchorX, y, { align: safeAlign });
+      y += lineHeight;
+    });
+  };
+
+  if (safeAlign === 'justify') {
+    for (let i = 0; i < manualLines.length; i++) {
+      const paragraph = manualLines[i];
+      if (!paragraph.trim()) {
+        y += lineHeight * 0.7;
+        continue;
+      }
+
+      const justifiedLines = splitWordsByWidth(paragraph, width);
+      const baseSpace = doc.getTextWidth(' ');
+
+      justifiedLines.forEach((lineWords, index) => {
+        const isLast = index === justifiedLines.length - 1;
+        if (isLast || lineWords.length === 1) {
+          doc.text(lineWords.join(' '), x, y);
+          y += lineHeight;
+          return;
+        }
+
+        const wordsW = lineWords.reduce((sum, w) => sum + doc.getTextWidth(w), 0);
+        const gaps = lineWords.length - 1;
+        const extra = Math.max(0, (width - wordsW - gaps * baseSpace) / gaps);
+        let cursorX = x;
+
+        lineWords.forEach((word, wi) => {
+          doc.text(word, cursorX, y);
+          if (wi < gaps) cursorX += doc.getTextWidth(word) + baseSpace + extra;
+        });
+
+        y += lineHeight;
+      });
+    }
+
+    return y;
+  }
+
+  for (let i = 0; i < manualLines.length; i++) {
+    const paragraph = manualLines[i];
+    if (!paragraph.trim()) {
+      y += lineHeight * 0.7;
+      continue;
+    }
+    drawSingleLine(paragraph);
+  }
+
+  return y;
+};
+
+const countWrappedLines = (doc, text, width, align = 'left') => {
+  const safeAlign = ['left', 'center', 'right', 'justify'].includes(align) ? align : 'left';
+  const source = String(text || '').replace(/\r/g, '');
+  if (!source.trim()) return 0;
+  const manualLines = source.split('\n');
+
+  let total = 0;
+
+  const countLine = (lineText) => {
+    const trimmed = String(lineText || '').trim();
+    if (!trimmed) {
+      total += 1;
+      return;
+    }
+
+    if (safeAlign !== 'justify') {
+      const lines = doc.splitTextToSize(trimmed, width);
+      total += lines.length;
+      return;
+    }
+
+    const words = trimmed.split(/\s+/).filter(Boolean);
+    if (!words.length) {
+      total += 1;
+      return;
+    }
+
+    const lines = [];
+    let lineWords = [];
+    words.forEach((word) => {
+      const candidate = lineWords.length ? `${lineWords.join(' ')} ${word}` : word;
+      if (doc.getTextWidth(candidate) <= width) {
+        lineWords.push(word);
+      } else {
+        if (lineWords.length) lines.push(lineWords);
+        lineWords = [word];
+      }
+    });
+    if (lineWords.length) lines.push(lineWords);
+
+    total += lines.length;
+  };
+
+  manualLines.forEach(countLine);
+  return total;
+};
+
+const drawBulletedParagraphs = async (doc, items, x, y, width, parametres = {}, options = {}) => {
+  const safeAlign = ['left', 'center', 'right', 'justify'].includes(options.align) ? options.align : 'left';
+  const bulletOffset = 3.2;
+  const textOffset = 6.2;
+  const onPageBreak = typeof options.onPageBreak === 'function'
+    ? options.onPageBreak
+    : async () => {
+        drawPageFrame(doc);
+        drawFooter(doc, parametres);
+        return MARGIN + 12;
+      };
+
+  for (const raw of items) {
+    const text = String(raw || '').replace(/^[-•*]\s*/, '').trim();
+    if (!text) continue;
+
+    const lineCount = countWrappedLines(doc, text, width - textOffset, safeAlign);
+    const needed = lineCount * 6.1 + 2;
+    if (y + needed > doc.internal.pageSize.getHeight() - 30) {
+      doc.addPage();
+      y = await onPageBreak();
+    }
+
+    doc.setFillColor(...COLORS.navySoft);
+    doc.circle(x + bulletOffset, y - 1.2, 0.7, 'F');
+    y = drawWrappedParagraph(doc, text, x + textOffset, y, width - textOffset, {
+      fontSize: 10.2,
+      bold: true,
+      color: COLORS.ink,
+      lineHeight: 6.1,
+      align: safeAlign,
+    });
+    y += 1.5;
+  }
+  return y;
+};
+
+const normalizeTravauxItems = (value) => {
+  const rawItems = Array.isArray(value) ? value : [String(value || '')];
+  return rawItems
+    .flatMap((entry) => String(entry || '').replace(/\r/g, '').split('\n'))
+    .flatMap((line) =>
+      line
+        .replace(/[;,]\s*[•]\s*/g, '\n• ')
+        .replace(/\s+[•]\s*/g, '\n• ')
+        .split('\n')
+    )
+    .map((line) => line.replace(/^[-•*]\s*/, '').replace(/^[,;]+/, '').trim())
+    .filter(Boolean);
+};
+
+export const generateAttestationPDF = async (attestation, parametres = {}) => {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const contentLeft = MARGIN;
+  const rightX = pageWidth - MARGIN;
+  const bottomLimit = pageHeight - 30;
+
+  drawPageFrame(doc);
+  const header = await drawHeader(doc, parametres);
+  drawFooter(doc, parametres);
+
+  const addAttestationContinuationPage = async () => {
+    drawPageFrame(doc);
+    drawFooter(doc, parametres);
+    return MARGIN + 12;
+  };
+
+  let yPos = header.headerBottom + 10;
+
   doc.setFont('helvetica', 'normal');
-  doc.setTextColor(0, 0, 0);
-  doc.text('Services & Intégration Réseau - Maintenance', rightX - 2, yPos - 3, { align: 'right' });
-  doc.text('Télécommunication - Audit - Conseil Système', rightX - 2, yPos + 1.5, { align: 'right' });
-  doc.text('de Sécurité -Vente de Matériels Informatique -', rightX - 2, yPos + 6, { align: 'right' });
-  doc.text('Formation', rightX - 2, yPos + 10.5, { align: 'right' });
+  doc.setFontSize(8.5);
+  doc.setTextColor(...COLORS.grey);
+  doc.text(`Réf : ${attestation.reference || ''}`, rightX, yPos - 2, { align: 'right' });
 
-  yPos += 8;
-
-  // Coordonnées sous le titre
-  doc.setFontSize(7);
-  doc.setFont('times', 'italic');
-  doc.setTextColor(0, 0, 0);
-  doc.text(`20 Av. du RPT Face le Grand Collège du Plateau 04BP Lomé-TOGO`, textX, yPos);
-  yPos += 3.5;
-  doc.text(`Tél. (+228) 22 22 14 54 – Cel. 90 11 66 86/99 32 98 98`, textX, yPos);
-  yPos += 3.5;
-  doc.text(`E-Mail: infos_its@yahoo.fr`, textX, yPos);
-
-  yPos += 6;
-
-  // Ligne de séparation horizontale avec point bleu à droite
-  doc.setDrawColor(0, 51, 102); // Bleu marine
-  doc.setLineWidth(1);
-  doc.line(textX, yPos, boxLeft, yPos);
-  // Point bleu à droite de la ligne (début du rectangle orange)
-  doc.setFillColor(0, 51, 102);
-  doc.circle(boxLeft, yPos, 2, 'F');
-
-  yPos += 8;
-
-  // Bloc d'informations administratives à gauche
-  doc.setFontSize(7);
+  const titre = (attestation.title || attestation.titre || 'ATTESTION DE SERVICE FAIT').toUpperCase();
   doc.setFont('helvetica', 'bold');
-  doc.setTextColor(0, 0, 0);
-  doc.text(`RCCM :`, 15, yPos);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`${parametres.entreprise_rccm || 'TG-LOM 2013 A 6170'}`, 28, yPos);
-  
-  yPos += 4;
-  doc.setFont('helvetica', 'bold');
-  doc.text(`NIF :`, 15, yPos);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`${parametres.entreprise_nif || '1000278436'}`, 24, yPos);
-  
-  yPos += 4;
-  doc.setFont('helvetica', 'bold');
-  doc.text(`TEL.`, 15, yPos);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`${parametres.entreprise_tel || '+228 22 51 66 86'} ${parametres.entreprise_cel || 'CEL. 90 11 66 86'}`, 24, yPos);
-  
-  yPos += 4;
-  doc.text(`04BP144 LOME ADIDOGOME-TOGO`, 15, yPos);
-  
-  yPos += 4;
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(0, 51, 102); // Bleu marine comme un lien
-  doc.text(`E-Mail`, 15, yPos);
-  doc.setTextColor(0, 0, 0);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`${parametres.entreprise_email || 'infos_its@gmail.com'}`, 26, yPos);
-  
-  yPos += 4;
-  doc.text(`UTB N° ${parametres.entreprise_utb || '010350245170210119'}`, 15, yPos);
+  doc.setFontSize(20);
+  doc.setTextColor(...COLORS.navy);
+  const titleLines = doc.splitTextToSize(titre, pageWidth - MARGIN * 2 - 8);
+  let titleY = yPos + 10;
+  titleLines.forEach((line) => {
+    doc.text(line, pageWidth / 2, titleY, { align: 'center' });
+    titleY += 8;
+  });
+  doc.setLineWidth(0.7);
+  doc.setDrawColor(...COLORS.navy);
+  doc.line(pageWidth / 2 - 40, titleY - 1, pageWidth / 2 + 40, titleY - 1);
+  yPos = titleY + 6;
 
-  // BORDEREAU DE LIVRAISON au centre - DESCENDU
-  yPos -= 12; // Position ajustée pour descendre le titre
-  doc.setFontSize(16);
+  // Bloc entreprise (sous le titre) : bloc compact à gauche, lignes superposées
   doc.setFont('helvetica', 'bold');
-  doc.setTextColor(0, 51, 102); // Bleu marine comme les autres documents
-  const titreCenterX = (72 + rightX) / 2; // centré dans l'espace à droite du bloc d'infos
-  doc.text('BORDEREAU DE LIVRAISON', titreCenterX, yPos, { align: 'center' });
-  
-  yPos += 8;
-  
-  // Numéro en rouge SOUS le titre
-  doc.setFontSize(12);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(255, 0, 0);
-  doc.text(`N° ${bordereau.numero}`, titreCenterX, yPos, { align: 'center' });
-
-  // Date à droite - DESCENDUE au niveau du numéro
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.ink);
+  doc.text((parametres.entreprise_nom || 'IN-TEL SERVICES').toUpperCase(), contentLeft, yPos);
+  yPos += 5;
   doc.setFontSize(9);
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(0, 0, 0);
-  const dateStr = new Date(bordereau.date).toLocaleDateString('fr-FR');
-  doc.text(`Date:  ${dateStr}`, rightX, yPos, { align: 'right' });
+  const activites = parametres.attestation_activites
+    || 'Solutions Informatiques – Réseaux – Télécommunications – Électricité – Maintenance Technique';
+  // Largeur limitée (~60% de la page) pour que le texte s'empile à gauche
+  const activitesLines = doc.splitTextToSize(activites, (pageWidth - MARGIN * 2) * 0.6);
+  activitesLines.forEach((line) => {
+    doc.text(line, contentLeft, yPos);
+    yPos += 4.5;
+  });
+  yPos += 4;
 
-  yPos += 12;
+  const intro = attestation.intro || '';
+  const introAlign = ['left', 'center', 'right', 'justify'].includes(attestation.intro_align)
+    ? attestation.intro_align
+    : 'justify';
+  if (intro.trim()) {
+    yPos = drawWrappedParagraph(doc, intro, contentLeft, yPos, pageWidth - MARGIN * 2, {
+      fontSize: 10.5,
+      bold: true,
+      lineHeight: 6.2,
+      align: introAlign,
+    });
+    yPos += 4;
+  }
 
-  // Section Client à droite
-  doc.setFontSize(11);
+  // Titre de section jamais orphelin : il faut la place du titre + une ligne de texte
+  if (yPos + 20 > bottomLimit) {
+    doc.addPage();
+    yPos = await addAttestationContinuationPage();
+  }
   doc.setFont('helvetica', 'bold');
-  doc.setTextColor(0, 0, 255);
-  doc.text('Client', rightX - 50, yPos);
-  
-  doc.setFontSize(9);
+  doc.setFontSize(11.5);
+  doc.setTextColor(...COLORS.ink);
+  doc.text('NATURE DES TRAVAUX RÉALISÉS', contentLeft, yPos);
+  yPos += 7;
+
+  const travaux = normalizeTravauxItems(attestation.travaux);
+  const travauxAlign = ['left', 'center', 'right', 'justify'].includes(attestation.travaux_align)
+    ? attestation.travaux_align
+    : 'left';
+  const travauxListMode = ['bullets', 'plain'].includes(attestation.travaux_list_mode)
+    ? attestation.travaux_list_mode
+    : 'bullets';
+  if (travaux.length) {
+    if (travauxListMode === 'bullets') {
+      yPos = await drawBulletedParagraphs(doc, travaux, contentLeft, yPos, pageWidth - MARGIN * 2, parametres, {
+        align: travauxAlign,
+        onPageBreak: addAttestationContinuationPage,
+      });
+    } else {
+      for (const line of travaux) {
+        const lineCount = countWrappedLines(doc, line, pageWidth - MARGIN * 2, travauxAlign);
+        const needed = lineCount * 6.1 + 2;
+        if (yPos + needed > bottomLimit) {
+          doc.addPage();
+          yPos = await addAttestationContinuationPage();
+        }
+        yPos = drawWrappedParagraph(doc, line, contentLeft, yPos, pageWidth - MARGIN * 2, {
+          fontSize: 10.2,
+          bold: true,
+          color: COLORS.ink,
+          lineHeight: 6.1,
+          align: travauxAlign,
+        });
+        yPos += 1.5;
+      }
+    }
+  }
+
+  // Titre + début du paragraphe de conformité restés solidaires
+  if (yPos + 22 > bottomLimit) {
+    doc.addPage();
+    yPos = await addAttestationContinuationPage();
+  }
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11.5);
+  doc.setTextColor(...COLORS.ink);
+  doc.text('CONFORMITÉ DES TRAVAUX', contentLeft, yPos);
+  yPos += 8;
+
+  const conformiteAlign = ['left', 'center', 'right', 'justify'].includes(attestation.conformite_align)
+    ? attestation.conformite_align
+    : 'justify';
+  yPos = drawWrappedParagraph(doc, attestation.conformite || '', contentLeft, yPos, pageWidth - MARGIN * 2, {
+    fontSize: 10.5,
+    bold: true,
+    lineHeight: 6.2,
+    align: conformiteAlign,
+  });
+
+  if (yPos + 38 > bottomLimit) {
+    doc.addPage();
+    yPos = await addAttestationContinuationPage();
+  }
+
+  yPos += 8;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(...COLORS.ink);
+  doc.text(`Fait à ${attestation.lieu || 'Lomé'}, le ${formatDateLong(attestation.date)}.`, rightX, yPos, { align: 'right' });
+  yPos += 10;
+  doc.text('Ont signé', pageWidth / 2, yPos, { align: 'center' });
+  yPos += 16;
+
+  doc.setFontSize(10.5);
+  doc.text(attestation.signataire_gauche || `Pour ${parametres.entreprise_nom || 'IN-TEL SERVICES'}`, contentLeft + 22, yPos, { align: 'center' });
+  doc.text(attestation.signataire_droite || `Pour ${attestation.client_nom || 'Le Client'}`, rightX - 22, yPos, { align: 'center' });
+
+  const totalPages = doc.internal.getNumberOfPages();
+  for (let p = 1; p <= totalPages; p++) {
+    doc.setPage(p);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(...COLORS.grey);
+    doc.text(`Page ${p} / ${totalPages}`, pageWidth / 2, pageHeight - 8, { align: 'center' });
+  }
+
+  return doc;
+};
+
+// ===== FICHE D'INTERVENTION TECHNIQUE (mod00e8le complet V11) =====
+
+export const FIT_V11_NATURE_OPTIONS = [
+  'Panne', 'Maintenance préventive', 'Installation', 'Configuration',
+  'Mise à niveau', 'Contrôle', 'Assistance', 'Autre',
+];
+export const FIT_V11_EQUIPEMENT_OPTIONS = [
+  'Ordinateur bureau', 'PC portable', 'Serveur', 'Écran', 'Clavier/Souris',
+  'Onduleur/UPS', 'Stabilisateur', 'Imprimante', 'Photocopieur', 'Scanner',
+  'Multifonction', 'Vidéoprojecteur', 'Destructeur', 'Routeur/MikroTik', 'Switch',
+  "Point d'accès Wi-Fi", 'Modem', 'Fibre/SFP', 'Baie/Brassage', 'Téléphonie IP',
+  'Caméra/NVR/DVR', "Alarme/Contrôle d'accès", 'Logiciel', 'Windows/Système',
+  'Messagerie', 'Sauvegarde', 'Autre',
+];
+export const FIT_V11_TESTS_OPTIONS = [
+  'Démarrage OK', 'Impression/Scan/Copie OK', 'Réseau LAN OK', 'Internet OK',
+  'Wi-Fi OK', 'Accès serveur OK', 'Sauvegarde OK', 'Tests concluants',
+  'Fonctionnement partiel', 'À poursuivre', 'Équipement à remplacer', 'Retour atelier',
+];
+export const FIT_V11_BACKUP_OPTIONS = ['Oui', 'Non', 'Non nécessaire', 'Impossible'];
+export const FIT_V11_DONNEES_OPTIONS = ['Aucune', 'Documents', 'Messagerie', 'Base de données'];
+export const FIT_V11_SECURITE_OPTIONS = [
+  'Antivirus contrôlé', 'Mises à jour', 'Comptes/accès vérifiés',
+  'Mot de passe modifié par le client', 'Non concerné',
+];
+export const FIT_V11_ETAT_FINAL_OPTIONS = [
+  'Résolu', 'Résolu provisoirement', 'Partiellement résolu', 'Non résolu',
+  'En attente de pièce', "En attente d'accord",
+];
+export const FIT_V11_EQUIP_FINAL_OPTIONS = [
+  'En service', 'Hors service', 'Chez le client', 'Pris en atelier', 'Remplacé temporairement',
+];
+export const FIT_V11_ETAT_RECEPTION_OPTIONS = ['Bon', 'Moyen', 'Dégradé'];
+
+// Case à cocher 3 mm (y = ligne de base du texte associé)
+const drawFitCheckboxV11 = (doc, x, y, checked) => {
+  doc.setDrawColor(...COLORS.ink);
+  doc.setLineWidth(0.3);
+  doc.rect(x, y - 2.6, 3, 3, 'S');
+  if (checked) {
+    doc.setDrawColor(...COLORS.navy);
+    doc.setLineWidth(0.55);
+    doc.line(x + 0.55, y - 2.05, x + 2.45, y - 0.15);
+    doc.line(x + 2.45, y - 2.05, x + 0.55, y - 0.15);
+  }
+};
+
+// Barre de section : liseré rouge + titre navy + filet (même esprit que la charte ITS)
+const drawFitSectionBarV11 = (doc, x, w, y, title) => {
+  doc.setFillColor(...COLORS.red);
+  doc.rect(x, y, 1.6, 6.2, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.navy);
+  doc.text(title, x + 4.2, y + 4.4);
+  doc.setDrawColor(...COLORS.navy);
+  doc.setLineWidth(0.7);
+  doc.line(x, y + 6.2, x + w, y + 6.2);
+  return y + 10;
+};
+
+export const generateInterventionV11PDF = async (fiche, parametres = {}) => {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const contentLeft = MARGIN;
+  const rightX = pageWidth - MARGIN;
+  const contentW = rightX - contentLeft;
+  const bottomLimit = pageHeight - 28;
+
+  drawPageFrame(doc);
+  const header = await drawHeader(doc, parametres);
+  drawFooter(doc, parametres);
+
+  const newPage = () => {
+    doc.addPage();
+    drawPageFrame(doc);
+    drawFooter(doc, parametres);
+    return MARGIN + 8;
+  };
+  const ensureSpace = (y, needed) => (y + needed > bottomLimit ? newPage() : y);
+
+  let y = header.headerBottom + 7;
+
+  // Bandeau titre + sous-titre (modèle V11)
+  doc.setFillColor(...COLORS.navy);
+  doc.roundedRect(contentLeft, y, contentW, 13, 1.5, 1.5, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11.5);
+  doc.setTextColor(...COLORS.white);
+  doc.text("FICHE D'INTERVENTION TECHNIQUE INFORMATIQUE & BUREAUTIQUE", pageWidth / 2, y + 5.6, { align: 'center' });
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(7.6);
+  doc.text('Maintenance • Dépannage • Installation • Réseau • Sécurité • Équipements bureautiques', pageWidth / 2, y + 10.4, { align: 'center' });
+  y += 17;
+
+  // Grille d'informations générales : libellé sur fond, valeur à côté (grid4 du modèle)
+  const dateTxt = fiche.date ? new Date(fiche.date).toLocaleDateString('fr-FR') : '';
+  const labW = 31;
+  const valW = contentW / 2 - labW;
+  const rowH = 7.4;
+  const servicesV11 = servicesDeLaFiche(fiche);
+  const infoRows = [
+    ['N° intervention', fiche.numero || '', 'Date intervention', dateTxt],
+    ['Client / Structure', fiche.client_nom || '', servicesV11.length > 1 ? 'Sites / Services' : 'Site / Service',
+      servicesV11.length > 1 ? `${servicesV11.length} services (détail ci-dessous)` : (servicesV11[0] || '')],
+    ['Contact client', fiche.client_contact || '', 'Technicien(s)', fiche.intervenant || ''],
+  ];
+  infoRows.forEach((r, i) => {
+    const yy = y + i * rowH;
+    [0, 1].forEach((half) => {
+      const x = contentLeft + half * (labW + valW);
+      doc.setDrawColor(...COLORS.line);
+      doc.setLineWidth(0.35);
+      doc.setFillColor(...COLORS.boxBg);
+      doc.rect(x, yy, labW, rowH, 'FD');
+      doc.rect(x + labW, yy, valW, rowH, 'S');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.4);
+      doc.setTextColor(...COLORS.navy);
+      doc.text(r[half * 2], x + 2, yy + 4.7);
+      const v = String(r[half * 2 + 1] || '');
+      doc.setFont('helvetica', v ? 'bold' : 'normal');
+      doc.setFontSize(8.4);
+      const valColor = r[half * 2] === 'N° intervention' ? COLORS.red : COLORS.ink;
+      doc.setTextColor(...(v ? valColor : COLORS.grey));
+      doc.text(v ? (doc.splitTextToSize(v, valW - 4)[0] || '') : '.'.repeat(48), x + labW + 2, yy + 4.8);
+    });
+  });
+  y += rowH * 3 + 5;
+
+  // Ligne "fluide" bordée : mélange de texte gras, cases à cocher et champs,
+  // avec retour à la ligne automatique (équivalent des checkgrid/statusrow du modèle)
+  const flowRow = (segments, opts = {}) => {
+    const pad = 2.8;
+    const lineH = opts.lineH || 5.4;
+    const gap = opts.gap || 4.5;
+    const segW = (s) => {
+      if (s.t === 'ck') {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.6);
+        return 3 + 1.4 + doc.getTextWidth(s.label);
+      }
+      if (s.t === 'f') {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.9);
+        const lw = doc.getTextWidth(s.label) + 1.5;
+        // Mesure dans la police du rendu : une valeur saisie s'écrit en gras,
+        // plus large que la police normale (sinon la fin était tronquée).
+        const valeur = String(s.value || '');
+        doc.setFont('helvetica', valeur.trim() ? 'bold' : 'normal');
+        doc.setFontSize(7.6);
+        return lw + Math.max(doc.getTextWidth(valeur) + 2, s.w || 20);
+      }
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.9);
+      return doc.getTextWidth(s.text);
+    };
+    const placed = [];
+    let cx = contentLeft + pad;
+    let line = 0;
+    segments.forEach((s) => {
+      const w = segW(s);
+      if (cx + w > rightX - pad && cx > contentLeft + pad) {
+        line += 1;
+        cx = contentLeft + pad;
+      }
+      placed.push({ ...s, x: cx, line, w });
+      cx += w + gap;
+    });
+    const boxH = (line + 1) * lineH + 3;
+    y = ensureSpace(y, boxH + 2);
+    doc.setDrawColor(...COLORS.line);
+    doc.setLineWidth(0.35);
+    doc.rect(contentLeft, y, contentW, boxH, 'S');
+    placed.forEach((s) => {
+      const by = y + 2 + s.line * lineH + lineH * 0.68;
+      if (s.t === 'ck') {
+        drawFitCheckboxV11(doc, s.x, by, !!s.on);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.6);
+        doc.setTextColor(...COLORS.ink);
+        doc.text(s.label, s.x + 4.4, by);
+      } else if (s.t === 'f') {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.9);
+        doc.setTextColor(...COLORS.ink);
+        doc.text(s.label, s.x, by);
+        const lw = doc.getTextWidth(s.label) + 1.5;
+        const has = String(s.value || '').trim() !== '';
+        doc.setFont('helvetica', has ? 'bold' : 'normal');
+        doc.setFontSize(7.6);
+        doc.setTextColor(...(has ? COLORS.navySoft : COLORS.grey));
+        const raw = has ? String(s.value) : '.'.repeat(60);
+        doc.text(doc.splitTextToSize(raw, Math.max(s.w - lw, 8))[0] || '', s.x + lw, by);
+      } else {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.9);
+        doc.setTextColor(...COLORS.ink);
+        doc.text(s.text, s.x, by);
+      }
+    });
+    y += boxH;
+  };
+
+  // Encadré de texte : bandeau titre + contenu justifié (ou lignes vides à remplir à la main),
+  // avec continuation sur la page suivante si le texte est long
+  const drawTextBox = (label, value, minLines = 2) => {
+    const headH = 6.5;
+    const lineH = 4.8;
+    const textW = contentW - 8;
+    const text = String(value || '').trim();
+    // Découpage par paragraphes : toutes les lignes sauf la dernière de chaque paragraphe sont justifiées
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    let lines = [];
+    if (text) {
+      text.split(/\n/).forEach((para) => {
+        const pl = para.trim() ? doc.splitTextToSize(para.trim(), textW) : [''];
+        pl.forEach((l, i) => lines.push({ t: l, j: i < pl.length - 1 }));
+      });
+    }
+    const drawLine = (line, x, yy) => {
+      if (!line.j) {
+        doc.text(line.t, x, yy);
+        return;
+      }
+      const words = line.t.split(/\s+/).filter(Boolean);
+      const wordsW = words.reduce((s, w) => s + doc.getTextWidth(w), 0);
+      const gap = words.length > 1 ? (textW - wordsW) / (words.length - 1) : 0;
+      if (words.length < 2 || gap <= 0 || gap > 8) {
+        doc.text(line.t, x, yy);
+        return;
+      }
+      let wx = x;
+      words.forEach((w) => {
+        doc.text(w, wx, yy);
+        wx += doc.getTextWidth(w) + gap;
+      });
+    };
+    let first = true;
+    do {
+      y = ensureSpace(y, headH + lineH * 2 + 6);
+      const avail = Math.max(1, Math.floor((bottomLimit - y - headH - 4) / lineH));
+      const chunk = lines.slice(0, avail);
+      const nb = text ? chunk.length : minLines;
+      const boxH = headH + nb * lineH + 3;
+      doc.setFillColor(...COLORS.boxBg);
+      doc.rect(contentLeft + 0.3, y + 0.3, contentW - 0.6, headH, 'F');
+      doc.setDrawColor(...COLORS.line);
+      doc.setLineWidth(0.4);
+      doc.roundedRect(contentLeft, y, contentW, boxH, 1.5, 1.5, 'S');
+      doc.line(contentLeft, y + headH + 0.3, rightX, y + headH + 0.3);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.6);
+      doc.setTextColor(...COLORS.navy);
+      doc.text(first ? label : `${label} (suite)`, contentLeft + 3, y + 4.5);
+      let ty = y + headH + 4.2;
+      if (text) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(...COLORS.ink);
+        chunk.forEach((line) => {
+          drawLine(line, contentLeft + 4, ty);
+          ty += lineH;
+        });
+      } else {
+        doc.setDrawColor(...COLORS.line);
+        doc.setLineWidth(0.25);
+        for (let i = 0; i < minLines; i++) {
+          doc.line(contentLeft + 4, ty, rightX - 4, ty);
+          ty += lineH;
+        }
+      }
+      y += boxH + 4;
+      lines = lines.slice(chunk.length);
+      first = false;
+    } while (lines.length);
+  };
+
+  // Plusieurs sites / services : liste complète sous la grille d'informations
+  if (servicesV11.length > 1) {
+    flowRow(segmentsServices('Sites / Services concernés :', servicesV11), { gap: 1.5 });
+    y += 3;
+  }
+
+  // === 1. NATURE DE LA DEMANDE ===
+  const dNature = Array.isArray(fiche.nature) ? fiche.nature : [];
+  y = ensureSpace(y, 34);
+  y = drawFitSectionBarV11(doc, contentLeft, contentW, y, '1. NATURE DE LA DEMANDE');
+  flowRow(FIT_V11_NATURE_OPTIONS.map((l) => ({ t: 'ck', label: l, on: dNature.includes(l) })));
+  y += 2.5;
+  drawTextBox('Description de la demande / problème signalé', fiche.description_probleme, 2);
+
+  // === 2. ÉQUIPEMENT(S) / SYSTÈME(S) CONCERNÉ(S) ===
+  const dEquip = Array.isArray(fiche.equipements) ? fiche.equipements : [];
+  y = ensureSpace(y, 48);
+  y = drawFitSectionBarV11(doc, contentLeft, contentW, y, '2. ÉQUIPEMENT(S) / SYSTÈME(S) CONCERNÉ(S)');
+  flowRow(FIT_V11_EQUIPEMENT_OPTIONS.map((l) => ({ t: 'ck', label: l, on: dEquip.includes(l) })));
+  flowRow([
+    { t: 'f', label: 'Marque / Modèle :', value: fiche.marque_modele || '', w: 62 },
+    { t: 'f', label: 'N° série / Inventaire :', value: fiche.num_serie || '', w: 55 },
+  ]);
+  flowRow([
+    { t: 'f', label: 'Accessoires reçus :', value: fiche.accessoires || '', w: 62 },
+    { t: 'b', text: 'État réception :' },
+    ...FIT_V11_ETAT_RECEPTION_OPTIONS.map((l) => ({ t: 'ck', label: l, on: fiche.etat_reception === l })),
+  ]);
+  y += 4;
+
+  // === 3 & 4 : zones de texte ajustables (paragraphes respectés, suite en page suivante) ===
+  drawTextBox('3. DIAGNOSTIC / CONSTAT TECHNIQUE', fiche.diagnostic, 3);
+  drawTextBox('4. TRAVAUX EFFECTUÉS', fiche.travaux_realises, 3);
+
+  // === 5. PIÈCES / CONSOMMABLES / MATÉRIEL UTILISÉS OU REMPLACÉS ===
+  const pieces = (Array.isArray(fiche.materiels) ? fiche.materiels : []).filter(
+    (m) => m && ['designation', 'qte', 'etat', 'ref', 'garantie'].some((k) => String(m[k] || '').trim())
+  );
+  // Fiche vierge : 3 lignes à remplir à la main ; sinon uniquement les lignes saisies
+  const nbRows = pieces.length > 0 ? pieces.length : 3;
+  const tRowH = 6.4;
+  const desW = contentW * 0.47;
+  const qteW = contentW * 0.11;
+  const etatW = contentW * 0.17;
+  const refW = contentW - desW - qteW - etatW;
+  y = ensureSpace(y, 10 + 7 + 3 * tRowH);
+  y = drawFitSectionBarV11(doc, contentLeft, contentW, y, '5. PIÈCES / CONSOMMABLES / MATÉRIEL UTILISÉS OU REMPLACÉS');
+  y -= 2;
+  const drawPiecesHead = () => {
+    doc.setFillColor(...COLORS.navySoft);
+    doc.rect(contentLeft, y, contentW, 6.6, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(...COLORS.white);
+    doc.text('Désignation', contentLeft + 2.5, y + 4.4);
+    doc.text('Qté', contentLeft + desW + qteW / 2, y + 4.4, { align: 'center' });
+    doc.text('État', contentLeft + desW + qteW + etatW / 2, y + 4.4, { align: 'center' });
+    doc.text('Observation / Référence', contentLeft + desW + qteW + etatW + 2.5, y + 4.4);
+    y += 6.6;
+  };
+  drawPiecesHead();
+  for (let i = 0; i < nbRows; i++) {
+    if (y + tRowH > bottomLimit) {
+      y = newPage();
+      drawPiecesHead();
+    }
+    const m = pieces[i] || {};
+    if (i % 2 === 1) {
+      doc.setFillColor(...COLORS.boxBg);
+      doc.rect(contentLeft, y, contentW, tRowH, 'F');
+    }
+    doc.setDrawColor(...COLORS.line);
+    doc.setLineWidth(0.3);
+    doc.rect(contentLeft, y, contentW, tRowH, 'S');
+    doc.line(contentLeft + desW, y, contentLeft + desW, y + tRowH);
+    doc.line(contentLeft + desW + qteW, y, contentLeft + desW + qteW, y + tRowH);
+    doc.line(contentLeft + desW + qteW + etatW, y, contentLeft + desW + qteW + etatW, y + tRowH);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.2);
+    const cellTxt = (txt, x, w, align) => {
+      const has = String(txt || '').trim() !== '';
+      doc.setTextColor(...(has ? COLORS.ink : COLORS.grey));
+      const t = has ? (doc.splitTextToSize(String(txt), w - 4)[0] || '') : '......';
+      if (align === 'center') doc.text(t, x + w / 2, y + 4.3, { align: 'center' });
+      else doc.text(t, x + 2.5, y + 4.3);
+    };
+    cellTxt(m.designation ? `${i + 1}. ${m.designation}` : '', contentLeft, desW);
+    cellTxt(m.qte, contentLeft + desW, qteW, 'center');
+    cellTxt(m.etat, contentLeft + desW + qteW, etatW, 'center');
+    cellTxt(m.ref || (m.garantie ? `Garantie : ${m.garantie} mois` : ''), contentLeft + desW + qteW + etatW, refW);
+    y += tRowH;
+  }
+  y += 5;
+
+  // === 6. CONTRÔLES ET TESTS APRÈS INTERVENTION ===
+  const dTests = Array.isArray(fiche.tests) ? fiche.tests : [];
+  y = ensureSpace(y, 28);
+  y = drawFitSectionBarV11(doc, contentLeft, contentW, y, '6. CONTRÔLES ET TESTS APRÈS INTERVENTION');
+  flowRow(FIT_V11_TESTS_OPTIONS.map((l) => ({ t: 'ck', label: l, on: dTests.includes(l) })));
+  y += 4;
+
+  // === 7. DONNÉES, SAUVEGARDE ET SÉCURITÉ ===
+  const dDonnees = Array.isArray(fiche.donnees) ? fiche.donnees : [];
+  const dSecurite = Array.isArray(fiche.securite) ? fiche.securite : [];
+  y = ensureSpace(y, 42);
+  y = drawFitSectionBarV11(doc, contentLeft, contentW, y, '7. DONNÉES, SAUVEGARDE ET SÉCURITÉ');
+  flowRow([
+    { t: 'b', text: 'Sauvegarde avant intervention :' },
+    ...FIT_V11_BACKUP_OPTIONS.map((l) => ({ t: 'ck', label: l, on: fiche.backup_before === l })),
+  ]);
+  flowRow([
+    { t: 'b', text: 'Données concernées :' },
+    ...FIT_V11_DONNEES_OPTIONS.map((l) => ({ t: 'ck', label: l, on: dDonnees.includes(l) })),
+    { t: 'f', label: 'Autres :', value: fiche.donnees_autres || '', w: 40 },
+  ]);
+  flowRow([
+    { t: 'b', text: 'Sécurité :' },
+    ...FIT_V11_SECURITE_OPTIONS.map((l) => ({ t: 'ck', label: l, on: dSecurite.includes(l) })),
+  ]);
+  y += 2.5;
+  drawTextBox('Observation sur les données / la sécurité', fiche.data_obs, 2);
+
+  // === 8. ÉTAT FINAL DE L'INTERVENTION ===
+  y = ensureSpace(y, 38);
+  y = drawFitSectionBarV11(doc, contentLeft, contentW, y, "8. ÉTAT FINAL DE L'INTERVENTION");
+  flowRow(FIT_V11_ETAT_FINAL_OPTIONS.map((l) => ({ t: 'ck', label: l, on: fiche.statut_final === l })));
+  flowRow([
+    { t: 'b', text: 'Équipement :' },
+    ...FIT_V11_EQUIP_FINAL_OPTIONS.map((l) => ({ t: 'ck', label: l, on: fiche.equip_final === l })),
+  ]);
+  const finDate = fiche.fin ? new Date(fiche.fin) : null;
+  const finTxt = finDate && !Number.isNaN(finDate.getTime()) ? finDate.toLocaleDateString('fr-FR') : (fiche.fin || '');
+  flowRow([
+    { t: 'f', label: 'Fin :', value: finTxt, w: 30 },
+    { t: 'f', label: 'Durée :', value: fiche.duree || '', w: 28 },
+    { t: 'f', label: 'Prochaine action :', value: fiche.prochaine_action || '', w: 70 },
+  ]);
+  y += 4;
+
+  // === 9. RECOMMANDATIONS / TRAVAUX COMPLÉMENTAIRES ===
+  drawTextBox('9. RECOMMANDATIONS / TRAVAUX COMPLÉMENTAIRES', fiche.recommandations, 3);
+
+  // === 10. VALIDATION DU CLIENT / UTILISATEUR ===
+  y = ensureSpace(y, 32);
+  y = drawFitSectionBarV11(doc, contentLeft, contentW, y, '10. VALIDATION DU CLIENT / UTILISATEUR');
+  const mention = "Le client reconnaît que l'intervention décrite ci-dessus a été réalisée et que les contrôles ont été effectués, sous réserve des observations mentionnées.";
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(8.2);
+  doc.setTextColor(...COLORS.grey);
+  const mentionLines = doc.splitTextToSize(mention, contentW);
+  doc.text(mentionLines, contentLeft, y);
+  y += mentionLines.length * 4 + 2.5;
+  drawTextBox('Observation du client', fiche.obs_client, 2);
+
+  // === 11. SIGNATURES (bloc solidaire, 3 colonnes comme le modèle) ===
+  y = ensureSpace(y, 56);
+  y = drawFitSectionBarV11(doc, contentLeft, contentW, y, '11. SIGNATURES');
+  const signH = 36;
+  const signW = contentW / 3;
+  const signTitles = ['TECHNICIEN', 'CLIENT / UTILISATEUR', 'RESPONSABLE / VISA'];
+  const signNames = [fiche.intervenant || '', '', ''];
+  doc.setDrawColor(...COLORS.line);
+  doc.setLineWidth(0.4);
+  doc.roundedRect(contentLeft, y, contentW, signH, 1.5, 1.5, 'S');
+  signTitles.forEach((title, i) => {
+    const x = contentLeft + i * signW;
+    if (i > 0) doc.line(x, y, x, y + signH);
+    doc.setFillColor(...COLORS.navy);
+    doc.rect(x + 0.3, y + 0.3, signW - 0.6, 6, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.8);
+    doc.setTextColor(...COLORS.white);
+    doc.text(title, x + signW / 2, y + 4.3, { align: 'center' });
+    const name = signNames[i];
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.8);
+    doc.setTextColor(...COLORS.ink);
+    doc.text('Nom :', x + 2.5, y + 12.5);
+    doc.setFont('helvetica', name ? 'bold' : 'normal');
+    doc.setTextColor(...(name ? COLORS.navySoft : COLORS.grey));
+    doc.text(name ? (doc.splitTextToSize(name, signW - 16)[0] || '') : '.'.repeat(22), x + 13, y + 12.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...COLORS.ink);
+    doc.text('Date :', x + 2.5, y + 19.5);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(...COLORS.grey);
+    doc.text('.'.repeat(22), x + 13, y + 19.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...COLORS.ink);
+    doc.text('Signature / Cachet :', x + 2.5, y + 26.5);
+  });
+  y += signH + 4;
+
+  // Note de bas de fiche
+  y = ensureSpace(y, 10);
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(7.4);
+  doc.setTextColor(...COLORS.grey);
+  const noteLines = doc.splitTextToSize(
+    "Note : Toute anomalie non constatée lors de l'intervention ou tout travail supplémentaire peut nécessiter un nouveau diagnostic ou une proposition complémentaire.",
+    contentW
+  );
+  doc.text(noteLines, contentLeft, y);
+
+
+  // Numérotation des pages
+  const totalPages = doc.internal.getNumberOfPages();
+  for (let p = 1; p <= totalPages; p++) {
+    doc.setPage(p);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(...COLORS.grey);
+    doc.text(`Page ${p} / ${totalPages}`, pageWidth / 2, pageHeight - 8, { align: 'center' });
+  }
+
+  return doc;
+};
+
+// ===== FICHE D'INTERVENTION TECHNIQUE (modèle simplifié) =====
+
+export const FIT_CATEGORIE_OPTIONS = ['Informatique', 'Réseau informatique', 'Bureautique'];
+export const FIT_EQUIPEMENT_OPTIONS = [
+  'Ordinateur', 'Serveur', 'Imprimante', 'Photocopieur', 'Onduleur',
+  'Routeur', 'Switch', 'Wi-Fi', 'Câblage',
+];
+export const FIT_TRAVAUX_OPTIONS = [
+  'Maintenance', 'Réparation', 'Configuration', 'Installation',
+  'Mise à jour', 'Nettoyage', 'Test réseau', 'Remplacement de pièce',
+];
+export const FIT_RESULTAT_OPTIONS = ['Résolu', 'Résolu provisoirement', 'À poursuivre', 'Pièce à remplacer'];
+
+// Case à cocher 3 mm (y = ligne de base du texte associé)
+// Services d'une fiche d'intervention : liste enregistrée, sinon le texte
+// unique des fiches créées avant les services multiples.
+const servicesDeLaFiche = (fiche) => {
+  const liste = Array.isArray(fiche.services)
+    ? fiche.services.map((v) => String(v || '').trim()).filter(Boolean)
+    : [];
+  if (liste.length) return liste;
+  const texte = String(fiche.client_adresse || '').trim();
+  return texte ? [texte] : [];
+};
+
+// Segments flowRow listant les services (un champ par service, séparés par
+// des virgules) : la ligne passe à la ligne suivante si elle est trop longue.
+const segmentsServices = (libelle, services) => [
+  { t: 'b', text: libelle },
+  ...services.map((service, i) => ({
+    t: 'f',
+    label: '',
+    value: i < services.length - 1 ? `${service},` : service,
+    w: 1,
+  })),
+];
+
+const drawFitCheckbox = (doc, x, y, checked) => {
+  doc.setDrawColor(...COLORS.ink);
+  doc.setLineWidth(0.3);
+  doc.rect(x, y - 2.6, 3, 3, 'S');
+  if (checked) {
+    doc.setDrawColor(...COLORS.navy);
+    doc.setLineWidth(0.55);
+    doc.line(x + 0.55, y - 2.05, x + 2.45, y - 0.15);
+    doc.line(x + 2.45, y - 2.05, x + 0.55, y - 0.15);
+  }
+};
+
+// Barre de section : liseré rouge + titre navy + filet (même esprit que la charte ITS)
+const drawFitSectionBar = (doc, x, w, y, title) => {
+  doc.setFillColor(...COLORS.red);
+  doc.rect(x, y, 1.6, 6.2, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.navy);
+  doc.text(title, x + 4.2, y + 4.4);
+  doc.setDrawColor(...COLORS.navy);
+  doc.setLineWidth(0.7);
+  doc.line(x, y + 6.2, x + w, y + 6.2);
+  return y + 10;
+};
+
+export const generateInterventionPDF = async (fiche, parametres = {}) => {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const contentLeft = MARGIN;
+  const rightX = pageWidth - MARGIN;
+  const contentW = rightX - contentLeft;
+  const bottomLimit = pageHeight - 28;
+
+  drawPageFrame(doc);
+  const header = await drawHeader(doc, parametres);
+  drawFooter(doc, parametres);
+
+  const newPage = () => {
+    doc.addPage();
+    drawPageFrame(doc);
+    drawFooter(doc, parametres);
+    return MARGIN + 8;
+  };
+  const ensureSpace = (y, needed) => (y + needed > bottomLimit ? newPage() : y);
+
+  let y = header.headerBottom + 7;
+
+  // Bandeau titre
+  doc.setFillColor(...COLORS.navy);
+  doc.roundedRect(contentLeft, y, contentW, 13, 1.5, 1.5, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(12.5);
+  doc.setTextColor(...COLORS.white);
+  doc.text("FICHE D'INTERVENTION TECHNIQUE", pageWidth / 2, y + 8.3, { align: 'center' });
+  y += 17;
+
+  // Grille d'informations générales : N° / Date / Heure
+  const dateTxt = fiche.date ? new Date(fiche.date).toLocaleDateString('fr-FR') : '';
+  const colW = contentW / 3;
+  const rowH = 8;
+  const infoCols = [
+    ['N° Intervention', fiche.numero || ''],
+    ['Date', dateTxt],
+    ['Heure', fiche.heure_arrivee || ''],
+  ];
+  infoCols.forEach((c, i) => {
+    const x = contentLeft + i * colW;
+    doc.setDrawColor(...COLORS.line);
+    doc.setLineWidth(0.35);
+    doc.setFillColor(...COLORS.boxBg);
+    doc.rect(x, y, colW, rowH, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.6);
+    doc.setTextColor(...COLORS.navy);
+    doc.text(c[0], x + 2.5, y + 3.6);
+    const v = String(c[1] || '');
+    doc.setFont('helvetica', v ? 'bold' : 'normal');
+    doc.setFontSize(8.8);
+    doc.setTextColor(...(v ? (i === 0 ? COLORS.red : COLORS.ink) : COLORS.grey));
+    doc.text(v ? (doc.splitTextToSize(v, colW - 5)[0] || '') : '........................', x + 2.5, y + 7);
+  });
+  y += rowH + 6;
+
+  // Ligne "fluide" bordée : mélange de texte gras, cases à cocher et champs,
+  // avec retour à la ligne automatique
+  const flowRow = (segments, opts = {}) => {
+    const pad = 2.8;
+    const lineH = opts.lineH || 5.4;
+    const gap = opts.gap || 4.5;
+    const segW = (s) => {
+      if (s.t === 'ck') {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.6);
+        return 3 + 1.4 + doc.getTextWidth(s.label);
+      }
+      if (s.t === 'f') {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.9);
+        const lw = doc.getTextWidth(s.label) + 1.5;
+        // Mesure dans la police du rendu : une valeur saisie s'écrit en gras,
+        // plus large que la police normale (sinon la fin était tronquée).
+        const valeur = String(s.value || '');
+        doc.setFont('helvetica', valeur.trim() ? 'bold' : 'normal');
+        doc.setFontSize(7.6);
+        return lw + Math.max(doc.getTextWidth(valeur) + 2, s.w || 20);
+      }
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.9);
+      return doc.getTextWidth(s.text);
+    };
+    const placed = [];
+    let cx = contentLeft + pad;
+    let line = 0;
+    segments.forEach((s) => {
+      const w = segW(s);
+      if (cx + w > rightX - pad && cx > contentLeft + pad) {
+        line += 1;
+        cx = contentLeft + pad;
+      }
+      placed.push({ ...s, x: cx, line, w });
+      cx += w + gap;
+    });
+    const boxH = (line + 1) * lineH + 3;
+    y = ensureSpace(y, boxH + 2);
+    doc.setDrawColor(...COLORS.line);
+    doc.setLineWidth(0.35);
+    doc.rect(contentLeft, y, contentW, boxH, 'S');
+    placed.forEach((s) => {
+      const by = y + 2 + s.line * lineH + lineH * 0.68;
+      if (s.t === 'ck') {
+        drawFitCheckbox(doc, s.x, by, !!s.on);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.6);
+        doc.setTextColor(...COLORS.ink);
+        doc.text(s.label, s.x + 4.4, by);
+      } else if (s.t === 'f') {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.9);
+        doc.setTextColor(...COLORS.ink);
+        doc.text(s.label, s.x, by);
+        const lw = doc.getTextWidth(s.label) + 1.5;
+        const has = String(s.value || '').trim() !== '';
+        doc.setFont('helvetica', has ? 'bold' : 'normal');
+        doc.setFontSize(7.6);
+        doc.setTextColor(...(has ? COLORS.navySoft : COLORS.grey));
+        const raw = has ? String(s.value) : '.'.repeat(60);
+        doc.text(doc.splitTextToSize(raw, Math.max(s.w - lw, 8))[0] || '', s.x + lw, by);
+      } else {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.9);
+        doc.setTextColor(...COLORS.ink);
+        doc.text(s.text, s.x, by);
+      }
+    });
+    y += boxH;
+  };
+
+  // Encadré de texte : bandeau titre + contenu justifié (ou lignes vides à remplir à la main),
+  // avec continuation sur la page suivante si le texte est long
+  const drawTextBox = (label, value, minLines = 2) => {
+    const headH = 6.5;
+    const lineH = 4.8;
+    const textW = contentW - 8;
+    const text = String(value || '').trim();
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    let lines = [];
+    if (text) {
+      text.split(/\n/).forEach((para) => {
+        const pl = para.trim() ? doc.splitTextToSize(para.trim(), textW) : [''];
+        pl.forEach((l, i) => lines.push({ t: l, j: i < pl.length - 1 }));
+      });
+    }
+    const drawLine = (line, x, yy) => {
+      if (!line.j) {
+        doc.text(line.t, x, yy);
+        return;
+      }
+      const words = line.t.split(/\s+/).filter(Boolean);
+      const wordsW = words.reduce((s, w) => s + doc.getTextWidth(w), 0);
+      const gap = words.length > 1 ? (textW - wordsW) / (words.length - 1) : 0;
+      if (words.length < 2 || gap <= 0 || gap > 8) {
+        doc.text(line.t, x, yy);
+        return;
+      }
+      let wx = x;
+      words.forEach((w) => {
+        doc.text(w, wx, yy);
+        wx += doc.getTextWidth(w) + gap;
+      });
+    };
+    let first = true;
+    do {
+      y = ensureSpace(y, headH + lineH * 2 + 6);
+      const avail = Math.max(1, Math.floor((bottomLimit - y - headH - 4) / lineH));
+      const chunk = lines.slice(0, avail);
+      const nb = text ? chunk.length : minLines;
+      const boxH = headH + nb * lineH + 3;
+      doc.setFillColor(...COLORS.boxBg);
+      doc.rect(contentLeft + 0.3, y + 0.3, contentW - 0.6, headH, 'F');
+      doc.setDrawColor(...COLORS.line);
+      doc.setLineWidth(0.4);
+      doc.roundedRect(contentLeft, y, contentW, boxH, 1.5, 1.5, 'S');
+      doc.line(contentLeft, y + headH + 0.3, rightX, y + headH + 0.3);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.6);
+      doc.setTextColor(...COLORS.navy);
+      doc.text(first ? label : `${label} (suite)`, contentLeft + 3, y + 4.5);
+      let ty = y + headH + 4.2;
+      if (text) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(...COLORS.ink);
+        chunk.forEach((line) => {
+          drawLine(line, contentLeft + 4, ty);
+          ty += lineH;
+        });
+      } else {
+        doc.setDrawColor(...COLORS.line);
+        doc.setLineWidth(0.25);
+        for (let i = 0; i < minLines; i++) {
+          doc.line(contentLeft + 4, ty, rightX - 4, ty);
+          ty += lineH;
+        }
+      }
+      y += boxH + 4;
+      lines = lines.slice(chunk.length);
+      first = false;
+    } while (lines.length);
+  };
+
+  // === 1. CLIENT / SERVICE ===
+  y = ensureSpace(y, 30);
+  y = drawFitSectionBar(doc, contentLeft, contentW, y, '1. CLIENT / SERVICE');
+  const servicesFiche = servicesDeLaFiche(fiche);
+  if (servicesFiche.length > 1) {
+    // Plusieurs services : client seul, puis la liste complète des services
+    flowRow([{ t: 'f', label: 'Client / Structure :', value: fiche.client_nom || '', w: 80 }]);
+    flowRow(segmentsServices('Services / Départements :', servicesFiche), { gap: 1.5 });
+  } else {
+    flowRow([
+      { t: 'f', label: 'Client / Structure :', value: fiche.client_nom || '', w: 80 },
+      { t: 'f', label: 'Service / Département :', value: servicesFiche[0] || '', w: 70 },
+    ]);
+  }
+  flowRow([
+    { t: 'f', label: 'Nom du demandeur :', value: fiche.nom_demandeur || '', w: 70 },
+    { t: 'f', label: 'Tél. :', value: fiche.client_contact || '', w: 50 },
+  ]);
+  y += 4;
+
+  // === 2. ÉQUIPEMENT CONCERNÉ ===
+  const dCategorie = Array.isArray(fiche.categorie) ? fiche.categorie : [];
+  const dEquip = Array.isArray(fiche.equipements) ? fiche.equipements : [];
+  // Les choix personnalisés (ajoutés à la volée) s'affichent aussi, même hors liste fixe
+  const categorieAffichees = Array.from(new Set([...FIT_CATEGORIE_OPTIONS, ...dCategorie]));
+  const equipementsAffiches = Array.from(new Set([...FIT_EQUIPEMENT_OPTIONS, ...dEquip]));
+  y = ensureSpace(y, 40);
+  y = drawFitSectionBar(doc, contentLeft, contentW, y, '2. ÉQUIPEMENT CONCERNÉ');
+  flowRow([
+    { t: 'b', text: 'Catégorie :' },
+    ...categorieAffichees.map((l) => ({ t: 'ck', label: l, on: dCategorie.includes(l) })),
+  ]);
+  flowRow([
+    { t: 'b', text: 'Équipement :' },
+    ...equipementsAffiches.map((l) => ({ t: 'ck', label: l, on: dEquip.includes(l) })),
+  ]);
+  flowRow([
+    { t: 'f', label: 'Marque / Modèle :', value: fiche.marque_modele || '', w: 70 },
+    { t: 'f', label: 'N° série / Adresse IP :', value: fiche.num_serie || '', w: 65 },
+  ]);
+  y += 4;
+
+  // === 3 & 4 : zones de texte ajustables ===
+  drawTextBox('3. PANNE / DEMANDE', fiche.description_probleme, 3);
+  drawTextBox('4. DIAGNOSTIC', fiche.diagnostic, 3);
+
+  // === 5. TRAVAUX EFFECTUÉS ===
+  const dTravaux = Array.isArray(fiche.travaux_types) ? fiche.travaux_types : [];
+  y = ensureSpace(y, 24);
+  y = drawFitSectionBar(doc, contentLeft, contentW, y, '5. TRAVAUX EFFECTUÉS');
+  flowRow(FIT_TRAVAUX_OPTIONS.map((l) => ({ t: 'ck', label: l, on: dTravaux.includes(l) })));
+  y += 2.5;
+  drawTextBox('Détails', fiche.travaux_realises, 3);
+
+  // === 6. PIÈCES / MATÉRIEL UTILISÉ ===
+  drawTextBox('6. PIÈCES / MATÉRIEL UTILISÉ', fiche.materiels, 2);
+
+  // === 7. RÉSULTAT DE L'INTERVENTION ===
+  y = ensureSpace(y, 26);
+  y = drawFitSectionBar(doc, contentLeft, contentW, y, "7. RÉSULTAT DE L'INTERVENTION");
+  flowRow(FIT_RESULTAT_OPTIONS.map((l) => ({ t: 'ck', label: l, on: fiche.statut_final === l })));
+  y += 2.5;
+  drawTextBox('Recommandation / Observation', fiche.recommandations, 3);
+
+  // === 8. VALIDATION (signatures) ===
+  y = ensureSpace(y, 50);
+  y = drawFitSectionBar(doc, contentLeft, contentW, y, '8. VALIDATION');
+  const signH = 32;
+  const signW = contentW / 2;
+  const signTitles = ['TECHNICIEN', 'CLIENT / RESPONSABLE'];
+  const signNames = [fiche.intervenant || '', fiche.responsable_client || ''];
+  doc.setDrawColor(...COLORS.line);
+  doc.setLineWidth(0.4);
+  doc.roundedRect(contentLeft, y, contentW, signH, 1.5, 1.5, 'S');
+  signTitles.forEach((title, i) => {
+    const x = contentLeft + i * signW;
+    if (i > 0) doc.line(x, y, x, y + signH);
+    doc.setFillColor(...COLORS.navy);
+    doc.rect(x + 0.3, y + 0.3, signW - 0.6, 6, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.8);
+    doc.setTextColor(...COLORS.white);
+    doc.text(title, x + signW / 2, y + 4.3, { align: 'center' });
+    const name = signNames[i];
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.8);
+    doc.setTextColor(...COLORS.ink);
+    doc.text('Nom :', x + 2.5, y + 12.5);
+    doc.setFont('helvetica', name ? 'bold' : 'normal');
+    doc.setTextColor(...(name ? COLORS.navySoft : COLORS.grey));
+    doc.text(name ? (doc.splitTextToSize(name, signW - 16)[0] || '') : '.'.repeat(22), x + 13, y + 12.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...COLORS.ink);
+    doc.text('Signature :', x + 2.5, y + 24);
+  });
+  y += signH + 6;
+
+  // Date de clôture
+  const finDate = fiche.fin ? new Date(fiche.fin) : null;
+  const finTxt = finDate && !Number.isNaN(finDate.getTime()) ? finDate.toLocaleDateString('fr-FR') : (fiche.fin || '');
+  flowRow([{ t: 'f', label: 'Date de clôture :', value: finTxt, w: 40 }]);
+
+  // Numérotation des pages
+  const totalPages = doc.internal.getNumberOfPages();
+  for (let p = 1; p <= totalPages; p++) {
+    doc.setPage(p);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(...COLORS.grey);
+    doc.text(`Page ${p} / ${totalPages}`, pageWidth / 2, pageHeight - 8, { align: 'center' });
+  }
+
+  return doc;
+};
+
+// Génération PDF Rapport TVA (suivi OTR)
+// rapport = { titre, sousTitre, dateLabel, lignes:[{numero, client, date, total_ttc, tva}], totalTtc, totalTva }
+export const generateTvaPDF = async (rapport, parametres) => {
+  const doc = new jsPDF({ orientation: 'landscape' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  drawPageFrame(doc);
+  const { contentLeft, rightX, headerBottom } = await drawHeader(doc, parametres);
+
+  // Titre
+  let yPos = drawTitle(doc, rapport.titre || 'RAPPORT TVA', headerBottom + 11);
+
+  // Sous-titre (type + période) centré
+  if (rapport.sousTitre) {
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(10);
+    doc.setTextColor(...COLORS.grey);
+    doc.text(rapport.sousTitre, pageWidth / 2, yPos + 6, { align: 'center' });
+    yPos += 6;
+  }
+
+  // Date d'édition à droite
   doc.setFont('helvetica', 'normal');
-  doc.setTextColor(0, 0, 0);
-  doc.text(`Nom       :  ${bordereau.client_nom}`, rightX - 50, yPos + 6);
-  doc.text(`Adresse  :  ${bordereau.client_adresse || ''}`, rightX - 50, yPos + 11);
+  doc.setFontSize(9);
+  doc.setTextColor(...COLORS.ink);
+  doc.text(`Édité le : ${formatDateLong(new Date())}`, rightX, yPos + 8, { align: 'right' });
 
-  yPos += 18;
+  yPos += 14;
 
-  const tableData = bordereau.lignes.map((ligne, index) => [
-    index + 1,
-    ligne.designation,
-    ligne.quantite
+  // Tableau des factures
+  const lignes = rapport.lignes || [];
+  const tableData = lignes.map((l, i) => [
+    i + 1,
+    l.numero || '',
+    l.client || '',
+    l.date || '-',
+    formatNumber(l.total_ttc),
+    formatNumber(l.tva),
+    formatNumber((l.tva || 0) / 2),
+    formatNumber((l.tva || 0) / 2)
   ]);
 
   doc.autoTable({
     startY: yPos,
-    head: [['Réf', 'Désignation', 'Quantité']],
+    head: [['N°', 'N° FACTURE', 'CLIENT', rapport.dateLabel || 'DATE', 'MONTANT TTC\n(FCFA)', 'TOTAL TVA\n(FCFA)', 'TVA À VERSER\n50 % (FCFA)', 'QUITTANCE\n50 % (FCFA)']],
     body: tableData,
+    foot: [[
+      { content: 'TOTAL', colSpan: 4, styles: { halign: 'center' } },
+      { content: formatNumber(rapport.totalTtc), styles: { halign: 'right' } },
+      { content: formatNumber(rapport.totalTva), styles: { halign: 'right' } },
+      { content: formatNumber((rapport.totalTva || 0) / 2), styles: { halign: 'right' } },
+      { content: formatNumber((rapport.totalTva || 0) / 2), styles: { halign: 'right' } }
+    ]],
+    showHead: 'firstPage',
+    showFoot: 'lastPage',
     theme: 'grid',
     headStyles: {
-      fillColor: [200, 200, 200],
-      textColor: [0, 0, 0],
-      fontStyle: 'bold',
-      fontSize: 8
+      fillColor: COLORS.navy, textColor: COLORS.white, fontStyle: 'bold',
+      fontSize: 8.5, halign: 'center', valign: 'middle', cellPadding: 2.5
     },
-    bodyStyles: {
-      fontSize: 8
+    bodyStyles: { fontSize: 9, cellPadding: 2.2, textColor: COLORS.ink, valign: 'middle' },
+    footStyles: {
+      fillColor: COLORS.boxBg, textColor: COLORS.navy, fontStyle: 'bold', fontSize: 9.5
     },
     columnStyles: {
-      0: { cellWidth: 15, halign: 'center' },
-      1: { cellWidth: 135 },
-      2: { cellWidth: 25, halign: 'center' }
+      0: { cellWidth: 10, halign: 'center' },
+      1: { cellWidth: 34 },
+      2: { cellWidth: 65 },
+      3: { cellWidth: 28, halign: 'center' },
+      4: { cellWidth: 34, halign: 'right' },
+      5: { cellWidth: 30, halign: 'right' },
+      6: { cellWidth: 36, halign: 'right' },
+      7: { cellWidth: 36, halign: 'right' }
     },
-    margin: { left: 15, right: 15, bottom: 20 }
+    styles: { lineColor: COLORS.line, lineWidth: 0.15 },
+    margin: { left: MARGIN, right: MARGIN, bottom: 26 },
+    didDrawPage: () => { drawPageFrame(doc); }
   });
 
-  yPos = doc.lastAutoTable.finalY + 20;
+  // Pied de page commun
+  drawFooter(doc, parametres);
 
-  // Si le bloc des signatures + cadre de propriété ne tient pas sur la
-  // page courante, on passe à une nouvelle page.
-  const blocSignaturesHauteur = 55;
-  if (yPos + blocSignaturesHauteur > pageHeight - 15) {
-    doc.addPage();
-    yPos = 20;
+  return doc;
+};
+
+// Rapport des versements OTR — format paysage (nombreuses colonnes)
+export const generateTvaVersementsPDF = async (rapport, parametres) => {
+  const doc = new jsPDF({ orientation: 'landscape' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  drawPageFrame(doc);
+  const { rightX, headerBottom } = await drawHeader(doc, parametres);
+
+  let yPos = drawTitle(doc, rapport.titre || 'RAPPORT DES VERSEMENTS TVA (OTR)', headerBottom + 11);
+
+  if (rapport.sousTitre) {
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(10);
+    doc.setTextColor(...COLORS.grey);
+    doc.text(rapport.sousTitre, pageWidth / 2, yPos + 6, { align: 'center' });
+    yPos += 6;
   }
 
-  // Signatures avec cadres
-  const sigYPos = yPos;
+  doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
-  doc.setFont('helvetica', 'bold');
-  
-  // Cadre pour Le Fournisseur
-  doc.setDrawColor(0, 0, 0);
-  doc.setLineWidth(0.5);
-  doc.rect(15, sigYPos, 80, 30);
-  doc.text('Le Fournisseur,', 17, sigYPos + 5);
-  doc.setFont('helvetica', 'normal');
-  doc.text('In-Tel Services', 17, sigYPos + 25);
-  
-  // Cadre pour Le Client
-  doc.setFont('helvetica', 'bold');
-  doc.rect(pageWidth - 95, sigYPos, 80, 30);
-  doc.text('Le Client,', pageWidth - 93, sigYPos + 5);
-  doc.setFont('helvetica', 'normal');
-  doc.text(bordereau.client_nom, pageWidth - 93, sigYPos + 25);
+  doc.setTextColor(...COLORS.ink);
+  doc.text(`Édité le : ${formatDateLong(new Date())}`, rightX, yPos + 8, { align: 'right' });
 
-  // Cadre pour le texte de propriété - EN PIED DE PAGE, sur une seule ligne, centré
-  const textePropriete = `ITS reste propriétaire de la marchandise livrée à compter du jour de la livraison jusqu'à complet paiement de l'intégralité de la facture.`;
-  doc.setFont('helvetica', 'bold');
-  // Réduit la taille de la police jusqu'à ce que le texte tienne sur une seule ligne
-  let proprieteFontSize = 8;
-  const maxTexteWidth = pageWidth - 40;
-  doc.setFontSize(proprieteFontSize);
-  while (doc.getTextWidth(textePropriete) > maxTexteWidth && proprieteFontSize > 5) {
-    proprieteFontSize -= 0.25;
-    doc.setFontSize(proprieteFontSize);
+  yPos += 14;
+
+  const lignes = rapport.lignes || [];
+  const tableData = lignes.map((v, i) => [
+    i + 1,
+    v.numero || '',
+    v.date || '-',
+    v.nb_factures || 0,
+    formatNumber(v.total_tva),
+    formatNumber(v.total_du),
+    formatNumber(v.quittance),
+    formatNumber(v.paye),
+    formatNumber(v.reste),
+    v.solde ? 'Soldé' : (v.paye > 0 ? 'Partiellement payé' : 'Non payé'),
+  ]);
+
+  doc.autoTable({
+    startY: yPos,
+    head: [['N°', 'N° VERSEMENT', 'DATE', 'FACTURES', 'TOTAL TVA\n(FCFA)', 'TVA À VERSER\n50 % (FCFA)', 'QUITTANCE\n50 % (FCFA)', 'PAYÉ\n(FCFA)', 'RESTE À PAYER\n(FCFA)', 'STATUT']],
+    body: tableData,
+    foot: [[
+      { content: 'TOTAL', colSpan: 4, styles: { halign: 'center' } },
+      { content: formatNumber(rapport.totalTva), styles: { halign: 'right' } },
+      { content: formatNumber(rapport.totalDu), styles: { halign: 'right' } },
+      { content: formatNumber(rapport.totalQuittance), styles: { halign: 'right' } },
+      { content: formatNumber(rapport.totalPaye), styles: { halign: 'right' } },
+      { content: formatNumber(rapport.totalReste), styles: { halign: 'right' } },
+      ''
+    ]],
+    showHead: 'firstPage',
+    showFoot: 'lastPage',
+    theme: 'grid',
+    headStyles: {
+      fillColor: COLORS.navy, textColor: COLORS.white, fontStyle: 'bold',
+      fontSize: 8.5, halign: 'center', valign: 'middle', cellPadding: 2.5
+    },
+    bodyStyles: { fontSize: 9, cellPadding: 2.2, textColor: COLORS.ink, valign: 'middle' },
+    footStyles: {
+      fillColor: COLORS.boxBg, textColor: COLORS.navy, fontStyle: 'bold', fontSize: 9.5
+    },
+    columnStyles: {
+      0: { cellWidth: 10, halign: 'center' },
+      1: { cellWidth: 30 },
+      2: { cellWidth: 24, halign: 'center' },
+      3: { cellWidth: 20, halign: 'center' },
+      4: { cellWidth: 34, halign: 'right' },
+      5: { cellWidth: 34, halign: 'right' },
+      6: { cellWidth: 34, halign: 'right' },
+      7: { cellWidth: 30, halign: 'right' },
+      8: { cellWidth: 30, halign: 'right' },
+      9: { cellWidth: 27, halign: 'center' }
+    },
+    styles: { lineColor: COLORS.line, lineWidth: 0.15 },
+    margin: { left: MARGIN, right: MARGIN, bottom: 26 },
+    didDrawPage: () => { drawPageFrame(doc); }
+  });
+
+  drawFooter(doc, parametres);
+
+  return doc;
+};
+
+export const generateTvaVersementDetailPDF = async (versement, parametres = {}, paiementId = null) => {
+  const doc = new jsPDF();
+  const { contentLeft, rightX, headerBottom } = await drawHeader(doc, parametres);
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const contentWidth = rightX - contentLeft;
+  const paiements = versement.paiements || [];
+  const paiement = paiementId === null ? null : paiements.find((item) => item.id === paiementId);
+  if (paiementId !== null && !paiement) throw new Error('Paiement introuvable dans ce versement.');
+  let yPos = drawTitle(doc, paiement ? 'DÉTAIL DU PAIEMENT OTR' : 'DÉTAIL DU VERSEMENT OTR', headerBottom + 11);
+
+  const table = (title, head, body, columnStyles = {}) => {
+    if (yPos + 24 > pageHeight - 28) {
+      doc.addPage();
+      yPos = 22;
+    }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(...COLORS.navy);
+    doc.text(title, contentLeft, yPos);
+    doc.autoTable({
+      startY: yPos + 3,
+      head: [head],
+      body,
+      theme: 'grid',
+      headStyles: { fillColor: COLORS.navy, textColor: COLORS.white, fontStyle: 'bold', fontSize: 9 },
+      bodyStyles: { fontSize: 9, textColor: COLORS.ink, valign: 'top', cellPadding: 2.5 },
+      columnStyles,
+      styles: { lineColor: COLORS.line, lineWidth: 0.15, overflow: 'linebreak' },
+      rowPageBreak: 'avoid',
+      margin: { left: MARGIN, right: MARGIN, top: 18, bottom: 28 },
+    });
+    yPos = doc.lastAutoTable.finalY + 10;
+  };
+
+  yPos += 5;
+  table('Références', ['Champ', 'Valeur'], [
+    ['Versement', String(versement.numero || '')],
+    ['Date du versement', formatDateLong(versement.date)],
+    ...(paiement ? [
+      ['Référence interne du paiement', `${versement.numero || ''} / paiement ${paiement.id}`],
+      ['Date du paiement', formatDateLong(paiement.date)],
+    ] : []),
+    ["Date d'édition", formatDateLong(new Date())],
+    ["Nature du document", 'Relevé interne de suivi, ne remplace pas une quittance officielle OTR.'],
+    ...(versement.note ? [['Note du versement', String(versement.note)]] : []),
+  ], { 0: { cellWidth: 65, fontStyle: 'bold' }, 1: { cellWidth: contentWidth - 65 } });
+
+  table('Situation actuelle du lot (FCFA)', ['Total TVA', 'TVA à reverser', 'Part quittance', 'Cumul payé', 'Reste à payer', 'Statut'], [[
+    formatNumber(versement.total_tva ?? Number(versement.total_du || 0) * 2),
+    formatNumber(versement.total_du),
+    formatNumber(versement.quittance ?? versement.total_du),
+    formatNumber(versement.paye),
+    formatNumber(versement.reste),
+    versement.solde ? 'Soldé' : Number(versement.paye) > 0 ? 'Partiellement payé' : 'Non payé',
+  ]], Object.fromEntries([0, 1, 2, 3, 4].map((index) => [index, { halign: 'right' }])));
+
+  table('Factures rattachées au lot', ['N° facture', 'Client', 'TVA (FCFA)', 'À reverser (FCFA)'],
+    (versement.factures || []).length ? versement.factures.map((facture) => [
+      String(facture.numero || ''), String(facture.client_nom || '-'),
+      formatNumber(facture.tva), formatNumber(facture.tva_a_verser ?? Number(facture.tva || 0) / 2),
+    ]) : [['-', 'Aucune facture rattachée', '-', '-']],
+    { 0: { cellWidth: 48 }, 1: { cellWidth: contentWidth - 128 }, 2: { cellWidth: 40, halign: 'right' }, 3: { cellWidth: 40, halign: 'right' } });
+
+  const paiementsImprimes = paiement ? [paiement] : paiements;
+  table(paiement ? 'Paiement sélectionné' : 'Historique des paiements',
+    ['Date', 'Montant (FCFA)', 'N° quittance OTR', 'Mode', 'Note'],
+    paiementsImprimes.length ? paiementsImprimes.map((item) => [
+      formatDateLong(item.date), formatNumber(item.montant),
+      String(item.quittance || '-'), String(item.mode || '-'), String(item.note || '-'),
+    ]) : [['-', '-', '-', '-', 'Aucun paiement enregistré']],
+    { 0: { cellWidth: 31 }, 1: { cellWidth: 30, halign: 'right', fontStyle: 'bold' }, 2: { cellWidth: 40 }, 3: { cellWidth: 28 }, 4: { cellWidth: contentWidth - 129 } });
+
+  const totalPages = doc.internal.getNumberOfPages();
+  for (let page = 1; page <= totalPages; page++) {
+    doc.setPage(page);
+    drawPageFrame(doc);
+    drawFooter(doc, parametres);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(...COLORS.grey);
+    doc.text(`${versement.numero || ''} - Page ${page} / ${totalPages}`, pageWidth / 2, pageHeight - 8, { align: 'center' });
   }
-  const boxTexteY = pageHeight - 18;
-  doc.setDrawColor(0, 0, 0);
+  return doc;
+};
+
+// =====================================================================
+//  LETTRE DE SOUMISSION (appel d'offre)
+// =====================================================================
+export const generateLettreSoumissionPDF = async (ao, parametres = {}) => {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  drawPageFrame(doc);
+  const { contentLeft, rightX, headerBottom } = await drawHeader(doc, parametres);
+
+  let yPos = headerBottom + 10;
+
+  // Lieu et date (à droite)
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10.5);
+  doc.setTextColor(...COLORS.ink);
+  doc.text(`Lomé, le ${formatDateLong(ao.date)}`, rightX, yPos, { align: 'right' });
+  yPos += 12;
+
+  // Destinataire (autorité contractante)
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(...COLORS.navy);
+  doc.text('À', rightX - 60, yPos);
+  yPos += 6;
+  const autorite = ao.autorite || ao.client_nom || '';
+  const autoriteLines = doc.splitTextToSize(autorite, 70);
+  doc.text(autoriteLines, rightX - 60, yPos);
+  yPos += autoriteLines.length * 5.5;
+  if (ao.autorite_adresse) {
+    doc.setFont('helvetica', 'normal');
+    const adresseLines = doc.splitTextToSize(ao.autorite_adresse, 70);
+    doc.text(adresseLines, rightX - 60, yPos);
+    yPos += adresseLines.length * 5.5;
+  }
+  yPos += 8;
+
+  // Objet
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(...COLORS.ink);
+  const objetTxt = `Objet : Soumission à l'appel d'offres ${ao.reference_externe || ao.numero}`;
+  const objetLines = doc.splitTextToSize(objetTxt, pageWidth - MARGIN * 2 - 10);
+  doc.text(objetLines, contentLeft, yPos);
+  yPos += objetLines.length * 6 + 8;
+
+  // Titre
+  yPos = drawTitle(doc, 'LETTRE DE SOUMISSION', yPos) + 12;
+
+  // Corps de la lettre
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10.5);
+  doc.setTextColor(...COLORS.ink);
+  const entreprise = parametres.entreprise_nom || 'IN-TEL SERVICES';
+  const montantTTC = ao.total_ttc || 0;
+  const validite = ao.validite_offre || 90;
+
+  const paragraphs = [
+    `Madame, Monsieur,`,
+    `Après avoir examiné le dossier d'appel d'offres ${ao.reference_externe || ao.numero} relatif à : ${ao.objet || ''}, dont nous accusons réception, nous soussignés, ${entreprise}, offrons d'exécuter et d'achever lesdits travaux/fournitures conformément aux prescriptions du dossier.`,
+    `Le montant total de notre offre s'élève à la somme de ${nombreEnLettres(montantTTC)} (${formatNumber(montantTTC)}) Francs CFA Toutes Taxes Comprises, tel que détaillé dans le bordereau des prix ci-joint.`,
+    ao.delai_execution
+      ? `Nous nous engageons à exécuter les prestations dans un délai de ${ao.delai_execution}.`
+      : null,
+    `La présente offre demeure valable pendant une période de ${validite} jours à compter de la date limite de dépôt des offres, et peut être acceptée à tout moment avant l'expiration de ce délai.`,
+    `Jusqu'à ce qu'un marché formel soit établi et signé, la présente soumission, complétée par votre acceptation écrite, constituera un engagement contractuel entre nous.`,
+    `Nous vous prions d'agréer, Madame, Monsieur, l'expression de notre considération distinguée.`,
+  ].filter(Boolean);
+
+  const textWidth = pageWidth - MARGIN * 2 - 10;
+  paragraphs.forEach((p) => {
+    const lines = doc.splitTextToSize(p, textWidth);
+    doc.text(lines, contentLeft + 2, yPos, { maxWidth: textWidth, align: 'justify' });
+    yPos += lines.length * 5.8 + 4;
+  });
+
+  // Signature
+  yPos += 6;
+  const sigCenterX = rightX - 40;
+  drawSignature(doc, sigCenterX, yPos, parametres, ao.avec_cachet === 1);
+
+  drawFooter(doc, parametres);
+  return doc;
+};
+
+// =====================================================================
+//  ENVELOPPES DE SOUMISSION (intérieure + extérieure)
+// =====================================================================
+export const generateEnveloppesPDF = async (ao, parametres = {}) => {
+  const doc = new jsPDF({ orientation: 'landscape' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const centerX = pageWidth / 2;
+  const reference = ao.reference_externe || ao.numero;
+  const autorite = ao.autorite || ao.client_nom || '';
+
+  const drawEnvelopeFrame = (label) => {
+    // Cadre décoratif
+    doc.setDrawColor(...COLORS.navy);
+    doc.setLineWidth(0.8);
+    doc.rect(8, 8, pageWidth - 16, pageHeight - 16, 'S');
+    doc.setLineWidth(0.3);
+    doc.rect(11, 11, pageWidth - 22, pageHeight - 22, 'S');
+
+    // Étiquette du type d'enveloppe (coin supérieur gauche)
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.setTextColor(...COLORS.grey);
+    doc.text(label, 16, 20);
+  };
+
+  const drawCommonCenter = (startY) => {
+    let y = startY;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.setTextColor(...COLORS.navy);
+    doc.text(`APPEL D'OFFRES ${reference}`, centerX, y, { align: 'center' });
+    y += 12;
+
+    if (ao.objet) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(12);
+      doc.setTextColor(...COLORS.ink);
+      const objetLines = doc.splitTextToSize(`Objet : ${ao.objet}`, pageWidth - 80);
+      doc.text(objetLines, centerX, y, { align: 'center' });
+      y += objetLines.length * 6.5 + 6;
+    }
+
+    if (autorite) {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(12);
+      doc.setTextColor(...COLORS.ink);
+      const autLines = doc.splitTextToSize(`À l'attention de : ${autorite}`, pageWidth - 80);
+      doc.text(autLines, centerX, y, { align: 'center' });
+      y += autLines.length * 6.5 + 4;
+    }
+    if (ao.autorite_adresse) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(11);
+      const adrLines = doc.splitTextToSize(ao.autorite_adresse, pageWidth - 80);
+      doc.text(adrLines, centerX, y, { align: 'center' });
+      y += adrLines.length * 6 + 4;
+    }
+    return y;
+  };
+
+  // --- Page 1 : ENVELOPPE EXTÉRIEURE (anonyme) ---
+  drawEnvelopeFrame('ENVELOPPE EXTÉRIEURE');
+  let y = drawCommonCenter(58);
+
+  y += 10;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(14);
+  doc.setTextColor(...COLORS.red);
+  doc.text('« À N\'OUVRIR QU\'EN SÉANCE DE DÉPOUILLEMENT »', centerX, y, { align: 'center' });
+  y += 10;
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.grey);
+  doc.text('(Cette enveloppe ne doit comporter aucune indication sur l\'identité du soumissionnaire)', centerX, y, { align: 'center' });
+
+  // --- Page 2 : ENVELOPPE INTÉRIEURE (avec identité) ---
+  doc.addPage('a4', 'landscape');
+  drawEnvelopeFrame('ENVELOPPE INTÉRIEURE');
+  y = drawCommonCenter(48);
+
+  y += 8;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.setTextColor(...COLORS.red);
+  doc.text('« À N\'OUVRIR QU\'EN SÉANCE DE DÉPOUILLEMENT »', centerX, y, { align: 'center' });
+  y += 14;
+
+  // Identité du soumissionnaire
+  doc.setDrawColor(...COLORS.line);
+  doc.setLineWidth(0.4);
+  const boxW = 150;
+  const boxX = centerX - boxW / 2;
+  doc.roundedRect(boxX, y, boxW, 42, 2, 2, 'S');
+  let by = y + 9;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(...COLORS.navy);
+  doc.text('SOUMISSIONNAIRE', centerX, by, { align: 'center' });
+  by += 8;
+  doc.setFontSize(11);
+  doc.setTextColor(...COLORS.ink);
+  doc.text(parametres.entreprise_nom || 'IN-TEL SERVICES', centerX, by, { align: 'center' });
+  by += 6.5;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9.5);
+  if (parametres.entreprise_adresse) {
+    doc.text(parametres.entreprise_adresse, centerX, by, { align: 'center' });
+    by += 5.5;
+  }
+  const contacts = [
+    parametres.entreprise_tel ? `Tél : ${parametres.entreprise_tel}` : null,
+    parametres.entreprise_email ? `Email : ${parametres.entreprise_email}` : null,
+  ].filter(Boolean).join('   •   ');
+  if (contacts) {
+    doc.text(contacts, centerX, by, { align: 'center' });
+    by += 5.5;
+  }
+  if (parametres.entreprise_nif) {
+    doc.text(`NIF : ${parametres.entreprise_nif}`, centerX, by, { align: 'center' });
+  }
+
+  return doc;
+};
+
+// =====================================================================
+//  RAPPORT TECHNIQUE (texte libre, sections numérotées, pagination auto)
+// =====================================================================
+export const generateRapportPDF = async (rapport, parametres = {}) => {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const contentWidth = pageWidth - MARGIN * 2;
+  const bottomLimit = pageHeight - 30;
+
+  // ═══════════════════════════════════════════════════
+  // PAGE 1 : Entête + Titre centré + Rectangle infos
+  // Le contenu du rapport commence TOUJOURS page 2
+  // ═══════════════════════════════════════════════════
+  drawPageFrame(doc);
+  const header = await drawHeader(doc, parametres);
+  drawFooter(doc, parametres);
+
+  // — Référence discrète en haut à droite —
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(...COLORS.grey);
+  doc.text(`Réf : ${rapport.numero || ''}`, header.rightX, header.headerBottom + 6, { align: 'right' });
+
+  // — Titre bien centré verticalement dans la zone disponible —
+  const titre = (rapport.titre || 'RAPPORT TECHNIQUE').toUpperCase();
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(18);
+  doc.setTextColor(...COLORS.navy);
+  const titleLines = doc.splitTextToSize(titre, contentWidth - 10);
+
+  // Zone disponible entre entête et bas de page
+  const topZone = header.headerBottom + 10;
+  const bottomZone = bottomLimit;
+  // On place le titre au tiers supérieur de la zone disponible
+  const titleZoneCenter = topZone + (bottomZone - topZone) * 0.35;
+  const titleBlockH = titleLines.length * 9;
+  let titleY = titleZoneCenter - titleBlockH / 2;
+
+  titleLines.forEach((line) => {
+    doc.text(line, pageWidth / 2, titleY, { align: 'center' });
+    titleY += 9;
+  });
+  // Filet décoratif sous le titre
+  const underlineY = titleY + 2;
+  doc.setDrawColor(...COLORS.navy);
+  doc.setLineWidth(0.7);
+  doc.line(pageWidth / 2 - 35, underlineY, pageWidth / 2 + 35, underlineY);
+
+  // — Rectangle infos en bas de la page 1 —
+  const infos = [];
+  if (rapport.client_nom) infos.push(['Client', rapport.client_nom]);
+  infos.push(['Prestataire', parametres.entreprise_nom || 'IN-TEL SERVICES']);
+  if (rapport.lieu) infos.push(['Lieu', rapport.lieu]);
+  infos.push(['Date', formatDateLong(rapport.date)]);
+  if (rapport.objet) infos.push(['Objet', rapport.objet]);
+
+  const infoPad = 6;
+  const labelW = 34;
+  const infoLineH = 6.5;
+  doc.setFontSize(10.5);
+  const valueW = contentWidth - labelW - infoPad * 2;
+  const infoRendered = infos.map(([label, value]) => {
+    const lines = doc.splitTextToSize(String(value || ''), valueW);
+    return { label, lines };
+  });
+  const totalInfoH = infoRendered.reduce((s, r) => s + r.lines.length * infoLineH, 0);
+  const boxH = totalInfoH + infoPad * 2 + 4;
+
+  const infoBoxY = bottomLimit - boxH - 6;
+  doc.setFillColor(...COLORS.boxBg);
+  doc.setDrawColor(...COLORS.line);
   doc.setLineWidth(0.5);
-  doc.rect(15, boxTexteY, pageWidth - 30, 10);
-  doc.text(textePropriete, pageWidth / 2, boxTexteY + 6, { align: 'center' });
+  doc.roundedRect(MARGIN, infoBoxY, contentWidth, boxH, 3, 3, 'FD');
+
+  let infoY = infoBoxY + infoPad + 4;
+  infoRendered.forEach(({ label, lines }) => {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10.5);
+    doc.setTextColor(...COLORS.navy);
+    doc.text(`${label} :`, MARGIN + infoPad, infoY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(...COLORS.ink);
+    lines.forEach((line, i) => {
+      doc.text(line, MARGIN + infoPad + labelW, infoY + i * infoLineH);
+    });
+    infoY += lines.length * infoLineH;
+  });
+
+  // ═══════════════════════════════════════════════════
+  // PAGE 2+ : Contenu du rapport (sans entête)
+  // ═══════════════════════════════════════════════════
+  doc.addPage();
+  drawPageFrame(doc);
+  drawFooter(doc, parametres);
+  let yPos = MARGIN + 12;
+
+  // --- Helper : saut de page SANS en-tête (cadre + pied seulement) ---
+  const ensureSpace = async (needed) => {
+    if (yPos + needed > bottomLimit) {
+      doc.addPage();
+      drawPageFrame(doc);
+      drawFooter(doc, parametres);
+      yPos = MARGIN + 12;
+    }
+  };
+
+  // Rendu justifie pour eviter les paragraphes visuellement decales.
+  const drawJustifiedParagraph = async (text, x, width, lineHeight, options = {}) => {
+    const { drawBullet = false, bulletX = x - 4 } = options;
+    const words = String(text || '').trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return;
+
+    const lines = [];
+    let lineWords = [];
+
+    words.forEach((word) => {
+      const candidate = lineWords.length ? `${lineWords.join(' ')} ${word}` : word;
+      if (doc.getTextWidth(candidate) <= width) {
+        lineWords.push(word);
+      } else {
+        if (lineWords.length) lines.push(lineWords);
+        lineWords = [word];
+      }
+    });
+    if (lineWords.length) lines.push(lineWords);
+
+    const spaceW = doc.getTextWidth(' ');
+
+    for (let i = 0; i < lines.length; i++) {
+      await ensureSpace(lineHeight + 1);
+      const current = lines[i];
+      const isLast = i === lines.length - 1;
+
+      if (drawBullet && i === 0) {
+        doc.setFillColor(...COLORS.navySoft);
+        doc.circle(bulletX, yPos - 1.4, 0.7, 'F');
+      }
+
+      if (isLast || current.length === 1) {
+        doc.text(current.join(' '), x, yPos);
+        yPos += lineHeight;
+        continue;
+      }
+
+      const wordsW = current.reduce((sum, w) => sum + doc.getTextWidth(w), 0);
+      const gaps = current.length - 1;
+      const extra = Math.max(0, (width - wordsW - gaps * spaceW) / gaps);
+      let cursorX = x;
+
+      current.forEach((w, wi) => {
+        doc.text(w, cursorX, yPos);
+        if (wi < gaps) cursorX += doc.getTextWidth(w) + spaceW + extra;
+      });
+
+      yPos += lineHeight;
+    }
+  };
+
+  // --- Sections numérotées ---
+  const sections = Array.isArray(rapport.sections) ? rapport.sections : [];
+  let idx = 1;
+  for (const section of sections) {
+    if (!section || (!section.titre && !section.contenu)) continue;
+
+    // Titre de section
+    const heading = `${idx}. ${(section.titre || '').toUpperCase()}`;
+    await ensureSpace(16);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11.5);
+    doc.setTextColor(...COLORS.navy);
+    const headingLines = doc.splitTextToSize(heading, contentWidth);
+    headingLines.forEach((line) => {
+      doc.text(line, MARGIN, yPos);
+      yPos += 6;
+    });
+    doc.setDrawColor(...COLORS.line);
+    doc.setLineWidth(0.3);
+    doc.line(MARGIN, yPos - 3, MARGIN + contentWidth, yPos - 3);
+    yPos += 3;
+
+    // Corps de section
+    const paragraphs = String(section.contenu || '').split('\n');
+    for (const para of paragraphs) {
+      const trimmed = para.trim();
+      if (trimmed === '') { yPos += 2.5; continue; }
+
+      const isBullet = /^(-|•|\*|–)\s+/.test(trimmed);
+      const isSubHeading = !isBullet && trimmed.endsWith(':') && trimmed.length <= 70;
+      let text = trimmed;
+      let indent = 0;
+
+      if (isBullet) {
+        text = trimmed.replace(/^(-|•|\*|–)\s+/, '');
+        indent = 6;
+      }
+
+      if (isSubHeading) {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(10);
+        doc.setTextColor(...COLORS.navySoft);
+      } else {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        doc.setTextColor(...COLORS.ink);
+      }
+
+      if (isSubHeading) {
+        const wrapped = doc.splitTextToSize(text, contentWidth - indent);
+        for (let i = 0; i < wrapped.length; i++) {
+          await ensureSpace(6);
+          doc.text(wrapped[i], MARGIN + indent, yPos);
+          yPos += 5.4;
+        }
+      } else if (isBullet) {
+        await drawJustifiedParagraph(text, MARGIN + indent, contentWidth - indent, 5.4, {
+          drawBullet: true,
+          bulletX: MARGIN + 2
+        });
+      } else {
+        await drawJustifiedParagraph(text, MARGIN + indent, contentWidth - indent, 5.4);
+      }
+      if (isSubHeading) yPos += 1;
+    }
+    yPos += 6;
+    idx++;
+  }
+
+  // --- Clôture : lieu/date + « Pour … » + signature/cachet ---
+  await ensureSpace(56);
+  yPos += 8;
+  const sigCenterX = pageWidth - MARGIN - 32;
+  const closureX = sigCenterX;
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10.5);
+  doc.setTextColor(...COLORS.ink);
+  const lieu = rapport.lieu || 'Lomé';
+  doc.text(`Fait à ${lieu}, le ${formatDateLong(rapport.date)}.`, closureX, yPos, { align: 'center' });
+  yPos += 8;
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(...COLORS.navy);
+  doc.text(`Pour ${parametres.entreprise_nom || 'IN-TEL SERVICES'}`, closureX, yPos, { align: 'center' });
+
+  const withCachet = rapport.avec_cachet === 1 || rapport.avec_cachet === true;
+  drawSignature(doc, sigCenterX, yPos + 8, parametres, withCachet);
+
+  // --- Numérotation « Page X / Y » sur toutes les pages ---
+  const totalPages = doc.internal.getNumberOfPages();
+  for (let p = 1; p <= totalPages; p++) {
+    doc.setPage(p);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(...COLORS.grey);
+    doc.text(`Page ${p} / ${totalPages}`, pageWidth / 2, pageHeight - 8, { align: 'center' });
+  }
 
   return doc;
 };

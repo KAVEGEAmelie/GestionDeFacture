@@ -1,19 +1,36 @@
-import React, { useState, useEffect } from 'react';
-import { Plus, Eye, Trash2, FileText, DollarSign, Printer, Download, PackagePlus, Search, Edit2 } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { Plus, Eye, Trash2, FileText, DollarSign, Printer, Download, PackagePlus, Edit2, X, Truck, Stamp, Percent, FolderPlus, Copy, AlignLeft } from 'lucide-react';
 import Modal from '../components/modals/Modal';
+import FilterBar from '../components/Filters/FilterBar';
+import PeriodFilter from '../components/Filters/PeriodFilter';
+import { inDateRange, inNumberRange, today } from '../utils/dateFilters';
 import { generateProformaPDF } from '../utils/pdfGenerator';
 import { useToast } from '../components/Toast/ToastProvider';
 import { useConfirm } from '../components/ConfirmDialog/ConfirmProvider';
 import { getErrorMessage } from '../utils/errors';
+import { matchesWordPrefix } from '../utils/search';
+import useBulkSelection, { bulkDelete } from '../hooks/useBulkSelection';
+import useObjetSuggestions from '../hooks/useObjetSuggestions';
+import SearchableSelect from '../components/Inputs/SearchableSelect';
 import './Clients.css';
 import './Proformas.css';
+
+const UNIT_PRESETS = ['Unité', 'Pièce', 'Lot', 'Gros', 'Kilogramme', 'Mètre', 'Litre', 'Heure', 'Jour'];
 
 const Proformas = () => {
   const toast = useToast();
   const confirm = useConfirm();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [proformas, setProformas] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [statutFilter, setStatutFilter] = useState('tous');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [montantMin, setMontantMin] = useState('');
+  const [montantMax, setMontantMax] = useState('');
+  const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
   const [clients, setClients] = useState([]);
   const [produits, setProduits] = useState([]);
   const [parametres, setParametres] = useState({});
@@ -22,25 +39,96 @@ const Proformas = () => {
   const [selectedProforma, setSelectedProforma] = useState(null);
   const [editingProforma, setEditingProforma] = useState(null);
   const [addProductModalOpen, setAddProductModalOpen] = useState(false);
+  const [showLigneForm, setShowLigneForm] = useState(false);
+  const [showLigneDesc, setShowLigneDesc] = useState(false);
+  // Éditeur de description d'une ligne du tableau : { index, value }
+  const [descEditor, setDescEditor] = useState(null);
+  const [ligneFormData, setLigneFormData] = useState({
+    produit_id: '',
+    produit_search: '',
+    designation: '',
+    description: '',
+    unite: 'Unité',
+    quantite: 1,
+    prix_unitaire: '',
+    montant: 0
+  });
   const [newProduct, setNewProduct] = useState({
     designation: '',
     prix_unitaire: '',
     unite: 'Unité',
     description: ''
   });
+
+  const objetsExistants = useMemo(() => proformas.map((p) => p.objet), [proformas]);
+  const [objetSuggestions, rememberObjet] = useObjetSuggestions(objetsExistants);
   
   const [formData, setFormData] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: today(),
     client_id: '',
-    objet: 'Consommables informatiques',
+    objet: '',
     prestations: 0,
     remise: 0,
+    avec_cachet: false,
+    tva_applicable: true,
     lignes: []
   });
+
+  const sortedProduits = useMemo(() => {
+    return [...produits].sort((a, b) =>
+      String(a.designation || '').localeCompare(String(b.designation || ''), 'fr', { sensitivity: 'base' })
+    );
+  }, [produits]);
+
+  const sortedClients = useMemo(() => {
+    return [...clients].sort((a, b) =>
+      String(a.nom || '').localeCompare(String(b.nom || ''), 'fr', { sensitivity: 'base' })
+    );
+  }, [clients]);
+
+  const uniteSuggestions = useMemo(() => {
+    return Array.from(
+      new Set([
+        ...UNIT_PRESETS,
+        ...produits.map((p) => String(p.unite || '').trim()).filter(Boolean),
+      ])
+    ).sort((a, b) => a.localeCompare(b, 'fr', { sensitivity: 'base' }));
+  }, [produits]);
 
   useEffect(() => {
     loadData();
   }, []);
+
+  // Pré-remplissage depuis la page Bordereaux (fusion de bordereaux en proforma)
+  useEffect(() => {
+    const prefill = location.state?.prefill;
+    if (!prefill) return;
+    // Nettoyer l'état de navigation pour éviter une réouverture au refresh
+    navigate(location.pathname, { replace: true, state: null });
+
+    setEditingProforma(null);
+    setFormData({
+      date: today(),
+      client_id: prefill.client_id || '',
+      objet: prefill.objet || '',
+      prestations: 0,
+      remise: 0,
+      avec_cachet: false,
+      tva_applicable: true,
+      lignes: (prefill.lignes || []).map((l) => ({
+        produit_id: '',
+        produit_search: l.designation || '',
+        designation: l.designation || '',
+        description: '',
+        unite: l.unite || 'Unité',
+        quantite: Number(l.quantite) || 0,
+        prix_unitaire: '',
+        montant: 0
+      }))
+    });
+    setIsModalOpen(true);
+    toast.success('Lignes des bordereaux importées — saisissez les prix unitaires puis enregistrez.');
+  }, [location.state]);
 
   const loadData = async () => {
     const [proformasData, clientsData, produitsData, parametresData] = await Promise.all([
@@ -55,17 +143,113 @@ const Proformas = () => {
     setParametres(parametresData);
   };
 
+  const resetLigneForm = () => {
+    setShowLigneDesc(false);
+    setLigneFormData({
+      produit_id: '',
+      produit_search: '',
+      designation: '',
+      description: '',
+      unite: 'Unité',
+      quantite: 1,
+      prix_unitaire: '',
+      montant: 0
+    });
+  };
+
+  const handleOpenLigneForm = (sectionIndex) => {
+    resetLigneForm();
+    const lastSection = formData.lignes.reduce((last, ligne, index) => (
+      ligne._type === 'section' ? index : last
+    ), -1);
+    setLigneFormData((prev) => ({
+      ...prev,
+      sectionIndex: Number.isInteger(sectionIndex) ? sectionIndex : lastSection,
+    }));
+    setShowLigneForm(true);
+  };
+
+  const handleCloseLigneForm = () => {
+    setShowLigneForm(false);
+    resetLigneForm();
+  };
+
+  const handleLigneFormChange = (field, value) => {
+    const updated = { ...ligneFormData, [field]: value };
+
+    if (field === 'produit_id' && value) {
+      const produit = produits.find(p => p.id === parseInt(value));
+      if (produit) {
+        updated.produit_search = produit.designation;
+        updated.designation = produit.designation;
+        updated.unite = produit.unite;
+        updated.prix_unitaire = produit.prix_unitaire || '';
+        if (produit.description) updated.description = produit.description;
+      }
+    }
+
+    if (field === 'produit_search') {
+      const searchValue = String(value || '').trim().toLowerCase();
+      const produit = sortedProduits.find((p) => String(p.designation || '').trim().toLowerCase() === searchValue);
+      if (produit) {
+        updated.produit_id = String(produit.id);
+        updated.produit_search = produit.designation;
+        updated.designation = produit.designation;
+        updated.unite = produit.unite;
+        updated.prix_unitaire = produit.prix_unitaire || '';
+        if (produit.description) updated.description = produit.description;
+      } else {
+        updated.produit_id = '';
+      }
+    }
+
+    const quantite = parseFloat(updated.quantite) || 0;
+    const prixUnitaire = parseFloat(updated.prix_unitaire) || 0;
+    updated.montant = quantite * prixUnitaire;
+
+    setLigneFormData(updated);
+  };
+
   const handleAddLigne = () => {
-    setFormData({
-      ...formData,
-      lignes: [...formData.lignes, {
-        produit_id: '',
-        designation: '',
-        unite: 'Unité',
-        quantite: 1,
-        prix_unitaire: 0,
-        montant: 0
-      }]
+    const quantite = parseFloat(ligneFormData.quantite) || 0;
+    const prixUnitaire = parseFloat(ligneFormData.prix_unitaire) || 0;
+    const montant = quantite * prixUnitaire;
+
+    setFormData((prev) => {
+      const sectionIndex = Number(ligneFormData.sectionIndex ?? -1);
+      const nextSection = prev.lignes.findIndex((ligne, index) => (
+        index > sectionIndex && ligne._type === 'section'
+      ));
+      const insertionIndex = nextSection === -1 ? prev.lignes.length : nextSection;
+      const lignes = [...prev.lignes];
+      lignes.splice(insertionIndex, 0, {
+        produit_id: ligneFormData.produit_id ? parseInt(ligneFormData.produit_id) : '',
+        produit_search: ligneFormData.produit_search || '',
+        designation: ligneFormData.designation,
+        description: ligneFormData.description || '',
+        unite: ligneFormData.unite,
+        quantite,
+        prix_unitaire: prixUnitaire,
+        montant
+      });
+      return { ...prev, lignes };
+    });
+    handleCloseLigneForm();
+  };
+
+  // Ajoute un séparateur de section (lot de travaux) dans la liste des lignes.
+  // Les lignes situées après un séparateur appartiennent à cette section.
+  const handleAddSection = () => {
+    setFormData((prev) => ({
+      ...prev,
+      lignes: [...prev.lignes, { _type: 'section', titre: '' }]
+    }));
+  };
+
+  const handleSectionTitleChange = (index, titre) => {
+    setFormData((prev) => {
+      const lignes = prev.lignes.map((l, i) => (i === index ? { ...l, titre } : l));
+      return { ...prev, lignes };
     });
   };
 
@@ -76,15 +260,31 @@ const Proformas = () => {
 
   const handleLigneChange = (index, field, value) => {
     const newLignes = [...formData.lignes];
-    newLignes[index][field] = value;
+    // Copie de la ligne : modifier l'objet existant altérerait l'état React.
+    newLignes[index] = { ...newLignes[index], [field]: value };
 
     // Si on sélectionne un produit, remplir automatiquement
     if (field === 'produit_id' && value) {
       const produit = produits.find(p => p.id === parseInt(value));
       if (produit) {
+        newLignes[index].produit_search = produit.designation;
         newLignes[index].designation = produit.designation;
         newLignes[index].unite = produit.unite;
         newLignes[index].prix_unitaire = produit.prix_unitaire;
+      }
+    }
+
+    if (field === 'produit_search') {
+      const searchValue = String(value || '').trim().toLowerCase();
+      const produit = sortedProduits.find((p) => String(p.designation || '').trim().toLowerCase() === searchValue);
+      if (produit) {
+        newLignes[index].produit_id = String(produit.id);
+        newLignes[index].produit_search = produit.designation;
+        newLignes[index].designation = produit.designation;
+        newLignes[index].unite = produit.unite;
+        newLignes[index].prix_unitaire = produit.prix_unitaire;
+      } else {
+        newLignes[index].produit_id = '';
       }
     }
 
@@ -96,20 +296,48 @@ const Proformas = () => {
     setFormData({ ...formData, lignes: newLignes });
   };
 
+  // Mêmes arrondis que le calcul du serveur (main.js, calculerDocument) :
+  // le franc CFA n'a pas de subdivision.
   const calculateTotals = () => {
-    const total_materiel_ht = formData.lignes.reduce((sum, ligne) => sum + (ligne.montant || 0), 0);
-    const prestations = parseFloat(formData.prestations) || 0;
-    const remise = parseFloat(formData.remise) || 0;
+    const total_materiel_ht = formData.lignes.reduce(
+      (sum, ligne) => (ligne._type === 'section' ? sum : sum + Math.round(ligne.montant || 0)),
+      0
+    );
+    const prestations = Math.round(parseFloat(formData.prestations) || 0);
+    const remise = Math.round(parseFloat(formData.remise) || 0);
     const total_ht = total_materiel_ht + prestations - remise;
-    const tva = total_ht * 0.18;
+    const tvaApplicable = formData.tva_applicable !== false;
+    const tauxParametre = parseFloat(parametres.tva_taux);
+    const tauxTVA = Number.isFinite(tauxParametre) && tauxParametre >= 0 ? tauxParametre : 18;
+    const tva = tvaApplicable ? Math.round(total_ht * (tauxTVA / 100)) : 0;
     const total_ttc = total_ht + tva;
-    return { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc };
+    return { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, tvaApplicable, tauxTVA };
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (!formData.client_id) {
+      toast.error('Veuillez sélectionner un client valide dans la liste.');
+      return;
+    }
+    if (!String(formData.objet || '').trim()) {
+      toast.error("Veuillez renseigner l'objet.");
+      return;
+    }
     
-    if (formData.lignes.length === 0) {
+    // Aplatir : les séparateurs de section attribuent leur titre aux lignes suivantes
+    let currentSection = '';
+    const lignesAplaties = [];
+    formData.lignes.forEach((l) => {
+      if (l._type === 'section') {
+        currentSection = (l.titre || '').trim();
+        return;
+      }
+      lignesAplaties.push({ ...l, section_titre: currentSection });
+    });
+
+    if (lignesAplaties.length === 0) {
       toast.error('Veuillez ajouter au moins une ligne.');
       return;
     }
@@ -126,17 +354,22 @@ const Proformas = () => {
       total_ht,
       tva,
       total_ttc,
-      lignes: formData.lignes.map(l => ({
-        produit_id: parseInt(l.produit_id),
+      avec_cachet: formData.avec_cachet,
+      tva_applicable: formData.tva_applicable,
+      lignes: lignesAplaties.map(l => ({
+        produit_id: l.produit_id ? parseInt(l.produit_id) : null,
         designation: l.designation,
+        description: l.description || '',
         unite: l.unite,
         quantite: parseFloat(l.quantite),
         prix_unitaire: parseFloat(l.prix_unitaire),
-        montant: l.montant
+        montant: l.montant,
+        section_titre: l.section_titre
       }))
     };
 
     try {
+      let proformaResult;
       if (editingProforma) {
         await window.electronAPI.proformas.update(editingProforma.id, data);
         toast.success('Proforma modifiée avec succès !');
@@ -144,10 +377,49 @@ const Proformas = () => {
         await window.electronAPI.proformas.create(data);
         toast.success('Proforma créée avec succès !');
       }
+      rememberObjet(formData.objet);
+
       loadData();
       closeModal();
     } catch (error) {
       toast.error(getErrorMessage(error, 'Erreur lors de l\'enregistrement de la proforma.'));
+    }
+  };
+
+  const handleCreateBordereau = async (proforma) => {
+    const dejaFacturee = proforma.statut === 'facturee';
+    const createBordereau = await confirm({
+      title: 'Créer un bordereau',
+      message: dejaFacturee
+        ? 'Voulez-vous créer un nouveau bordereau à partir de cette proforma ? (Elle est déjà facturée — vous pouvez créer autant de bordereaux que nécessaire.)'
+        : 'Voulez-vous créer un bordereau à partir de cette proforma ? Vous pouvez également créer une facture en même temps.',
+      confirmText: 'Créer le bordereau',
+      danger: false,
+    });
+    if (!createBordereau) return;
+
+    // Si la proforma est déjà facturée, on ne propose pas de recréer une facture
+    const createInvoice = dejaFacturee
+      ? false
+      : await confirm({
+          title: 'Créer la facture maintenant ?',
+          message: 'Voulez-vous créer une facture en même temps que le bordereau ?',
+          confirmText: 'Créer la facture',
+          danger: false,
+        });
+
+    try {
+      const res = await window.electronAPI.bordereaux.createFromProforma(proforma.id, createInvoice);
+      if (res.bordereauNumero) {
+        toast.success(`Bordereau ${res.bordereauNumero} créé avec succès.`);
+      }
+      if (res.factureNumero) {
+        toast.success(`Facture ${res.factureNumero} créée avec succès.`);
+      }
+      loadData();
+    } catch (error) {
+      console.error('Erreur bordereau:', error);
+      toast.error(getErrorMessage(error, 'Erreur lors de la création du bordereau.'));
     }
   };
 
@@ -164,22 +436,81 @@ const Proformas = () => {
     }
     const full = await window.electronAPI.proformas.getById(proforma.id);
     setEditingProforma(full);
+    // Reconstruire les séparateurs de section à partir des lignes
+    const lignesForm = [];
+    let sectionCourante = '';
+    (full.lignes || []).forEach((l) => {
+      const titre = l.section_titre || '';
+      if (titre !== sectionCourante) {
+        sectionCourante = titre;
+        if (titre) lignesForm.push({ _type: 'section', titre });
+      }
+      lignesForm.push({
+        produit_id: l.produit_id != null ? String(l.produit_id) : '',
+        produit_search: (() => {
+          const produit = produits.find((p) => p.id === l.produit_id);
+          return produit ? produit.designation : (l.designation || '');
+        })(),
+        designation: l.designation,
+        description: l.description || '',
+        unite: l.unite,
+        quantite: l.quantite,
+        prix_unitaire: l.prix_unitaire,
+        montant: l.montant
+      });
+    });
     setFormData({
       date: full.date,
       client_id: String(full.client_id),
       objet: full.objet || '',
       prestations: full.prestations || 0,
       remise: full.remise || 0,
-      lignes: (full.lignes || []).map(l => ({
-        produit_id: String(l.produit_id),
+      avec_cachet: full.avec_cachet === 1,
+      tva_applicable: full.tva_applicable !== 0,
+      lignes: lignesForm
+    });
+    setIsModalOpen(true);
+  };
+
+  // Ouvre le formulaire de création pré-rempli avec les données d'une proforma existante.
+  // Un nouveau numéro sera généré à l'enregistrement.
+  const handleDuplicate = async (proforma) => {
+    const full = await window.electronAPI.proformas.getById(proforma.id);
+    const lignesForm = [];
+    let sectionCourante = '';
+    (full.lignes || []).forEach((l) => {
+      const titre = l.section_titre || '';
+      if (titre !== sectionCourante) {
+        sectionCourante = titre;
+        if (titre) lignesForm.push({ _type: 'section', titre });
+      }
+      lignesForm.push({
+        produit_id: l.produit_id != null ? String(l.produit_id) : '',
+        produit_search: (() => {
+          const produit = produits.find((p) => p.id === l.produit_id);
+          return produit ? produit.designation : (l.designation || '');
+        })(),
         designation: l.designation,
+        description: l.description || '',
         unite: l.unite,
         quantite: l.quantite,
         prix_unitaire: l.prix_unitaire,
         montant: l.montant
-      }))
+      });
+    });
+    setEditingProforma(null);
+    setFormData({
+      date: today(),
+      client_id: String(full.client_id),
+      objet: full.objet || '',
+      prestations: full.prestations || 0,
+      remise: full.remise || 0,
+      avec_cachet: full.avec_cachet === 1,
+      tva_applicable: full.tva_applicable !== 0,
+      lignes: lignesForm
     });
     setIsModalOpen(true);
+    toast.info(`Duplication de ${full.numero} — modifiez ce que vous voulez puis enregistrez.`);
   };
 
   const handleDelete = async (id) => {
@@ -204,7 +535,7 @@ const Proformas = () => {
     try {
       await window.electronAPI.produits.create({
         ...newProduct,
-        prix_unitaire: parseFloat(newProduct.prix_unitaire)
+        prix_unitaire: parseFloat(newProduct.prix_unitaire) || 0
       });
       await loadData();
       toast.success('Produit ajouté avec succès.');
@@ -223,25 +554,39 @@ const Proformas = () => {
 
   const handlePrint = async (proforma) => {
     const fullProforma = await window.electronAPI.proformas.getById(proforma.id);
-    const doc = await generateProformaPDF(fullProforma, parametres);
+    if (!fullProforma) {
+      toast.error('Proforma introuvable. La liste va être actualisée.');
+      loadData();
+      return;
+    }
+    const withCachet = fullProforma.avec_cachet === 1;
+    const doc = await generateProformaPDF(fullProforma, parametres, { withCachet });
     doc.autoPrint();
     window.open(doc.output('bloburl'), '_blank');
   };
 
   const handleExport = async (proforma) => {
     const fullProforma = await window.electronAPI.proformas.getById(proforma.id);
-    const doc = await generateProformaPDF(fullProforma, parametres);
+    if (!fullProforma) {
+      toast.error('Proforma introuvable. La liste va être actualisée.');
+      loadData();
+      return;
+    }
+    const withCachet = fullProforma.avec_cachet === 1;
+    const doc = await generateProformaPDF(fullProforma, parametres, { withCachet });
     doc.save(`Proforma_${fullProforma.numero.replace(/\//g, '-')}.pdf`);
   };
 
   const openModal = () => {
     setEditingProforma(null);
     setFormData({
-      date: new Date().toISOString().split('T')[0],
+      date: today(),
       client_id: '',
-      objet: 'Consommables informatiques',
+      objet: '',
       prestations: 0,
       remise: 0,
+      avec_cachet: false,
+      tva_applicable: true,
       lignes: []
     });
     setIsModalOpen(true);
@@ -250,6 +595,7 @@ const Proformas = () => {
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingProforma(null);
+    setDescEditor(null);
   };
 
   const formatPrice = (price) => {
@@ -269,18 +615,73 @@ const Proformas = () => {
     return <span className={`badge ${badge.class}`}>{badge.label}</span>;
   };
 
-  const { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc } = calculateTotals();
+  const { total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, tvaApplicable, tauxTVA } = calculateTotals();
 
   const filteredProformas = proformas.filter((p) => {
     const term = searchTerm.toLowerCase();
     const matchSearch =
       !term ||
-      (p.numero && p.numero.toLowerCase().includes(term)) ||
-      (p.client_nom && p.client_nom.toLowerCase().includes(term)) ||
-      (p.objet && p.objet.toLowerCase().includes(term));
+      matchesWordPrefix(p.numero, term) ||
+      matchesWordPrefix(p.client_nom, term) ||
+      matchesWordPrefix(p.objet, term);
     const matchStatut = statutFilter === 'tous' || p.statut === statutFilter;
-    return matchSearch && matchStatut;
+    const matchDate = inDateRange(p.date, dateFrom, dateTo);
+    const matchMontant = inNumberRange(p.total_ttc, montantMin, montantMax);
+    return matchSearch && matchStatut && matchDate && matchMontant;
   });
+
+  const sortedFilteredProformas = useMemo(() => {
+    const items = [...filteredProformas];
+    const { key, direction } = sortConfig;
+    const factor = direction === 'asc' ? 1 : -1;
+    return items.sort((a, b) => {
+      if (key === 'date') {
+        return ((new Date(a.date).getTime() || 0) - (new Date(b.date).getTime() || 0)) * factor;
+      }
+      if (key === 'total_ttc') {
+        return ((Number(a.total_ttc) || 0) - (Number(b.total_ttc) || 0)) * factor;
+      }
+      return String(a[key] || '').localeCompare(String(b[key] || ''), 'fr', { sensitivity: 'base' }) * factor;
+    });
+  }, [filteredProformas, sortConfig]);
+
+  const toggleSort = (key) => {
+    setSortConfig((prev) =>
+      prev.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: key === 'date' ? 'desc' : 'asc' }
+    );
+  };
+
+  const sortMark = (key) => {
+    if (sortConfig.key !== key) return ' ↕';
+    return sortConfig.direction === 'asc' ? ' ↑' : ' ↓';
+  };
+
+  const activeCount =
+    (statutFilter !== 'tous' ? 1 : 0) +
+    (dateFrom || dateTo ? 1 : 0) +
+    (montantMin !== '' || montantMax !== '' ? 1 : 0);
+
+  const resetFilters = () => {
+    setStatutFilter('tous');
+    setDateFrom('');
+    setDateTo('');
+    setMontantMin('');
+    setMontantMax('');
+  };
+
+  const selection = useBulkSelection(sortedFilteredProformas);
+  const handleBulkDelete = () =>
+    bulkDelete({
+      ids: selection.selectedIds,
+      deleteFn: (id) => window.electronAPI.proformas.delete(id),
+      confirm,
+      toast,
+      reload: loadData,
+      clear: selection.clear,
+      labels: { confirmTitle: 'Supprimer les proformas', singular: 'proforma', plural: 'proformas' },
+    });
 
   return (
     <div className="page fade-in">
@@ -289,55 +690,113 @@ const Proformas = () => {
           <h1>Factures Proforma</h1>
           <p className="subtitle">Créez et gérez vos factures proforma</p>
         </div>
-        <button className="btn btn-primary" onClick={openModal}>
-          <Plus size={20} />
-          Nouvelle proforma
-        </button>
+        <div className="header-actions">
+          {selection.count > 0 && (
+            <button className="btn btn-danger bulk-delete-btn" onClick={handleBulkDelete}>
+              <Trash2 size={18} />
+              Supprimer la sélection ({selection.count})
+            </button>
+          )}
+          <button className="btn btn-primary" onClick={openModal}>
+            <Plus size={20} />
+            Nouvelle proforma
+          </button>
+        </div>
       </div>
 
       <div className="content-card">
-        <div className="search-bar">
-          <Search size={20} />
-          <input
-            type="text"
-            placeholder="Rechercher par numéro, client ou objet..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+        <FilterBar
+          searchValue={searchTerm}
+          onSearchChange={setSearchTerm}
+          searchPlaceholder="Rechercher par numéro, client ou objet..."
+          activeCount={activeCount}
+          onReset={resetFilters}
+        >
+          <div className="filter-group">
+            <label>Statut</label>
+            <select
+              className="filter-select"
+              value={statutFilter}
+              onChange={(e) => setStatutFilter(e.target.value)}
+            >
+              <option value="tous">Tous les statuts</option>
+              <option value="en_attente">En attente</option>
+              <option value="facturee">Facturée</option>
+            </select>
+          </div>
+
+          <div className="filter-group">
+            <label>Montant TTC (FCFA)</label>
+            <div className="filter-range">
+              <input
+                type="number"
+                min="0"
+                placeholder="Min"
+                value={montantMin}
+                onChange={(e) => setMontantMin(e.target.value)}
+              />
+              <span>—</span>
+              <input
+                type="number"
+                min="0"
+                placeholder="Max"
+                value={montantMax}
+                onChange={(e) => setMontantMax(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <PeriodFilter
+            label="Date de la proforma"
+            from={dateFrom}
+            to={dateTo}
+            onChange={(f, t) => {
+              setDateFrom(f);
+              setDateTo(t);
+            }}
           />
-          <select
-            className="filter-select"
-            value={statutFilter}
-            onChange={(e) => setStatutFilter(e.target.value)}
-          >
-            <option value="tous">Tous les statuts</option>
-            <option value="en_attente">En attente</option>
-            <option value="facturee">Facturée</option>
-          </select>
-        </div>
+        </FilterBar>
 
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>N°</th>
-                <th>Date</th>
-                <th>Client</th>
-                <th>Objet</th>
-                <th>Montant TTC</th>
-                <th>Statut</th>
+                <th className="select-col">
+                  <input
+                    type="checkbox"
+                    checked={selection.allSelected}
+                    onChange={selection.toggleAll}
+                    title="Tout sélectionner"
+                  />
+                </th>
+                <th onClick={() => toggleSort('numero')} style={{ cursor: 'pointer' }}>N°{sortMark('numero')}</th>
+                <th onClick={() => toggleSort('date')} style={{ cursor: 'pointer' }}>Date{sortMark('date')}</th>
+                <th onClick={() => toggleSort('client_nom')} style={{ cursor: 'pointer' }}>Client{sortMark('client_nom')}</th>
+                <th onClick={() => toggleSort('objet')} style={{ cursor: 'pointer' }}>Objet{sortMark('objet')}</th>
+                <th onClick={() => toggleSort('total_ttc')} style={{ cursor: 'pointer' }}>Montant TTC{sortMark('total_ttc')}</th>
+                <th onClick={() => toggleSort('statut')} style={{ cursor: 'pointer' }}>Statut{sortMark('statut')}</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredProformas.length === 0 ? (
+              {sortedFilteredProformas.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="empty-state">
+                  <td colSpan="8" className="empty-state">
                     {searchTerm || statutFilter !== 'tous' ? 'Aucune proforma trouvée' : 'Aucune proforma enregistrée'}
                   </td>
                 </tr>
               ) : (
-                filteredProformas.map((proforma) => (
+                sortedFilteredProformas.map((proforma) => (
                   <tr key={proforma.id}>
+                    <td className="select-col">
+                      <input
+                        type="checkbox"
+                        checked={selection.isSelected(proforma.id)}
+                        onChange={() => selection.toggle(proforma.id)}
+                        disabled={proforma.statut === 'facturee'}
+                        title={proforma.statut === 'facturee' ? 'Proforma déjà convertie' : 'Sélectionner'}
+                      />
+                    </td>
                     <td className="font-semibold">{proforma.numero}</td>
                     <td>{formatDate(proforma.date)}</td>
                     <td>{proforma.client_nom}</td>
@@ -363,11 +822,26 @@ const Proformas = () => {
                           <Edit2 size={16} />
                         </button>
                         <button
+                          className="btn-icon"
+                          style={{ color: '#8b5cf6' }}
+                          onClick={() => handleDuplicate(proforma)}
+                          title="Dupliquer (nouvelle proforma pré-remplie)"
+                        >
+                          <Copy size={16} />
+                        </button>
+                        <button
                           className="btn-icon btn-icon-success"
                           onClick={() => handlePrint(proforma)}
                           title="Imprimer"
                         >
                           <Printer size={16} />
+                        </button>
+                        <button
+                          className="btn-icon btn-icon-info"
+                          onClick={() => handleCreateBordereau(proforma)}
+                          title="Créer un bordereau"
+                        >
+                          <Truck size={16} />
                         </button>
                         <button
                           className="btn-icon btn-icon-info"
@@ -415,32 +889,39 @@ const Proformas = () => {
 
             <div className="form-group">
               <label>Client *</label>
-              <select
+              <SearchableSelect
+                options={sortedClients.map((client) => ({ value: String(client.id), label: client.nom }))}
                 value={formData.client_id}
-                onChange={(e) => setFormData({ ...formData, client_id: e.target.value })}
-                required
-              >
-                <option value="">Sélectionner un client</option>
-                {clients.map(client => (
-                  <option key={client.id} value={client.id}>{client.nom}</option>
-                ))}
-              </select>
+                onChange={(clientId) => setFormData((prev) => {
+                  // Reprend le réglage « TVA applicable » de la fiche client
+                  // (la case reste modifiable pour cette proforma).
+                  const client = clients.find((c) => String(c.id) === String(clientId));
+                  return client && String(clientId) !== String(prev.client_id)
+                    ? { ...prev, client_id: clientId, tva_applicable: client.tva_applicable !== 0 }
+                    : { ...prev, client_id: clientId };
+                })}
+                placeholder="Rechercher un client"
+                noOptionsText="Aucun client correspondant"
+              />
             </div>
           </div>
 
           <div className="form-group">
             <label>Objet *</label>
-            <input
-              type="text"
+            <SearchableSelect
+              options={objetSuggestions.map((o) => ({ value: o, label: o }))}
               value={formData.objet}
-              onChange={(e) => setFormData({ ...formData, objet: e.target.value })}
-              required
+              onChange={(objet) => setFormData((prev) => ({ ...prev, objet }))}
+              placeholder="Ex: Location de consommables informatiques"
+              noOptionsText="Aucun objet mémorisé — saisissez librement"
+              allowCustomValue
+              commitOnBlur
             />
           </div>
 
           <div className="form-row">
             <div className="form-group">
-              <label>Prestations (FCFA)</label>
+              <label>Main d'œuvre (FCFA)</label>
               <input
                 type="number"
                 value={formData.prestations}
@@ -464,11 +945,66 @@ const Proformas = () => {
             </div>
           </div>
 
+          <div className="options-grid">
+            {/* Option cachet & signature */}
+            <label className={`option-card ${formData.avec_cachet ? 'is-active' : ''} ${!parametres.signature_image ? 'is-disabled' : ''}`}>
+              <span className="option-card__icon">
+                <Stamp size={22} />
+              </span>
+              <span className="option-card__body">
+                <span className="option-card__title">Cachet &amp; signature</span>
+                <span className={`option-card__desc ${!parametres.signature_image ? 'is-warning' : ''}`}>
+                  {parametres.signature_image
+                    ? 'Appliquer le cachet et la signature sur cette proforma.'
+                    : 'Importez d’abord une image dans Paramètres pour activer cette option.'}
+                </span>
+              </span>
+              <span className="switch">
+                <input
+                  type="checkbox"
+                  checked={formData.avec_cachet}
+                  disabled={!parametres.signature_image}
+                  onChange={(e) => setFormData({ ...formData, avec_cachet: e.target.checked })}
+                />
+                <span className="switch__track"><span className="switch__thumb" /></span>
+              </span>
+            </label>
+
+            {/* Option TVA */}
+            <label className={`option-card ${formData.tva_applicable ? 'is-active' : ''}`}>
+              <span className="option-card__icon">
+                <Percent size={22} />
+              </span>
+              <span className="option-card__body">
+                <span className="option-card__title">
+                  TVA ({tauxTVA}%)
+                </span>
+                <span className="option-card__desc">
+                  {formData.tva_applicable
+                    ? 'La TVA est appliquée à cette proforma et à la facture.'
+                    : 'Proforma et facture émises sans TVA.'}
+                </span>
+              </span>
+              <span className="switch">
+                <input
+                  type="checkbox"
+                  checked={formData.tva_applicable}
+                  onChange={(e) => setFormData({ ...formData, tva_applicable: e.target.checked })}
+                />
+                <span className="switch__track"><span className="switch__thumb" /></span>
+              </span>
+            </label>
+          </div>
+
           <div className="lignes-section">
             <div className="lignes-header">
               <h3>Lignes de la proforma</h3>
               <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={handleAddLigne}>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={handleAddSection} title="Regrouper les lignes suivantes sous un titre avec sous-total">
+                  <FolderPlus size={16} />
+                  Ajouter une section
+                </button>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={handleOpenLigneForm}>
                   <Plus size={16} />
                   Ajouter une ligne
                 </button>
@@ -479,40 +1015,88 @@ const Proformas = () => {
               </div>
             </div>
 
-            {formData.lignes.map((ligne, index) => (
-              <div key={index} className="ligne-item">
-                <div className="ligne-grid">
+            {showLigneForm && (
+              <div className="ligne-form-panel">
+                <div className="ligne-form-header">
+                  <div>
+                    <h4>Ajouter une ligne</h4>
+                    <p>Formulaire flottant pour entrer les détails sans descendre.</p>
+                  </div>
+                  <button type="button" className="btn-close-panel" onClick={handleCloseLigneForm}>
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <div className="ligne-form-grid">
+                  {formData.lignes.some((ligne) => ligne._type === 'section') && (
+                    <div className="form-group">
+                      <label>Section</label>
+                      <select
+                        value={ligneFormData.sectionIndex ?? -1}
+                        onChange={(event) => handleLigneFormChange('sectionIndex', Number(event.target.value))}
+                      >
+                        <option value={-1}>Sans section</option>
+                        {formData.lignes.map((ligne, index) => ligne._type === 'section' && (
+                          <option key={index} value={index}>
+                            {ligne.titre || 'Section sans titre'}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <div className="form-group">
-                    <label>Produit</label>
-                    <select
-                      value={ligne.produit_id}
-                      onChange={(e) => handleLigneChange(index, 'produit_id', e.target.value)}
-                      required
-                    >
-                      <option value="">Sélectionner</option>
-                      {produits.map(produit => (
-                        <option key={produit.id} value={produit.id}>{produit.designation}</option>
-                      ))}
-                    </select>
+                    <label>Produit (recherche)</label>
+                    <SearchableSelect
+                      options={sortedProduits.map((produit) => ({ value: String(produit.id), label: produit.designation }))}
+                      value={ligneFormData.produit_id}
+                      onChange={(produitId) => handleLigneFormChange('produit_id', produitId)}
+                      placeholder="Rechercher un produit"
+                      noOptionsText="Aucun produit correspondant"
+                    />
                   </div>
 
                   <div className="form-group">
                     <label>Désignation</label>
                     <input
                       type="text"
-                      value={ligne.designation}
-                      onChange={(e) => handleLigneChange(index, 'designation', e.target.value)}
-                      required
+                      value={ligneFormData.designation}
+                      onChange={(e) => handleLigneFormChange('designation', e.target.value)}
                     />
+                  </div>
+
+                  <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                    {!(showLigneDesc || String(ligneFormData.description || '').trim()) ? (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        style={{ width: 'fit-content' }}
+                        onClick={() => setShowLigneDesc(true)}
+                      >
+                        <AlignLeft size={14} />
+                        Ajouter une description détaillée
+                      </button>
+                    ) : (
+                      <>
+                        <label>Description détaillée (optionnel)</label>
+                        <textarea
+                          value={ligneFormData.description}
+                          onChange={(e) => handleLigneFormChange('description', e.target.value)}
+                          rows={4}
+                          autoFocus
+                          placeholder={"Caractéristiques, contenu de la prestation… Chaque retour à la ligne sera respecté sur le PDF.\nEx :\nHPE ProLiant ML350 Gen11\nIntel Xeon-Gold 5515+ 3.2GHz 8-core\nDéploiement et migration des anciennes données"}
+                        />
+                      </>
+                    )}
                   </div>
 
                   <div className="form-group">
                     <label>Unité</label>
                     <input
                       type="text"
-                      value={ligne.unite}
-                      onChange={(e) => handleLigneChange(index, 'unite', e.target.value)}
-                      required
+                      value={ligneFormData.unite}
+                      onChange={(e) => handleLigneFormChange('unite', e.target.value)}
+                      list="proformas-unites-list"
+                      placeholder="Ex: Carton, Pack..."
                     />
                   </div>
 
@@ -520,11 +1104,10 @@ const Proformas = () => {
                     <label>Quantité</label>
                     <input
                       type="number"
-                      value={ligne.quantite}
-                      onChange={(e) => handleLigneChange(index, 'quantite', e.target.value)}
+                      value={ligneFormData.quantite}
+                      onChange={(e) => handleLigneFormChange('quantite', e.target.value)}
                       min="0"
                       step="1"
-                      required
                     />
                   </div>
 
@@ -532,35 +1115,196 @@ const Proformas = () => {
                     <label>Prix unitaire</label>
                     <input
                       type="number"
-                      value={ligne.prix_unitaire}
-                      onChange={(e) => handleLigneChange(index, 'prix_unitaire', e.target.value)}
+                      value={ligneFormData.prix_unitaire}
+                      onChange={(e) => handleLigneFormChange('prix_unitaire', e.target.value)}
                       min="0"
                       step="0.01"
-                      required
+                      placeholder="Optionnel"
                     />
                   </div>
 
                   <div className="form-group">
-                    <label>Montant</label>
+                    <label>Montant estimé</label>
                     <input
                       type="text"
-                      value={formatPrice(ligne.montant)}
+                      value={formatPrice(ligneFormData.montant)}
                       readOnly
                       className="readonly"
                     />
                   </div>
 
-                  <button
-                    type="button"
-                    className="btn-remove-ligne"
-                    onClick={() => handleRemoveLigne(index)}
-                    title="Supprimer"
-                  >
-                    <Trash2 size={18} />
-                  </button>
+                  <div className="ligne-form-actions">
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={handleCloseLigneForm}>
+                      Annuler
+                    </button>
+                    <button type="button" className="btn btn-primary btn-sm" onClick={handleAddLigne}>
+                      Ajouter
+                    </button>
+                  </div>
                 </div>
               </div>
-            ))}
+            )}
+
+            {formData.lignes.length === 0 ? (
+              <div className="ligne-empty-state">
+                Aucune ligne ajoutée pour le moment.
+              </div>
+            ) : (
+              <div className="ligne-table-wrapper">
+                <table className="data-table ligne-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: '16%' }}>Produit</th>
+                      <th>Désignation</th>
+                      <th style={{ width: 105 }}>Unité</th>
+                      <th style={{ width: 80 }}>Quantité</th>
+                      <th style={{ width: 110 }}>Prix unitaire</th>
+                      <th style={{ width: 110 }}>Montant</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {formData.lignes.map((ligne, index) => {
+                      if (ligne._type === 'section') {
+                        // Sous-total : somme des lignes jusqu'au prochain séparateur
+                        let sousTotal = 0;
+                        for (let i = index + 1; i < formData.lignes.length; i++) {
+                          if (formData.lignes[i]._type === 'section') break;
+                          sousTotal += formData.lignes[i].montant || 0;
+                        }
+                        return (
+                          <tr key={index} className="section-row">
+                            <td colSpan="5" style={{ background: '#eef2ff', padding: '0.4rem 0.6rem' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <FolderPlus size={16} style={{ color: '#1e3a8a', flexShrink: 0 }} />
+                                <input
+                                  type="text"
+                                  value={ligne.titre}
+                                  onChange={(e) => handleSectionTitleChange(index, e.target.value)}
+                                  placeholder="Titre de la section (ex : Interconnexion du nouveau bâtiment…)"
+                                  style={{ fontWeight: 700, color: '#1e3a8a', background: 'transparent', border: 'none', borderBottom: '1px dashed #94a3b8', width: '100%' }}
+                                />
+                              </div>
+                            </td>
+                            <td style={{ background: '#eef2ff', textAlign: 'right', fontWeight: 700, color: '#1e3a8a' }}>
+                              {formatPrice(sousTotal)}
+                            </td>
+                            <td style={{ background: '#eef2ff' }}>
+                              <button
+                                type="button"
+                                className="btn-icon btn-icon-primary"
+                                onClick={() => handleOpenLigneForm(index)}
+                                title="Ajouter une ligne à cette section"
+                                aria-label="Ajouter une ligne à cette section"
+                              >
+                                <Plus size={18} />
+                              </button>
+                              <button
+                                type="button"
+                                className="btn-remove-ligne"
+                                onClick={() => handleRemoveLigne(index)}
+                                title="Supprimer la section (les lignes sont conservées)"
+                              >
+                                <Trash2 size={18} />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      }
+                      return (
+                      <tr key={index}>
+                        <td>
+                          <SearchableSelect
+                            options={sortedProduits.map((produit) => ({ value: String(produit.id), label: produit.designation }))}
+                            value={ligne.produit_id}
+                            onChange={(produitId) => handleLigneChange(index, 'produit_id', produitId)}
+                            placeholder="Rechercher un produit"
+                            noOptionsText="Aucun produit"
+                          />
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <input
+                              type="text"
+                              value={ligne.designation}
+                              onChange={(e) => handleLigneChange(index, 'designation', e.target.value)}
+                            />
+                            <button
+                              type="button"
+                              title={String(ligne.description || '').trim() ? 'Modifier la description détaillée' : 'Ajouter une description détaillée'}
+                              onClick={() => setDescEditor({ index, value: ligne.description || '' })}
+                              style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: String(ligne.description || '').trim() ? '#2563eb' : '#64748b', padding: 4, flexShrink: 0 }}
+                            >
+                              <Edit2 size={14} />
+                            </button>
+                          </div>
+                          {String(ligne.description || '').trim() ? (
+                            <div
+                              onClick={() => setDescEditor({ index, value: ligne.description || '' })}
+                              title="Cliquer pour modifier la description"
+                              style={{
+                                marginTop: 2, padding: '0 0.7rem', cursor: 'pointer',
+                                fontSize: '0.75rem', color: '#64748b', lineHeight: 1.4,
+                                display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                                overflow: 'hidden', whiteSpace: 'pre-line'
+                              }}
+                            >
+                              {ligne.description}
+                            </div>
+                          ) : null}
+                        </td>
+                        <td>
+                          <input
+                            type="text"
+                            value={ligne.unite}
+                            onChange={(e) => handleLigneChange(index, 'unite', e.target.value)}
+                            list="proformas-unites-list"
+                            placeholder="Unité"
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            value={ligne.quantite}
+                            onChange={(e) => handleLigneChange(index, 'quantite', e.target.value)}
+                            min="0"
+                            step="1"
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            value={ligne.prix_unitaire}
+                            onChange={(e) => handleLigneChange(index, 'prix_unitaire', e.target.value)}
+                            min="0"
+                            step="0.01"
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="text"
+                            value={formatPrice(ligne.montant)}
+                            readOnly
+                            className="readonly"
+                          />
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn-remove-ligne"
+                            onClick={() => handleRemoveLigne(index)}
+                            title="Supprimer"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </td>
+                      </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           <div className="totaux-section">
@@ -570,7 +1314,7 @@ const Proformas = () => {
                 <strong>{formatPrice(total_materiel_ht)} FCFA</strong>
               </div>
               <div className="totaux-item">
-                <span>Prestations :</span>
+                <span>Main d'œuvre :</span>
                 <strong>{formatPrice(prestations)} FCFA</strong>
               </div>
               <div className="totaux-item">
@@ -582,7 +1326,7 @@ const Proformas = () => {
                 <strong>{formatPrice(total_ht)} FCFA</strong>
               </div>
               <div className="totaux-item">
-                <span>TVA (18%) :</span>
+                <span>TVA ({tvaApplicable ? tauxTVA : 0}%) :</span>
                 <strong>{formatPrice(tva)} FCFA</strong>
               </div>
               <div className="totaux-item total-ttc">
@@ -636,7 +1380,14 @@ const Proformas = () => {
               <tbody>
                 {selectedProforma.lignes.map((ligne, index) => (
                   <tr key={index}>
-                    <td>{ligne.designation}</td>
+                    <td>
+                      {ligne.designation}
+                      {ligne.description ? (
+                        <div style={{ whiteSpace: 'pre-line', color: '#64748b', fontSize: '0.8rem', marginTop: 2 }}>
+                          {ligne.description}
+                        </div>
+                      ) : null}
+                    </td>
                     <td>{ligne.unite}</td>
                     <td>{ligne.quantite}</td>
                     <td>{formatPrice(ligne.prix_unitaire)}</td>
@@ -652,7 +1403,7 @@ const Proformas = () => {
                 <strong>{formatPrice(selectedProforma.total_ht)} FCFA</strong>
               </div>
               <div className="totaux-row">
-                <span>TVA (18%) :</span>
+                <span>TVA ({selectedProforma.total_ht ? Math.round((selectedProforma.tva / selectedProforma.total_ht) * 100) : 18}%) :</span>
                 <strong>{formatPrice(selectedProforma.tva)} FCFA</strong>
               </div>
               <div className="totaux-row total">
@@ -684,24 +1435,28 @@ const Proformas = () => {
 
           <div className="form-row">
             <div className="form-group">
-              <label>Prix unitaire *</label>
+              <label>Prix unitaire (FCFA)</label>
               <input
                 type="number"
                 value={newProduct.prix_unitaire}
                 onChange={(e) => setNewProduct({ ...newProduct, prix_unitaire: e.target.value })}
                 min="0"
                 step="0.01"
-                required
+                placeholder="Optionnel — à fixer selon le client"
               />
             </div>
 
             <div className="form-group">
-              <label>Unité *</label>
-              <input
-                type="text"
+              <label>Unité</label>
+              <SearchableSelect
+                options={uniteSuggestions.map((unite) => ({ value: unite, label: unite }))}
                 value={newProduct.unite}
-                onChange={(e) => setNewProduct({ ...newProduct, unite: e.target.value })}
-                required
+                onChange={(uniteValue, option) =>
+                  setNewProduct({ ...newProduct, unite: option?.label || uniteValue })
+                }
+                placeholder="Rechercher une unité"
+                noOptionsText="Aucune unité"
+                allowCustomValue
               />
             </div>
           </div>
@@ -725,6 +1480,62 @@ const Proformas = () => {
           </div>
         </form>
       </Modal>
+
+      <Modal
+        isOpen={!!descEditor}
+        onClose={() => setDescEditor(null)}
+        title="Description détaillée de la ligne"
+        size="medium"
+      >
+        {descEditor ? (
+          <div>
+            <p style={{ margin: '0 0 0.5rem', fontSize: '0.85rem', color: '#64748b' }}>
+              {formData.lignes[descEditor.index]?.designation || 'Ligne sans désignation'}
+            </p>
+            <textarea
+              value={descEditor.value}
+              onChange={(e) => setDescEditor((p) => ({ ...p, value: e.target.value }))}
+              placeholder={"Détails affichés sous la désignation sur le PDF.\nUne ligne par caractéristique, commencez par un tiret :\n-Processeur Intel Xeon 8 cœurs\n-32 Go de mémoire ECC"}
+              rows={14}
+              autoFocus
+              style={{ width: '100%', fontSize: '0.9rem', lineHeight: 1.6, resize: 'vertical', border: '1px solid #e5e7eb', borderRadius: 8, padding: '0.75rem 0.9rem' }}
+            />
+            <div className="form-actions">
+              <button type="button" className="btn btn-secondary" onClick={() => setDescEditor(null)}>
+                Annuler
+              </button>
+              {String(descEditor.value || '').trim() === '' && String(formData.lignes[descEditor.index]?.description || '').trim() !== '' ? (
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  onClick={() => {
+                    handleLigneChange(descEditor.index, 'description', '');
+                    setDescEditor(null);
+                  }}
+                >
+                  Supprimer la description
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  handleLigneChange(descEditor.index, 'description', descEditor.value);
+                  setDescEditor(null);
+                }}
+              >
+                Enregistrer
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      <datalist id="proformas-unites-list">
+        {uniteSuggestions.map((u) => (
+          <option key={u} value={u} />
+        ))}
+      </datalist>
     </div>
   );
 };

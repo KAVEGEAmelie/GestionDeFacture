@@ -1,7 +1,9 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const Database = require('better-sqlite3');
+const license = require('./license/license');
 
 // Désactive l'accélération matérielle (évite que la fenêtre reste invisible
 // sur certaines configurations GPU sous Linux)
@@ -10,11 +12,29 @@ app.disableHardwareAcceleration();
 let mainWindow;
 let db;
 
+// Une seule instance à la fois : deux processus écrivant dans la même base
+// (et sauvegardant chacun à la fermeture) risquent d'écraser des données.
+const instanceUnique = app.requestSingleInstanceLock();
+if (!instanceUnique) {
+  app.quit();
+}
+
 // Initialisation de la base de données
 function initDatabase() {
   const dbPath = path.join(app.getPath('userData'), 'facturation.db');
-  db = new Database(dbPath);
-  
+  const database = new Database(dbPath);
+  try {
+    migrateDatabase(database);
+  } catch (error) {
+    database.close();
+    throw error;
+  }
+  db = database;
+  console.log('Base de données initialisée:', dbPath);
+}
+
+// Utilisable sur une copie de sauvegarde, sans changer la connexion active.
+function migrateDatabase(db) {
   // Création des tables
   db.exec(`
     CREATE TABLE IF NOT EXISTS clients (
@@ -24,6 +44,7 @@ function initDatabase() {
       telephone TEXT,
       email TEXT,
       nif TEXT,
+      tva_applicable INTEGER DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -52,6 +73,8 @@ function initDatabase() {
       total_ttc REAL NOT NULL,
       statut TEXT DEFAULT 'en_attente',
       facture_id INTEGER,
+      avec_cachet INTEGER DEFAULT 0,
+      tva_applicable INTEGER DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (client_id) REFERENCES clients(id)
@@ -60,7 +83,7 @@ function initDatabase() {
     CREATE TABLE IF NOT EXISTS proforma_lignes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       proforma_id INTEGER NOT NULL,
-      produit_id INTEGER NOT NULL,
+      produit_id INTEGER,
       designation TEXT NOT NULL,
       unite TEXT NOT NULL,
       quantite REAL NOT NULL,
@@ -68,6 +91,46 @@ function initDatabase() {
       montant REAL NOT NULL,
       ordre INTEGER DEFAULT 0,
       FOREIGN KEY (proforma_id) REFERENCES proformas(id) ON DELETE CASCADE,
+      FOREIGN KEY (produit_id) REFERENCES produits(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS appels_offres (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      numero TEXT UNIQUE NOT NULL,
+      date DATE NOT NULL,
+      client_id INTEGER NOT NULL,
+      objet TEXT,
+      total_materiel_ht REAL DEFAULT 0,
+      prestations REAL DEFAULT 0,
+      remise REAL DEFAULT 0,
+      total_ht REAL NOT NULL,
+      tva REAL NOT NULL,
+      total_ttc REAL NOT NULL,
+      statut TEXT DEFAULT 'en_attente',
+      proforma_id INTEGER,
+      avec_cachet INTEGER DEFAULT 0,
+      tva_applicable INTEGER DEFAULT 1,
+      reference_externe TEXT,
+      autorite TEXT,
+      autorite_adresse TEXT,
+      validite_offre INTEGER DEFAULT 90,
+      delai_execution TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (client_id) REFERENCES clients(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS appel_offre_lignes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      appel_offre_id INTEGER NOT NULL,
+      produit_id INTEGER,
+      designation TEXT NOT NULL,
+      unite TEXT NOT NULL,
+      quantite REAL NOT NULL,
+      prix_unitaire REAL NOT NULL,
+      montant REAL NOT NULL,
+      ordre INTEGER DEFAULT 0,
+      FOREIGN KEY (appel_offre_id) REFERENCES appels_offres(id) ON DELETE CASCADE,
       FOREIGN KEY (produit_id) REFERENCES produits(id)
     );
 
@@ -94,7 +157,7 @@ function initDatabase() {
     CREATE TABLE IF NOT EXISTS facture_lignes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       facture_id INTEGER NOT NULL,
-      produit_id INTEGER NOT NULL,
+      produit_id INTEGER,
       designation TEXT NOT NULL,
       unite TEXT NOT NULL,
       quantite REAL NOT NULL,
@@ -130,7 +193,107 @@ function initDatabase() {
       cle TEXT PRIMARY KEY,
       valeur TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS securite (
+      cle TEXT PRIMARY KEY,
+      valeur TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS rapports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      numero TEXT UNIQUE NOT NULL,
+      date DATE NOT NULL,
+      titre TEXT NOT NULL,
+      client_id INTEGER REFERENCES clients(id),
+      client_nom TEXT,
+      lieu TEXT,
+      objet TEXT,
+      sections TEXT,
+      avec_cachet INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS attestations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      numero TEXT UNIQUE NOT NULL,
+      reference TEXT,
+      title TEXT,
+      date DATE,
+      lieu TEXT,
+      client_nom TEXT,
+      objet TEXT,
+      intro TEXT,
+      intro_align TEXT DEFAULT 'justify',
+      travaux TEXT,
+      travaux_align TEXT DEFAULT 'left',
+      travaux_list_mode TEXT DEFAULT 'bullets',
+      conformite TEXT,
+      conformite_align TEXT DEFAULT 'justify',
+      signataire_gauche TEXT,
+      signataire_droite TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS interventions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      numero TEXT UNIQUE NOT NULL,
+      date DATE,
+      intervenant TEXT,
+      heure_arrivee TEXT,
+      heure_depart TEXT,
+      client_nom TEXT,
+      client_adresse TEXT,
+      client_contact TEXT,
+      interlocuteur TEXT,
+      options_reseaux TEXT,
+      options_maintenance TEXT,
+      marque_modele TEXT,
+      num_serie TEXT,
+      systeme_exploitation TEXT,
+      vol_donnees TEXT,
+      test_continuite TEXT,
+      ping TEXT,
+      debit_desc TEXT,
+      debit_mont TEXT,
+      description_probleme TEXT,
+      travaux_realises TEXT,
+      materiels TEXT,
+      statut_final TEXT,
+      details TEXT DEFAULT '{}',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
+
+  // Migration : table attestations pour les bases existantes
+  const attestationCols = db.prepare("PRAGMA table_info(attestations)").all().map((c) => c.name);
+  if (!attestationCols.includes('id')) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS attestations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        numero TEXT UNIQUE NOT NULL,
+        reference TEXT,
+        title TEXT,
+        date DATE,
+        lieu TEXT,
+        client_nom TEXT,
+        objet TEXT,
+        intro TEXT,
+        intro_align TEXT DEFAULT 'justify',
+        travaux TEXT,
+        travaux_align TEXT DEFAULT 'left',
+        travaux_list_mode TEXT DEFAULT 'bullets',
+        conformite TEXT,
+        conformite_align TEXT DEFAULT 'justify',
+        signataire_gauche TEXT,
+        signataire_droite TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+  }
 
   // Migration : ajout des colonnes de suivi du paiement et de la TVA
   // sur les factures existantes (sans perdre les données).
@@ -147,12 +310,289 @@ function initDatabase() {
   if (!factureCols.includes('date_versement_tva')) {
     db.exec("ALTER TABLE factures ADD COLUMN date_versement_tva DATE");
   }
+  // Déclenche l'entrée en "TVA à verser" indépendamment du paiement à 100 % du
+  // marché (facturation par situation : la 1ère situation payée déclenche la
+  // TVA à verser pour toute la facture, sans attendre le solde).
+  if (!factureCols.includes('tva_declenchee')) {
+    db.exec("ALTER TABLE factures ADD COLUMN tva_declenchee INTEGER DEFAULT 0");
+  }
+  if (!factureCols.includes('mode_tva_situations')) {
+    db.exec("ALTER TABLE factures ADD COLUMN mode_tva_situations TEXT DEFAULT 'premiere'");
+  }
+  // Suivi des versements de TVA à l'OTR : lots de factures + paiements partiels
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tva_versements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      numero TEXT UNIQUE NOT NULL,
+      date DATE,
+      total_du REAL DEFAULT 0,
+      note TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS tva_versement_factures (
+      versement_id INTEGER NOT NULL,
+      facture_id INTEGER NOT NULL UNIQUE,
+      tva REAL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS tva_paiements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      versement_id INTEGER NOT NULL,
+      date DATE,
+      montant REAL DEFAULT 0,
+      quittance TEXT DEFAULT '',
+      mode TEXT DEFAULT '',
+      note TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Listes de valeurs réutilisables (techniciens, sites/services…)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS listes_choix (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      categorie TEXT NOT NULL,
+      valeur TEXT NOT NULL,
+      UNIQUE(categorie, valeur)
+    );
+  `);
+
+  // Facturation par situation (paiement partiel en %) : plusieurs factures
+  // de situation peuvent être émises pour une même facture jusqu'à 100 %.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS facture_situations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      facture_id INTEGER NOT NULL,
+      numero TEXT NOT NULL,
+      taux REAL NOT NULL,
+      montant_ht REAL DEFAULT 0,
+      tva REAL DEFAULT 0,
+      montant_ttc REAL DEFAULT 0,
+      date DATE,
+      statut_paiement TEXT DEFAULT 'non_payee',
+      date_paiement DATE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (facture_id) REFERENCES factures(id) ON DELETE CASCADE
+    );
+  `);
+
+  const situationCols = db.prepare("PRAGMA table_info(facture_situations)").all().map((c) => c.name);
+  if (!situationCols.includes('tva_versee')) {
+    db.exec('ALTER TABLE facture_situations ADD COLUMN tva_versee INTEGER DEFAULT 0');
+  }
+  if (!situationCols.includes('date_versement_tva')) {
+    db.exec('ALTER TABLE facture_situations ADD COLUMN date_versement_tva DATE');
+  }
+  if (!situationCols.includes('tva_a_verser')) {
+    db.exec('ALTER TABLE facture_situations ADD COLUMN tva_a_verser REAL DEFAULT 0');
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tva_versement_situations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      versement_id INTEGER NOT NULL,
+      situation_id INTEGER NOT NULL UNIQUE,
+      tva REAL DEFAULT 0,
+      tva_a_verser REAL DEFAULT 0,
+      FOREIGN KEY (versement_id) REFERENCES tva_versements(id) ON DELETE CASCADE,
+      FOREIGN KEY (situation_id) REFERENCES facture_situations(id) ON DELETE CASCADE
+    )
+  `);
+  db.exec(`
+    UPDATE factures
+    SET tva_declenchee = 1
+    WHERE tva > 0 AND mode_tva_situations != 'prorata' AND (
+      statut_paiement = 'payee'
+      OR tva_versee = 1
+      OR EXISTS (
+        SELECT 1 FROM facture_situations fs
+        WHERE fs.facture_id = factures.id
+          AND fs.id = (
+            SELECT MIN(fs_premiere.id)
+            FROM facture_situations fs_premiere
+            WHERE fs_premiere.facture_id = factures.id
+          )
+          AND fs.statut_paiement = 'payee'
+      )
+    )
+  `);
+
+  // Migration : taux de TVA figé sur chaque document, pour qu'un changement
+  // du taux dans les paramètres ne modifie pas les documents déjà émis.
+  ['proformas', 'factures', 'appels_offres'].forEach((table) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (cols.length > 0 && !cols.includes('tva_taux')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN tva_taux REAL`);
+    }
+  });
+
+  // Avoirs (factures d'avoir) : annulation totale ou partielle d'une facture
+  // émise, avec leur propre numérotation. Les montants sont positifs ; ils
+  // viennent en déduction de la facture d'origine.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS avoirs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      numero TEXT UNIQUE NOT NULL,
+      date DATE NOT NULL,
+      facture_id INTEGER NOT NULL,
+      client_id INTEGER NOT NULL,
+      type TEXT NOT NULL DEFAULT 'partiel',
+      motif TEXT NOT NULL,
+      total_materiel_ht REAL DEFAULT 0,
+      prestations REAL DEFAULT 0,
+      remise REAL DEFAULT 0,
+      total_ht REAL NOT NULL,
+      tva REAL NOT NULL,
+      total_ttc REAL NOT NULL,
+      tva_taux REAL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (facture_id) REFERENCES factures(id),
+      FOREIGN KEY (client_id) REFERENCES clients(id)
+    );
+    CREATE TABLE IF NOT EXISTS avoir_lignes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      avoir_id INTEGER NOT NULL,
+      designation TEXT NOT NULL,
+      unite TEXT NOT NULL,
+      quantite REAL NOT NULL,
+      prix_unitaire REAL NOT NULL,
+      montant REAL NOT NULL,
+      ordre INTEGER DEFAULT 0,
+      section_titre TEXT DEFAULT '',
+      description TEXT DEFAULT '',
+      FOREIGN KEY (avoir_id) REFERENCES avoirs(id) ON DELETE CASCADE
+    );
+  `);
+
+  // Migration : choix d'ajouter le cachet + signature sur la proforma.
+  const proformaCols = db.prepare("PRAGMA table_info(proformas)").all().map((c) => c.name);
+  if (!proformaCols.includes('avec_cachet')) {
+    db.exec("ALTER TABLE proformas ADD COLUMN avec_cachet INTEGER DEFAULT 0");
+  }
+  // Migration : choix d'appliquer la TVA sur la proforma (et donc la facture).
+  if (!proformaCols.includes('tva_applicable')) {
+    db.exec("ALTER TABLE proformas ADD COLUMN tva_applicable INTEGER DEFAULT 1");
+  }
+
+  // Migration : sections (lots de travaux) sur les lignes de documents.
+  // Permet de regrouper les lignes sous des titres avec sous-totaux.
+  ['proforma_lignes', 'facture_lignes', 'bordereau_lignes'].forEach((table) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (cols.length > 0 && !cols.includes('section_titre')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN section_titre TEXT DEFAULT ''`);
+    }
+  });
+
+  // Migration : description détaillée sur les lignes (prestations en texte long).
+  ['proforma_lignes', 'facture_lignes'].forEach((table) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (cols.length > 0 && !cols.includes('description')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN description TEXT DEFAULT ''`);
+    }
+  });
+
+  // Migration : détails étendus des fiches d'intervention (modèle V11).
+  const fitCols = db.prepare("PRAGMA table_info(interventions)").all().map((c) => c.name);
+  if (fitCols.length > 0 && !fitCols.includes('details')) {
+    db.exec("ALTER TABLE interventions ADD COLUMN details TEXT DEFAULT '{}'");
+  }
+
+  // Migration : champs de soumission des appels d'offre (bordereau de prix,
+  // lettre de soumission, enveloppes).
+  const aoCols = db.prepare("PRAGMA table_info(appels_offres)").all().map((c) => c.name);
+  if (aoCols.length > 0) {
+    if (!aoCols.includes('reference_externe')) {
+      db.exec("ALTER TABLE appels_offres ADD COLUMN reference_externe TEXT");
+    }
+    if (!aoCols.includes('autorite')) {
+      db.exec("ALTER TABLE appels_offres ADD COLUMN autorite TEXT");
+    }
+    if (!aoCols.includes('autorite_adresse')) {
+      db.exec("ALTER TABLE appels_offres ADD COLUMN autorite_adresse TEXT");
+    }
+    if (!aoCols.includes('validite_offre')) {
+      db.exec("ALTER TABLE appels_offres ADD COLUMN validite_offre INTEGER DEFAULT 90");
+    }
+    if (!aoCols.includes('delai_execution')) {
+      db.exec("ALTER TABLE appels_offres ADD COLUMN delai_execution TEXT");
+    }
+  }
+
+  // Migration : rendre produit_id nullable sur les lignes (permet la saisie
+  // libre d'une désignation sans produit du catalogue). SQLite ne permet pas
+  // de retirer une contrainte NOT NULL via ALTER : on reconstruit la table.
+  const rendreProduitIdNullable = (table) => {
+    const info = db.prepare(`PRAGMA table_info(${table})`).all();
+    const colProduit = info.find((c) => c.name === 'produit_id');
+    if (!colProduit || colProduit.notnull !== 1) return; // déjà nullable ou absente
+    const cols = info.map((c) => c.name).join(', ');
+    db.pragma('foreign_keys = OFF');
+    const migrer = db.transaction(() => {
+      db.exec(`ALTER TABLE ${table} RENAME TO ${table}_old`);
+      if (table === 'proforma_lignes') {
+        db.exec(`
+          CREATE TABLE proforma_lignes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            proforma_id INTEGER NOT NULL,
+            produit_id INTEGER,
+            designation TEXT NOT NULL,
+            unite TEXT NOT NULL,
+            quantite REAL NOT NULL,
+            prix_unitaire REAL NOT NULL,
+            montant REAL NOT NULL,
+            ordre INTEGER DEFAULT 0,
+            section_titre TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            FOREIGN KEY (proforma_id) REFERENCES proformas(id) ON DELETE CASCADE,
+            FOREIGN KEY (produit_id) REFERENCES produits(id)
+          )
+        `);
+      } else {
+        db.exec(`
+          CREATE TABLE facture_lignes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            facture_id INTEGER NOT NULL,
+            produit_id INTEGER,
+            designation TEXT NOT NULL,
+            unite TEXT NOT NULL,
+            quantite REAL NOT NULL,
+            prix_unitaire REAL NOT NULL,
+            montant REAL NOT NULL,
+            ordre INTEGER DEFAULT 0,
+            section_titre TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            FOREIGN KEY (facture_id) REFERENCES factures(id) ON DELETE CASCADE,
+            FOREIGN KEY (produit_id) REFERENCES produits(id)
+          )
+        `);
+      }
+      db.exec(`INSERT INTO ${table} (${cols}) SELECT ${cols} FROM ${table}_old`);
+      db.exec(`DROP TABLE ${table}_old`);
+    });
+    try {
+      migrer();
+    } finally {
+      db.pragma('foreign_keys = ON');
+    }
+  };
+  rendreProduitIdNullable('proforma_lignes');
+  rendreProduitIdNullable('facture_lignes');
 
   // Insertion des paramètres par défaut (informations de l'entreprise)
+  const clientCols = db.prepare("PRAGMA table_info(clients)").all().map((c) => c.name);
+  if (!clientCols.includes('tva_applicable')) {
+    db.exec("ALTER TABLE clients ADD COLUMN tva_applicable INTEGER DEFAULT 1");
+  }
+
+  // Migration : lier un rapport technique à un client enregistré.
+  const rapportCols = db.prepare("PRAGMA table_info(rapports)").all().map((c) => c.name);
+  if (!rapportCols.includes('client_id')) {
+    db.exec("ALTER TABLE rapports ADD COLUMN client_id INTEGER REFERENCES clients(id)");
+  }
   const checkParams = db.prepare('SELECT COUNT(*) as count FROM parametres').get();
   if (checkParams.count === 0) {
     const insertParam = db.prepare('INSERT INTO parametres (cle, valeur) VALUES (?, ?)');
-    insertParam.run('entreprise_nom', 'In-Tel Services');
+    insertParam.run('entreprise_nom', 'IN-TEL SERVICES');
+    insertParam.run('entreprise_slogan1', 'Solutions Réseaux • Télécommunications');
+    insertParam.run('entreprise_slogan2', 'Sécurité Électronique • Énergie');
     insertParam.run('entreprise_rccm', 'TG-LOM 2013 A 6170');
     insertParam.run('entreprise_nif', '1000278436');
     insertParam.run('entreprise_tel', '+228 22 51 66 86');
@@ -160,13 +600,44 @@ function initDatabase() {
     insertParam.run('entreprise_adresse', '04BP144 LOME ADIDOGOME-TOGO');
     insertParam.run('entreprise_email', 'infos_its@gmail.com');
     insertParam.run('entreprise_utb', '010350245170210119');
+    insertParam.run('entreprise_slogan_pied1', 'Votre partenaire en réseaux informatiques,');
+    insertParam.run('entreprise_slogan_pied2', 'télécommunications et sécurité électronique.');
+    insertParam.run('application_sous_titre', 'Gestion Facturation');
+    insertParam.run('entreprise_logo', '');
+    insertParam.run('signataire_titre', 'Le Directeur,');
+    insertParam.run('signataire_nom', 'Koffi KAVEGE');
     insertParam.run('tva_taux', '18');
-    insertParam.run('proforma_compteur', '5');
-    insertParam.run('facture_compteur', '17');
-    insertParam.run('bordereau_compteur', '4');
+    insertParam.run('proforma_compteur', '0');
+    insertParam.run('facture_compteur', '0');
+    insertParam.run('bordereau_compteur', '0');
+    insertParam.run('appel_offre_compteur', '0');
   }
 
-  console.log('Base de données initialisée:', dbPath);
+  // Ajoute les paramètres manquants pour les bases déjà existantes
+  // (ex. slogans ajoutés après coup), sans écraser les valeurs saisies.
+  const ensureParam = db.prepare('INSERT OR IGNORE INTO parametres (cle, valeur) VALUES (?, ?)');
+  ensureParam.run('entreprise_slogan1', 'Solutions Réseaux • Télécommunications');
+  ensureParam.run('entreprise_slogan2', 'Sécurité Électronique • Énergie');
+  ensureParam.run('entreprise_slogan_pied1', 'Votre partenaire en réseaux informatiques,');
+  ensureParam.run('entreprise_slogan_pied2', 'télécommunications et sécurité électronique.');
+  ensureParam.run('appel_offre_compteur', '0');
+  ensureParam.run('application_sous_titre', 'Gestion Facturation');
+  ensureParam.run('entreprise_logo', '');
+  ensureParam.run('signataire_titre', 'Le Directeur,');
+  ensureParam.run('signataire_nom', 'Koffi KAVEGE');
+  // Compteur des rapports techniques (créé pour les bases existantes aussi)
+  ensureParam.run('rapport_compteur', '0');
+  ensureParam.run('avoir_compteur', '0');
+
+  // Valeurs de sécurité par défaut (mot de passe désactivé au départ)
+  const checkSecu = db.prepare('SELECT COUNT(*) as count FROM securite').get();
+  if (checkSecu.count === 0) {
+    const insertSecu = db.prepare('INSERT INTO securite (cle, valeur) VALUES (?, ?)');
+    insertSecu.run('enabled', '0');
+    insertSecu.run('hash', '');
+    insertSecu.run('salt', '');
+  }
+
 }
 
 // Fonction pour attendre que le serveur React soit prêt
@@ -192,13 +663,49 @@ async function waitForReact(url, maxRetries = 30) {
   return false;
 }
 
+// Menu de la version installée : édition et zoom uniquement. Le menu par
+// défaut d'Electron donne accès aux outils de développement, qui permettent
+// d'appeler l'API de l'application sans passer par l'écran de verrouillage.
+function installerMenuProduction() {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: 'Édition',
+      submenu: [
+        { role: 'undo', label: 'Annuler' },
+        { role: 'redo', label: 'Rétablir' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Couper' },
+        { role: 'copy', label: 'Copier' },
+        { role: 'paste', label: 'Coller' },
+        { role: 'selectAll', label: 'Tout sélectionner' }
+      ]
+    },
+    {
+      label: 'Affichage',
+      submenu: [
+        { role: 'resetZoom', label: 'Taille réelle' },
+        { role: 'zoomIn', label: 'Zoom avant' },
+        { role: 'zoomOut', label: 'Zoom arrière' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: 'Plein écran' }
+      ]
+    }
+  ]));
+}
+
 async function createWindow() {
+  const enDeveloppement = !!process.env.ELECTRON_START_URL;
+  if (!enDeveloppement) {
+    installerMenuProduction();
+  }
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      devTools: enDeveloppement,
       preload: path.join(__dirname, 'preload.js')
     },
     icon: path.join(__dirname, 'src/assets/logo.png')
@@ -207,6 +714,19 @@ async function createWindow() {
   // En développement, charge depuis le serveur React
   // En production, charge depuis les fichiers buildés
   const startUrl = process.env.ELECTRON_START_URL || `file://${path.join(__dirname, 'build/index.html')}`;
+
+  // Fenêtres secondaires : seulement les aperçus d'impression (PDF en blob:,
+  // ou page vide remplie ensuite). Aucune navigation hors de l'application.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => (
+    url.startsWith('blob:') || url === 'about:blank' || url === ''
+      ? { action: 'allow' }
+      : { action: 'deny' }
+  ));
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url.split('#')[0] !== startUrl.split('#')[0] && !url.startsWith(startUrl)) {
+      event.preventDefault();
+    }
+  });
   
   // En développement, attendre que React soit prêt
   if (process.env.ELECTRON_START_URL) {
@@ -231,8 +751,24 @@ async function createWindow() {
   });
 }
 
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
+
 app.whenReady().then(() => {
+  if (!instanceUnique) return;
   initDatabase();
+  demarrerSauvegardePeriodique();
+  // Suivi de la période d'essai : enregistre le lancement à chaque démarrage
+  // (le blocage effectif dépend de TRIAL_ENFORCEMENT dans license/license.js)
+  try {
+    license.recordRun();
+  } catch (e) {
+    console.error('Licence : échec du suivi d\'essai', e);
+  }
   createWindow();
 
   app.on('activate', () => {
@@ -242,14 +778,397 @@ app.whenReady().then(() => {
   });
 });
 
+// ===== Sauvegarde automatique de la base de données =====
+// À chaque fermeture de l'application, une copie de la base est déposée
+// dans Documents/GestionFacturation-Backups (les 10 plus récentes sont
+// conservées). Protège les utilisateurs qui ne font jamais de sauvegarde
+// manuelle : en cas de panne/changement de PC, il suffit de restaurer le
+// fichier le plus récent via Paramètres → Restaurer.
+const DOSSIER_SAUVEGARDES = 'GestionFacturation-Backups';
+
+function dossierSauvegardePrincipal() {
+  return path.join(app.getPath('documents'), DOSSIER_SAUVEGARDES);
+}
+
+// Second dossier choisi dans les Paramètres (clé USB, dossier synchronisé
+// Google Drive / OneDrive…) : une copie de chaque sauvegarde automatique y
+// est déposée, pour survivre à une panne du disque de l'ordinateur.
+function dossierSauvegardeSecondaire() {
+  if (!db || !db.open) return '';
+  const row = db.prepare("SELECT valeur FROM parametres WHERE cle = 'sauvegarde_dossier_secondaire'").get();
+  return row && row.valeur ? path.join(row.valeur, DOSSIER_SAUVEGARDES) : '';
+}
+
+// Dépose une copie horodatée dans backupDir et n'y garde que les 10 plus récentes.
+function copierSauvegardeHorodatee(dbPath, backupDir, stamp) {
+  fs.mkdirSync(backupDir, { recursive: true });
+  fs.copyFileSync(dbPath, path.join(backupDir, `facturation-backup-${stamp}.db`));
+  const files = fs.readdirSync(backupDir)
+    .filter((f) => f.startsWith('facturation-backup-') && f.endsWith('.db'))
+    .map((f) => ({ f, t: fs.statSync(path.join(backupDir, f)).mtimeMs }))
+    .sort((a, b) => b.t - a.t);
+  files.slice(10).forEach(({ f }) => {
+    try {
+      fs.unlinkSync(path.join(backupDir, f));
+    } catch {
+      // suppression impossible : non bloquant
+    }
+  });
+}
+
+// À la fermeture (base déjà fermée) : copie dans le dossier principal et,
+// s'il est configuré, dans le second dossier. L'échec de l'un (clé USB
+// débranchée…) n'empêche pas l'autre, ni la fermeture.
+function autoBackupDatabase(dossierSecondaire = '') {
+  const dbPath = path.join(app.getPath('userData'), 'facturation.db');
+  if (!fs.existsSync(dbPath)) return;
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}h${pad(now.getMinutes())}`;
+  [dossierSauvegardePrincipal(), dossierSecondaire].filter(Boolean).forEach((dossier) => {
+    try {
+      copierSauvegardeHorodatee(dbPath, dossier, stamp);
+    } catch (e) {
+      console.error(`Sauvegarde automatique échouée dans ${dossier} :`, e);
+    }
+  });
+}
+
+// Date de la sauvegarde la plus récente d'un dossier (null si aucune ou
+// dossier inaccessible).
+function derniereSauvegarde(dossier) {
+  try {
+    const dates = fs.readdirSync(dossier)
+      .filter((f) => f.startsWith('facturation-') && f.endsWith('.db'))
+      .map((f) => fs.statSync(path.join(dossier, f)).mtimeMs);
+    return dates.length ? new Date(Math.max(...dates)).toISOString() : null;
+  } catch {
+    return null;
+  }
+}
+
+// Copie de sécurité toutes les 15 minutes, pendant que l'application tourne :
+// sans elle, une coupure de courant ou un plantage ne laissait aucune
+// sauvegarde de la session. Un seul fichier, écrasé à chaque fois, pour ne
+// pas évincer les sauvegardes horodatées faites à la fermeture.
+const INTERVALLE_SAUVEGARDE_MS = 15 * 60 * 1000;
+let minuterieSauvegarde = null;
+let sauvegardePeriodiqueEnCours = false;
+
+async function sauvegardePeriodique() {
+  if (sauvegardePeriodiqueEnCours || !db || !db.open) return;
+  sauvegardePeriodiqueEnCours = true;
+  try {
+    const backupDir = dossierSauvegardePrincipal();
+    fs.mkdirSync(backupDir, { recursive: true });
+    const dest = path.join(backupDir, 'facturation-autosave.db');
+    const temp = `${dest}.tmp`;
+    await db.backup(temp);
+    fs.renameSync(temp, dest);
+    const secondaire = dossierSauvegardeSecondaire();
+    if (secondaire) {
+      try {
+        fs.mkdirSync(secondaire, { recursive: true });
+        const destSecondaire = path.join(secondaire, 'facturation-autosave.db');
+        fs.copyFileSync(dest, `${destSecondaire}.tmp`);
+        fs.renameSync(`${destSecondaire}.tmp`, destSecondaire);
+      } catch (e) {
+        console.error('Copie vers le second dossier de sauvegarde impossible :', e);
+      }
+    }
+  } catch (e) {
+    console.error('Sauvegarde périodique échouée :', e);
+  } finally {
+    sauvegardePeriodiqueEnCours = false;
+  }
+}
+
+function demarrerSauvegardePeriodique() {
+  minuterieSauvegarde = setInterval(sauvegardePeriodique, INTERVALLE_SAUVEGARDE_MS);
+}
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    db.close();
     app.quit();
   }
 });
 
+// Fermeture de la base et sauvegarde horodatée à chaque sortie de
+// l'application, y compris sous macOS (Cmd+Q).
+let sortieTraitee = false;
+app.on('will-quit', () => {
+  if (!instanceUnique || sortieTraitee) return;
+  sortieTraitee = true;
+  if (minuterieSauvegarde) clearInterval(minuterieSauvegarde);
+  let secondaire = '';
+  try {
+    secondaire = dossierSauvegardeSecondaire();
+  } catch (e) {
+    console.error('Lecture du second dossier de sauvegarde impossible :', e);
+  }
+  if (db && db.open) db.close();
+  autoBackupDatabase(secondaire);
+});
+
+// ===== Licence / période d'essai =====
+ipcMain.handle('license:getStatus', () => {
+  return license.getStatus();
+});
+
+ipcMain.handle('license:activate', (event, code) => {
+  return license.activate(code);
+});
+
+// ===== Sécurité : hachage du mot de passe (scrypt + sel) =====
+
+function hashPassword(password, salt) {
+  // scrypt : dérivation lente et salée, adaptée au stockage de mots de passe
+  return crypto.scryptSync(String(password), salt, 64).toString('hex');
+}
+
+// Compare deux empreintes en temps constant.
+function empreintesEgales(a, b) {
+  const bufA = Buffer.from(String(a), 'hex');
+  const bufB = Buffer.from(String(b), 'hex');
+  return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+}
+
+// Limite les essais de mot de passe : après 5 échecs, attente de 30 secondes
+// (doublée à chaque nouvelle série d'échecs, plafonnée à 15 minutes).
+const essaisMotDePasse = { echecs: 0, bloqueJusqua: 0, attenteMs: 30 * 1000 };
+
+function verifierMotDePasse(password, s) {
+  const maintenant = Date.now();
+  if (maintenant < essaisMotDePasse.bloqueJusqua) {
+    const secondes = Math.ceil((essaisMotDePasse.bloqueJusqua - maintenant) / 1000);
+    throw new Error(`Trop de tentatives. Réessayez dans ${secondes} s.`);
+  }
+  if (password && empreintesEgales(hashPassword(password, s.salt), s.hash)) {
+    essaisMotDePasse.echecs = 0;
+    essaisMotDePasse.attenteMs = 30 * 1000;
+    return true;
+  }
+  essaisMotDePasse.echecs += 1;
+  if (essaisMotDePasse.echecs >= 5) {
+    essaisMotDePasse.bloqueJusqua = maintenant + essaisMotDePasse.attenteMs;
+    essaisMotDePasse.attenteMs = Math.min(essaisMotDePasse.attenteMs * 2, 15 * 60 * 1000);
+    essaisMotDePasse.echecs = 0;
+  }
+  return false;
+}
+
+function getSecurite() {
+  const rows = db.prepare('SELECT cle, valeur FROM securite').all();
+  return rows.reduce((acc, r) => {
+    acc[r.cle] = r.valeur;
+    return acc;
+  }, {});
+}
+
+function setSecurite(cle, valeur) {
+  const exists = db.prepare('SELECT 1 FROM securite WHERE cle = ?').get(cle);
+  if (exists) {
+    db.prepare('UPDATE securite SET valeur = ? WHERE cle = ?').run(valeur, cle);
+  } else {
+    db.prepare('INSERT INTO securite (cle, valeur) VALUES (?, ?)').run(cle, valeur);
+  }
+}
+
+// ===== Numérotation des documents =====
+// Génère un numéro libre à partir du compteur stocké : part de (compteur + 1)
+// et saute automatiquement tout numéro déjà utilisé dans la table donnée,
+// afin d'éviter les conflits (ex. compteur remis à 0 alors que des numéros
+// existent déjà). Renvoie le numéro formaté ET le compteur retenu.
+function genererNumero(table, compteurCle, annee, prefixe = '') {
+  const row = db.prepare('SELECT valeur FROM parametres WHERE cle = ?').get(compteurCle);
+  let compteur = parseInt(row && row.valeur, 10);
+  if (Number.isNaN(compteur)) compteur = 0;
+
+  const existeStmt = db.prepare(`SELECT 1 FROM ${table} WHERE numero = ?`);
+
+  let numero;
+  do {
+    compteur += 1;
+    numero = `${prefixe}${annee}/${compteur.toString().padStart(5, '0')}-ITS`;
+  } while (existeStmt.get(numero));
+
+  return { numero, compteur };
+}
+
+// Numéro suivant pour les séquences PREFIXE-NNNN (attestations, versements
+// TVA). Le compteur enregistré ne redescend jamais : le numéro d'un document
+// supprimé n'est pas réattribué (ce que faisait l'ancien calcul par COUNT(*)).
+// Il part au moins du plus grand numéro existant (bases antérieures).
+function numeroSequentiel(table, prefixe, compteurCle) {
+  const row = db.prepare('SELECT valeur FROM parametres WHERE cle = ?').get(compteurCle);
+  let compteur = parseInt(row && row.valeur, 10) || 0;
+  db.prepare(`SELECT numero FROM ${table}`).all().forEach(({ numero }) => {
+    const m = String(numero || '').match(new RegExp(`^${prefixe}-(\\d+)$`));
+    if (m) compteur = Math.max(compteur, Number(m[1]));
+  });
+  compteur += 1;
+  db.prepare(`
+    INSERT INTO parametres (cle, valeur) VALUES (?, ?)
+    ON CONFLICT(cle) DO UPDATE SET valeur = excluded.valeur
+  `).run(compteurCle, String(compteur));
+  return `${prefixe}-${String(compteur).padStart(4, '0')}`;
+}
+
+// Date du jour (AAAA-MM-JJ) en heure locale : toISOString() donne la date UTC,
+// fausse en début ou fin de journée hors fuseau UTC+0.
+function aujourdhui() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// Année d'une date AAAA-MM-JJ, lue dans le texte : new Date('2026-01-01')
+// est minuit UTC, ce qui donne 2025 sur un PC à l'ouest de Greenwich.
+// Sans date valide, année en cours.
+function anneeDe(date) {
+  const m = String(date || '').match(/^(\d{4})-\d{2}-\d{2}/);
+  return m ? Number(m[1]) : new Date().getFullYear();
+}
+
+// Taux de TVA des paramètres (0 est un taux valide).
+function lireTauxTva() {
+  const row = db.prepare("SELECT valeur FROM parametres WHERE cle = 'tva_taux'").get();
+  const taux = parseFloat(row && row.valeur);
+  return Number.isFinite(taux) && taux >= 0 ? taux : 18;
+}
+
+// Taux d'un document existant : celui enregistré, sinon déduit de ses montants
+// (documents créés avant la colonne tva_taux), sinon celui des paramètres.
+function tauxTvaDocument(doc) {
+  if (doc.tva_taux !== null && doc.tva_taux !== undefined) return doc.tva_taux;
+  if (doc.total_ht > 0 && doc.tva > 0) return Math.round((doc.tva / doc.total_ht) * 10000) / 100;
+  return lireTauxTva();
+}
+
+// Le franc CFA n'a pas de subdivision : tous les montants sont arrondis à
+// l'unité. Les totaux sont recalculés ici à partir des lignes, sans se fier
+// à ceux envoyés par l'interface.
+function calculerDocument(data, tauxTva, tvaApplicable) {
+  if (!data || !Array.isArray(data.lignes)) {
+    throw new Error('Lignes du document manquantes.');
+  }
+  const nombre = (valeur, libelle) => {
+    const n = Number(valeur ?? 0);
+    if (!Number.isFinite(n) || n < 0) throw new Error(`${libelle} invalide.`);
+    return n;
+  };
+  const lignes = data.lignes.map((ligne) => {
+    const quantite = nombre(ligne.quantite, 'Quantité');
+    const prixUnitaire = nombre(ligne.prix_unitaire, 'Prix unitaire');
+    return { ...ligne, quantite, prix_unitaire: prixUnitaire, montant: Math.round(quantite * prixUnitaire) };
+  });
+  const totalMaterielHt = lignes.reduce((somme, ligne) => somme + ligne.montant, 0);
+  const prestations = Math.round(nombre(data.prestations, 'Montant des prestations'));
+  const remise = Math.round(nombre(data.remise, 'Remise'));
+  const totalHt = totalMaterielHt + prestations - remise;
+  if (totalHt < 0) {
+    throw new Error('La remise dépasse le total du document.');
+  }
+  const tva = tvaApplicable ? Math.round(totalHt * tauxTva / 100) : 0;
+  return {
+    lignes,
+    total_materiel_ht: totalMaterielHt,
+    prestations,
+    remise,
+    total_ht: totalHt,
+    tva,
+    total_ttc: totalHt + tva,
+    tva_taux: tauxTva
+  };
+}
+
 // ===== IPC Handlers pour les opérations de base de données =====
+
+function assertProformaConvertible(proforma) {
+  if (proforma.statut === 'facturee' || proforma.facture_id ||
+      db.prepare('SELECT 1 FROM factures WHERE proforma_id = ?').get(proforma.id)) {
+    throw new Error('Cette proforma a déjà été convertie en facture.');
+  }
+}
+
+function assertFactureSansEngagementTva(factureId) {
+  const engagement = db.prepare(`
+    SELECT 1 FROM factures f WHERE f.id = ? AND (
+      f.tva_versee = 1
+      OR EXISTS (SELECT 1 FROM tva_versement_factures vf WHERE vf.facture_id = f.id)
+      OR EXISTS (SELECT 1 FROM facture_situations s WHERE s.facture_id = f.id AND s.tva_versee = 1)
+      OR EXISTS (
+        SELECT 1 FROM tva_versement_situations vs
+        JOIN facture_situations s ON s.id = vs.situation_id
+        WHERE s.facture_id = f.id
+      )
+    )
+  `).get(factureId);
+  if (engagement) {
+    throw new Error("Cette facture est liée à une TVA versée ou à un lot OTR. Annulez d'abord le versement OTR concerné.");
+  }
+}
+
+function totalAvoirs(factureId) {
+  return db.prepare('SELECT COALESCE(SUM(total_ttc), 0) AS total FROM avoirs WHERE facture_id = ?').get(factureId).total;
+}
+
+function assertFactureSansAvoir(factureId, action) {
+  if (db.prepare('SELECT 1 FROM avoirs WHERE facture_id = ?').get(factureId)) {
+    throw new Error(`Impossible ${action} : des avoirs ont été émis sur cette facture.`);
+  }
+}
+
+function calculerMontantSituation(facture, taux, precedentes) {
+  const totalTtc = Math.round(facture.total_ttc || 0);
+  const totalTva = Math.round(facture.tva || 0);
+  const prorata = facture.mode_tva_situations === 'prorata';
+  const derniere = precedentes.taux + taux >= 99.99;
+  const montantTtc = derniere
+    ? Math.max(0, totalTtc - precedentes.ttc)
+    : Math.round(totalTtc * taux / 100);
+  const tva = prorata
+    ? Math.max(0, derniere ? totalTva - precedentes.tva : Math.round(totalTva * taux / 100))
+    : precedentes.nb === 0 ? Math.min(totalTva, montantTtc) : 0;
+  const tvaAverser = prorata
+    ? Math.max(0, (derniere ? Math.round(totalTva / 2) : Math.round((precedentes.tva + tva) / 2)) - precedentes.tva_a_verser)
+    : 0;
+  return { montant_ht: montantTtc - tva, tva, tva_a_verser: tvaAverser, montant_ttc: montantTtc };
+}
+
+function recalculerMontantsSituations(factureId) {
+  const facture = db.prepare('SELECT * FROM factures WHERE id = ?').get(factureId);
+  const situations = db.prepare('SELECT * FROM facture_situations WHERE facture_id = ? ORDER BY id').all(factureId);
+  const precedentes = { nb: 0, taux: 0, ttc: 0, tva: 0, tva_a_verser: 0 };
+  const champs = ['montant_ht', 'tva', 'tva_a_verser', 'montant_ttc'];
+  const update = db.prepare('UPDATE facture_situations SET montant_ht = ?, tva = ?, tva_a_verser = ?, montant_ttc = ? WHERE id = ?');
+  situations.forEach((situation) => {
+    const montant = calculerMontantSituation(facture, situation.taux, precedentes);
+    if (situation.statut_paiement === 'payee' && champs.some((champ) => montant[champ] !== situation[champ])) {
+      throw new Error("Annulez d'abord le paiement des situations concernées avant de recalculer leurs montants.");
+    }
+    update.run(...champs.map((champ) => montant[champ]), situation.id);
+    precedentes.nb += 1;
+    precedentes.taux += situation.taux;
+    precedentes.ttc += montant.montant_ttc;
+    precedentes.tva += montant.tva;
+    precedentes.tva_a_verser += montant.tva_a_verser;
+  });
+}
+
+function recalculerStatutFacture(factureId) {
+  const facture = db.prepare('SELECT * FROM factures WHERE id = ?').get(factureId);
+  const situations = db.prepare('SELECT * FROM facture_situations WHERE facture_id = ? ORDER BY id').all(factureId);
+  const payees = situations.filter((situation) => situation.statut_paiement === 'payee');
+  const payee = payees.reduce((somme, situation) => somme + situation.taux, 0) >= 99.99;
+  const premiere = situations[0];
+  const tvaDeclenchee = facture.tva > 0 && facture.mode_tva_situations !== 'prorata' && premiere?.statut_paiement === 'payee';
+  const dates = payees.map((situation) => situation.date_paiement).filter(Boolean).sort();
+  const datePaiement = payee ? (dates[dates.length - 1] || null) : tvaDeclenchee ? premiere.date_paiement : null;
+  db.prepare(`
+    UPDATE factures SET statut_paiement = ?, date_paiement = ?, tva_declenchee = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+  `).run(payee ? 'payee' : 'non_payee', datePaiement, tvaDeclenchee ? 1 : 0, factureId);
+}
 
 // CLIENTS
 ipcMain.handle('clients:getAll', () => {
@@ -262,20 +1181,35 @@ ipcMain.handle('clients:getById', (event, id) => {
 
 ipcMain.handle('clients:create', (event, client) => {
   const stmt = db.prepare(`
-    INSERT INTO clients (nom, adresse, telephone, email, nif)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO clients (nom, adresse, telephone, email, nif, tva_applicable)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
-  const result = stmt.run(client.nom, client.adresse, client.telephone, client.email, client.nif);
+  const result = stmt.run(
+    client.nom,
+    client.adresse,
+    client.telephone,
+    client.email,
+    client.nif,
+    client.tva_applicable ? 1 : 0
+  );
   return { id: result.lastInsertRowid };
 });
 
 ipcMain.handle('clients:update', (event, id, client) => {
   const stmt = db.prepare(`
     UPDATE clients 
-    SET nom = ?, adresse = ?, telephone = ?, email = ?, nif = ?, updated_at = CURRENT_TIMESTAMP
+    SET nom = ?, adresse = ?, telephone = ?, email = ?, nif = ?, tva_applicable = ?, updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `);
-  stmt.run(client.nom, client.adresse, client.telephone, client.email, client.nif, id);
+  stmt.run(
+    client.nom,
+    client.adresse,
+    client.telephone,
+    client.email,
+    client.nif,
+    client.tva_applicable ? 1 : 0,
+    id
+  );
   return { success: true };
 });
 
@@ -329,7 +1263,396 @@ ipcMain.handle('produits:delete', (event, id) => {
   return { success: true };
 });
 
+// ===== AVOIRS =====
+
+ipcMain.handle('avoirs:getAll', () => {
+  return db.prepare(`
+    SELECT a.*, c.nom AS client_nom, f.numero AS facture_numero
+    FROM avoirs a
+    LEFT JOIN clients c ON a.client_id = c.id
+    LEFT JOIN factures f ON a.facture_id = f.id
+    ORDER BY a.date DESC, a.id DESC
+  `).all();
+});
+
+ipcMain.handle('avoirs:getById', (event, id) => {
+  const avoir = db.prepare(`
+    SELECT a.*, c.nom AS client_nom, c.adresse AS client_adresse,
+           c.telephone AS client_telephone, c.email AS client_email, c.nif AS client_nif,
+           f.numero AS facture_numero, f.date AS facture_date, f.objet AS facture_objet,
+           f.total_ttc AS facture_total_ttc
+    FROM avoirs a
+    LEFT JOIN clients c ON a.client_id = c.id
+    LEFT JOIN factures f ON a.facture_id = f.id
+    WHERE a.id = ?
+  `).get(id);
+  if (avoir) {
+    avoir.lignes = db.prepare('SELECT * FROM avoir_lignes WHERE avoir_id = ? ORDER BY ordre').all(id);
+  }
+  return avoir;
+});
+
+// data = { type: 'total' | 'partiel', date, motif, lignes }
+// Avoir total : reprend toutes les lignes et tous les montants de la facture.
+// Avoir partiel : lignes choisies (quantités et prix modifiables), sans
+// prestations ni remise ; le cumul des avoirs ne dépasse jamais la facture.
+ipcMain.handle('avoirs:create', (event, factureId, data = {}) => {
+  const transaction = db.transaction(() => {
+    const facture = db.prepare('SELECT * FROM factures WHERE id = ?').get(factureId);
+    if (!facture) throw new Error('Facture introuvable.');
+    const motif = String(data.motif || '').trim();
+    if (!motif) throw new Error("Indiquez le motif de l'avoir.");
+    const date = String(data.date || aujourdhui());
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Date de l'avoir invalide.");
+    if (date < String(facture.date).slice(0, 10)) {
+      throw new Error("L'avoir ne peut pas être daté d'avant la facture.");
+    }
+    if (db.prepare('SELECT 1 FROM facture_situations WHERE facture_id = ?').get(factureId)) {
+      throw new Error("Cette facture est réglée par situations : les avoirs ne sont pas encore pris en charge dans ce cas.");
+    }
+
+    const deja = totalAvoirs(factureId);
+    const restant = Math.max(0, facture.total_ttc - deja);
+    let montants;
+    let lignes;
+    if (data.type === 'total') {
+      if (deja > 0) {
+        throw new Error('Des avoirs partiels existent déjà : créez un avoir partiel pour le montant restant.');
+      }
+      montants = facture;
+      lignes = db.prepare('SELECT * FROM facture_lignes WHERE facture_id = ? ORDER BY ordre').all(factureId);
+    } else {
+      const proforma = facture.proforma_id
+        ? db.prepare('SELECT tva_applicable FROM proformas WHERE id = ?').get(facture.proforma_id)
+        : null;
+      const tvaApplicable = proforma ? proforma.tva_applicable !== 0 : facture.tva > 0;
+      const calcul = calculerDocument(
+        { lignes: Array.isArray(data.lignes) ? data.lignes : [], prestations: 0, remise: 0 },
+        tauxTvaDocument(facture),
+        tvaApplicable
+      );
+      lignes = calcul.lignes.filter((ligne) => ligne.montant > 0);
+      if (lignes.length === 0) throw new Error("Ajoutez au moins une ligne avec un montant à l'avoir.");
+      montants = { ...calcul, total_materiel_ht: lignes.reduce((somme, ligne) => somme + ligne.montant, 0) };
+      if (montants.total_ttc > restant + 0.5) {
+        throw new Error(`Montant trop élevé : il ne reste que ${Math.round(restant)} FCFA à créditer sur cette facture.`);
+      }
+    }
+
+    const { numero, compteur } = genererNumero('avoirs', 'avoir_compteur', anneeDe(date), 'AV-');
+    const result = db.prepare(`
+      INSERT INTO avoirs (numero, date, facture_id, client_id, type, motif, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, tva_taux)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      numero, date, factureId, facture.client_id, data.type === 'total' ? 'total' : 'partiel', motif,
+      montants.total_materiel_ht || 0, montants.prestations || 0, montants.remise || 0,
+      montants.total_ht, montants.tva, montants.total_ttc, tauxTvaDocument(facture)
+    );
+    const avoirId = result.lastInsertRowid;
+    const stmtLigne = db.prepare(`
+      INSERT INTO avoir_lignes (avoir_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre, description)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    lignes.forEach((ligne, index) => {
+      stmtLigne.run(
+        avoirId, ligne.designation, ligne.unite || 'Unité', ligne.quantite, ligne.prix_unitaire, ligne.montant,
+        index, ligne.section_titre || '', ligne.description || ''
+      );
+    });
+    db.prepare('UPDATE parametres SET valeur = ? WHERE cle = ?').run(compteur.toString(), 'avoir_compteur');
+    return { id: avoirId, numero, total_ttc: montants.total_ttc };
+  });
+  return transaction.immediate();
+});
+
+ipcMain.handle('avoirs:delete', (event, id) => {
+  db.prepare('DELETE FROM avoirs WHERE id = ?').run(id);
+  return { success: true };
+});
+
+// RAPPORTS TECHNIQUES
+// ===== ATTESTATIONS DE SERVICE FAIT =====
+
+ipcMain.handle('attestations:getAll', () => {
+  const rows = db.prepare('SELECT * FROM attestations ORDER BY created_at DESC').all();
+  return rows.map((row) => ({
+    ...row,
+    travaux: row.travaux ? JSON.parse(row.travaux) : [],
+  }));
+});
+
+ipcMain.handle('attestations:getById', (event, id) => {
+  const row = db.prepare('SELECT * FROM attestations WHERE id = ?').get(id);
+  if (!row) return null;
+  return { ...row, travaux: row.travaux ? JSON.parse(row.travaux) : [] };
+});
+
+ipcMain.handle('attestations:create', (event, data) => {
+  const numero = numeroSequentiel('attestations', 'ASF', 'attestation_compteur');
+  const result = db.prepare(`
+    INSERT INTO attestations (numero, reference, title, date, lieu, client_nom, objet,
+      intro, intro_align, travaux, travaux_align, travaux_list_mode,
+      conformite, conformite_align, signataire_gauche, signataire_droite)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    numero,
+    data.reference || '',
+    data.title || 'ATTESTATION DE SERVICE FAIT',
+    data.date || '',
+    data.lieu || '',
+    data.client_nom || '',
+    data.objet || '',
+    data.intro || '',
+    data.intro_align || 'justify',
+    JSON.stringify(Array.isArray(data.travaux) ? data.travaux : []),
+    data.travaux_align || 'left',
+    data.travaux_list_mode || 'bullets',
+    data.conformite || '',
+    data.conformite_align || 'justify',
+    data.signataire_gauche || '',
+    data.signataire_droite || ''
+  );
+  return { id: result.lastInsertRowid, numero };
+});
+
+ipcMain.handle('attestations:update', (event, id, data) => {
+  db.prepare(`
+    UPDATE attestations SET
+      reference = ?, title = ?, date = ?, lieu = ?, client_nom = ?, objet = ?,
+      intro = ?, intro_align = ?, travaux = ?, travaux_align = ?, travaux_list_mode = ?,
+      conformite = ?, conformite_align = ?, signataire_gauche = ?, signataire_droite = ?,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(
+    data.reference || '',
+    data.title || 'ATTESTATION DE SERVICE FAIT',
+    data.date || '',
+    data.lieu || '',
+    data.client_nom || '',
+    data.objet || '',
+    data.intro || '',
+    data.intro_align || 'justify',
+    JSON.stringify(Array.isArray(data.travaux) ? data.travaux : []),
+    data.travaux_align || 'left',
+    data.travaux_list_mode || 'bullets',
+    data.conformite || '',
+    data.conformite_align || 'justify',
+    data.signataire_gauche || '',
+    data.signataire_droite || '',
+    id
+  );
+  return { success: true };
+});
+
+ipcMain.handle('attestations:delete', (event, id) => {
+  db.prepare('DELETE FROM attestations WHERE id = ?').run(id);
+  return { success: true };
+});
+
+// ===== FICHES D'INTERVENTION TECHNIQUE =====
+
+// Valeurs ordonnées pour INSERT/UPDATE (hors numero et id)
+const interventionToRow = (data) => ([
+  data.date || '',
+  data.intervenant || '',
+  data.heure_arrivee || '',
+  data.heure_depart || '',
+  data.client_nom || '',
+  data.client_adresse || '',
+  data.client_contact || '',
+  data.interlocuteur || '',
+  JSON.stringify(Array.isArray(data.options_reseaux) ? data.options_reseaux : []),
+  JSON.stringify(Array.isArray(data.options_maintenance) ? data.options_maintenance : []),
+  data.marque_modele || '',
+  data.num_serie || '',
+  data.systeme_exploitation || '',
+  data.vol_donnees || '',
+  data.test_continuite || '',
+  data.ping || '',
+  data.debit_desc || '',
+  data.debit_mont || '',
+  data.description_probleme || '',
+  data.travaux_realises || '',
+  Array.isArray(data.materiels) ? JSON.stringify(data.materiels) : (data.materiels || ''),
+  data.statut_final || '',
+  JSON.stringify(data.details && typeof data.details === 'object' && !Array.isArray(data.details) ? data.details : {}),
+]);
+
+const parseInterventionRow = (row) => {
+  const safeParse = (value) => {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+  let details = {};
+  try {
+    const parsed = JSON.parse(row.details);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) details = parsed;
+  } catch {
+    details = {};
+  }
+  return {
+    ...row,
+    ...details,
+    details,
+    options_reseaux: safeParse(row.options_reseaux),
+    options_maintenance: safeParse(row.options_maintenance),
+    // Modèle simplifié : texte libre. Modèle V11 : tableau de pièces (JSON).
+    materiels: (() => {
+      try {
+        const parsed = JSON.parse(row.materiels);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        // pas du JSON : texte simple (modèle simplifié)
+      }
+      return row.materiels || '';
+    })(),
+  };
+};
+
+ipcMain.handle('interventions:getAll', () => {
+  return db.prepare('SELECT * FROM interventions ORDER BY created_at DESC').all().map(parseInterventionRow);
+});
+
+ipcMain.handle('interventions:getById', (event, id) => {
+  const row = db.prepare('SELECT * FROM interventions WHERE id = ?').get(id);
+  return row ? parseInterventionRow(row) : null;
+});
+
+ipcMain.handle('interventions:create', (event, data) => {
+  // Numéro AAAA/NNNNN-ITS (modèle V11) : reprend le plus grand numéro de l'année.
+  // Les anciens numéros FIT-XXXX restent valides sur les fiches existantes.
+  const year = new Date().getFullYear();
+  const existeStmt = db.prepare('SELECT 1 FROM interventions WHERE numero = ?');
+  let compteur = year === 2026 ? 16 : 0;
+  db.prepare('SELECT numero FROM interventions').all().forEach((r) => {
+    const m = String(r.numero || '').match(/^(\d{4})\/(\d{5})-ITS$/);
+    if (m && Number(m[1]) === year) compteur = Math.max(compteur, Number(m[2]));
+  });
+  let numero;
+  do {
+    compteur += 1;
+    numero = `${year}/${String(compteur).padStart(5, '0')}-ITS`;
+  } while (existeStmt.get(numero));
+
+  const result = db.prepare(`
+    INSERT INTO interventions (numero, date, intervenant, heure_arrivee, heure_depart,
+      client_nom, client_adresse, client_contact, interlocuteur,
+      options_reseaux, options_maintenance, marque_modele, num_serie, systeme_exploitation, vol_donnees,
+      test_continuite, ping, debit_desc, debit_mont, description_probleme, travaux_realises,
+      materiels, statut_final, details)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(numero, ...interventionToRow(data));
+  return { id: result.lastInsertRowid, numero };
+});
+
+ipcMain.handle('interventions:update', (event, id, data) => {
+  const existing = db.prepare('SELECT id FROM interventions WHERE id = ?').get(id);
+  if (!existing) {
+    throw new Error('Fiche d\'intervention introuvable.');
+  }
+  db.prepare(`
+    UPDATE interventions SET
+      date = ?, intervenant = ?, heure_arrivee = ?, heure_depart = ?,
+      client_nom = ?, client_adresse = ?, client_contact = ?, interlocuteur = ?,
+      options_reseaux = ?, options_maintenance = ?, marque_modele = ?, num_serie = ?, systeme_exploitation = ?, vol_donnees = ?,
+      test_continuite = ?, ping = ?, debit_desc = ?, debit_mont = ?, description_probleme = ?, travaux_realises = ?,
+      materiels = ?, statut_final = ?, details = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(...interventionToRow(data), id);
+  return { success: true };
+});
+
+ipcMain.handle('interventions:delete', (event, id) => {
+  db.prepare('DELETE FROM interventions WHERE id = ?').run(id);
+  return { success: true };
+});
+
+ipcMain.handle('rapports:getAll', () => {
+  return db.prepare('SELECT * FROM rapports ORDER BY created_at DESC').all();
+});
+
+ipcMain.handle('rapports:getById', (event, id) => {
+  const rapport = db.prepare('SELECT * FROM rapports WHERE id = ?').get(id);
+  if (rapport) {
+    try {
+      rapport.sections = rapport.sections ? JSON.parse(rapport.sections) : [];
+    } catch {
+      rapport.sections = [];
+    }
+  }
+  return rapport;
+});
+
+ipcMain.handle('rapports:create', (event, data) => {
+  const annee = anneeDe(data.date);
+  const { numero, compteur } = genererNumero('rapports', 'rapport_compteur', annee);
+
+  // Si un client est lié, on récupère son nom pour l'historique (dénormalisé).
+  let clientNom = data.client_nom || '';
+  const clientId = data.client_id ? parseInt(data.client_id) : null;
+  if (clientId) {
+    const c = db.prepare('SELECT nom FROM clients WHERE id = ?').get(clientId);
+    if (c) clientNom = c.nom;
+  }
+
+  const stmt = db.prepare(`
+    INSERT INTO rapports (numero, date, titre, client_id, client_nom, lieu, objet, sections, avec_cachet)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const result = stmt.run(
+    numero,
+    data.date,
+    data.titre,
+    clientId,
+    clientNom,
+    data.lieu || '',
+    data.objet || '',
+    JSON.stringify(data.sections || []),
+    data.avec_cachet ? 1 : 0
+  );
+
+  db.prepare('UPDATE parametres SET valeur = ? WHERE cle = ?').run(compteur.toString(), 'rapport_compteur');
+  return { id: result.lastInsertRowid, numero };
+});
+
+ipcMain.handle('rapports:update', (event, id, data) => {
+  let clientNom = data.client_nom || '';
+  const clientId = data.client_id ? parseInt(data.client_id) : null;
+  if (clientId) {
+    const c = db.prepare('SELECT nom FROM clients WHERE id = ?').get(clientId);
+    if (c) clientNom = c.nom;
+  }
+
+  db.prepare(`
+    UPDATE rapports
+    SET date = ?, titre = ?, client_id = ?, client_nom = ?, lieu = ?, objet = ?, sections = ?, avec_cachet = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(
+    data.date,
+    data.titre,
+    clientId,
+    clientNom,
+    data.lieu || '',
+    data.objet || '',
+    JSON.stringify(data.sections || []),
+    data.avec_cachet ? 1 : 0,
+    id
+  );
+  return { success: true };
+});
+
+ipcMain.handle('rapports:delete', (event, id) => {
+  db.prepare('DELETE FROM rapports WHERE id = ?').run(id);
+  return { success: true };
+});
+
 // PARAMETRES
+ipcMain.handle('app:getVersion', () => app.getVersion());
+
 ipcMain.handle('parametres:getAll', () => {
   const params = db.prepare('SELECT * FROM parametres').all();
   return params.reduce((acc, p) => {
@@ -339,8 +1662,15 @@ ipcMain.handle('parametres:getAll', () => {
 });
 
 ipcMain.handle('parametres:update', (event, cle, valeur) => {
-  const stmt = db.prepare('UPDATE parametres SET valeur = ? WHERE cle = ?');
-  stmt.run(valeur, cle);
+  // Upsert : met à jour la clé, ou la crée si elle n'existe pas encore.
+  // On force une chaîne (la colonne est NOT NULL) pour éviter toute erreur
+  // si une valeur arrive à null/undefined.
+  const val = valeur === null || valeur === undefined ? '' : String(valeur);
+  const stmt = db.prepare(`
+    INSERT INTO parametres (cle, valeur) VALUES (?, ?)
+    ON CONFLICT(cle) DO UPDATE SET valeur = excluded.valeur
+  `);
+  stmt.run(cle, val);
   return { success: true };
 });
 
@@ -357,7 +1687,8 @@ ipcMain.handle('proformas:getAll', () => {
 
 ipcMain.handle('proformas:getById', (event, id) => {
   const proforma = db.prepare(`
-    SELECT p.*, c.nom as client_nom, c.adresse as client_adresse
+    SELECT p.*, c.nom as client_nom, c.adresse as client_adresse,
+           c.telephone as client_telephone, c.email as client_email, c.nif as client_nif
     FROM proformas p
     LEFT JOIN clients c ON p.client_id = c.id
     WHERE p.id = ?
@@ -375,49 +1706,54 @@ ipcMain.handle('proformas:getById', (event, id) => {
 
 ipcMain.handle('proformas:create', (event, proforma) => {
   const transaction = db.transaction((data) => {
-    // Générer le numéro (année basée sur la date du document)
-    const params = db.prepare('SELECT valeur FROM parametres WHERE cle = ?').get('proforma_compteur');
-    const compteur = parseInt(params.valeur) + 1;
-    const annee = new Date(data.date).getFullYear() || new Date().getFullYear();
-    const numero = `${annee}/${compteur.toString().padStart(5, '0')}-ITS`;
-    
+    // Générer le numéro (année basée sur la date du document),
+    // en sautant les numéros déjà utilisés.
+    const annee = anneeDe(data.date);
+    const calcul = calculerDocument(data, lireTauxTva(), data.tva_applicable !== false);
+    const { numero, compteur } = genererNumero('proformas', 'proforma_compteur', annee);
+
     // Créer la proforma
     const stmt = db.prepare(`
-      INSERT INTO proformas (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO proformas (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut, avec_cachet, tva_applicable, tva_taux)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       numero,
       data.date,
       data.client_id,
       data.objet,
-      data.total_materiel_ht || 0,
-      data.prestations || 0,
-      data.remise || 0,
-      data.total_ht,
-      data.tva,
-      data.total_ttc,
-      'en_attente'
+      calcul.total_materiel_ht,
+      calcul.prestations,
+      calcul.remise,
+      calcul.total_ht,
+      calcul.tva,
+      calcul.total_ttc,
+      'en_attente',
+      data.avec_cachet ? 1 : 0,
+      data.tva_applicable === false ? 0 : 1,
+      calcul.tva_taux
     );
     
     const proformaId = result.lastInsertRowid;
     
     // Insérer les lignes
     const stmtLigne = db.prepare(`
-      INSERT INTO proforma_lignes (proforma_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO proforma_lignes (proforma_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre, description)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
-    data.lignes.forEach((ligne, index) => {
+    calcul.lignes.forEach((ligne, index) => {
       stmtLigne.run(
         proformaId,
-        ligne.produit_id,
+        Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
         ligne.designation,
         ligne.unite,
         ligne.quantite,
         ligne.prix_unitaire,
         ligne.montant,
-        index
+        index,
+        ligne.section_titre || '',
+        ligne.description || ''
       );
     });
     
@@ -440,39 +1776,46 @@ ipcMain.handle('proformas:update', (event, id, data) => {
   }
 
   const transaction = db.transaction((payload) => {
+    const tvaApplicable = payload.tva_applicable !== false && payload.tva_applicable !== 0;
+    const calcul = calculerDocument(payload, lireTauxTva(), tvaApplicable);
     db.prepare(`
       UPDATE proformas
-      SET date = ?, client_id = ?, objet = ?, total_materiel_ht = ?, prestations = ?, remise = ?, total_ht = ?, tva = ?, total_ttc = ?, updated_at = CURRENT_TIMESTAMP
+      SET date = ?, client_id = ?, objet = ?, total_materiel_ht = ?, prestations = ?, remise = ?, total_ht = ?, tva = ?, total_ttc = ?, avec_cachet = ?, tva_applicable = ?, tva_taux = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(
       payload.date,
       payload.client_id,
       payload.objet,
-      payload.total_materiel_ht || 0,
-      payload.prestations || 0,
-      payload.remise || 0,
-      payload.total_ht,
-      payload.tva,
-      payload.total_ttc,
+      calcul.total_materiel_ht,
+      calcul.prestations,
+      calcul.remise,
+      calcul.total_ht,
+      calcul.tva,
+      calcul.total_ttc,
+      payload.avec_cachet ? 1 : 0,
+      tvaApplicable ? 1 : 0,
+      calcul.tva_taux,
       id
     );
 
     // Remplacer les lignes
     db.prepare('DELETE FROM proforma_lignes WHERE proforma_id = ?').run(id);
     const stmtLigne = db.prepare(`
-      INSERT INTO proforma_lignes (proforma_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO proforma_lignes (proforma_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre, description)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    payload.lignes.forEach((ligne, index) => {
+    calcul.lignes.forEach((ligne, index) => {
       stmtLigne.run(
         id,
-        ligne.produit_id,
+        Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
         ligne.designation,
         ligne.unite,
         ligne.quantite,
         ligne.prix_unitaire,
         ligne.montant,
-        index
+        index,
+        ligne.section_titre || '',
+        ligne.description || ''
       );
     });
 
@@ -495,7 +1838,9 @@ ipcMain.handle('proformas:delete', (event, id) => {
 // FACTURES
 ipcMain.handle('factures:getAll', () => {
   const factures = db.prepare(`
-    SELECT f.*, c.nom as client_nom 
+    SELECT f.*, c.nom as client_nom,
+      (SELECT COUNT(*) FROM facture_situations s WHERE s.facture_id = f.id) AS nb_situations,
+      (SELECT COALESCE(SUM(a.total_ttc), 0) FROM avoirs a WHERE a.facture_id = f.id) AS total_avoirs
     FROM factures f
     LEFT JOIN clients c ON f.client_id = c.id
     ORDER BY f.created_at DESC
@@ -505,7 +1850,8 @@ ipcMain.handle('factures:getAll', () => {
 
 ipcMain.handle('factures:getById', (event, id) => {
   const facture = db.prepare(`
-    SELECT f.*, c.nom as client_nom, c.adresse as client_adresse
+    SELECT f.*, c.nom as client_nom, c.adresse as client_adresse,
+           c.telephone as client_telephone, c.email as client_email, c.nif as client_nif
     FROM factures f
     LEFT JOIN clients c ON f.client_id = c.id
     WHERE f.id = ?
@@ -521,25 +1867,32 @@ ipcMain.handle('factures:getById', (event, id) => {
   return facture;
 });
 
-ipcMain.handle('factures:createFromProforma', (event, proformaId) => {
+ipcMain.handle('factures:createFromProforma', (event, proformaId, dateFacture) => {
   const transaction = db.transaction((pId) => {
     // Récupérer la proforma
     const proforma = db.prepare('SELECT * FROM proformas WHERE id = ?').get(pId);
+    if (!proforma) {
+      throw new Error('Proforma introuvable.');
+    }
+    assertProformaConvertible(proforma);
     const lignes = db.prepare('SELECT * FROM proforma_lignes WHERE proforma_id = ?').all(pId);
     
-    // Générer le numéro de facture (année courante)
-    const params = db.prepare('SELECT valeur FROM parametres WHERE cle = ?').get('facture_compteur');
-    const compteur = parseInt(params.valeur) + 1;
-    const numero = `${new Date().getFullYear()}/${compteur.toString().padStart(5, '0')}-ITS`;
-    
+    // Date de la facture : celle choisie par l'utilisateur, sinon aujourd'hui.
+    const dateValue = dateFacture || aujourdhui();
+
+    // Numéro préfixé par l'année de la date de la facture (une facture datée
+    // de 2025 et saisie en 2026 se rattache à l'exercice 2025), en sautant
+    // les numéros déjà utilisés.
+    const { numero, compteur } = genererNumero('factures', 'facture_compteur', anneeDe(dateValue));
+
     // Créer la facture
     const stmt = db.prepare(`
-      INSERT INTO factures (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, proforma_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO factures (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, proforma_id, tva_taux)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       numero,
-      new Date().toISOString().split('T')[0],
+      dateValue,
       proforma.client_id,
       proforma.objet,
       proforma.total_materiel_ht || 0,
@@ -548,27 +1901,30 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId) => {
       proforma.total_ht,
       proforma.tva,
       proforma.total_ttc,
-      pId
+      pId,
+      tauxTvaDocument(proforma)
     );
     
     const factureId = result.lastInsertRowid;
     
     // Insérer les lignes
     const stmtLigne = db.prepare(`
-      INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre, description)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     lignes.forEach((ligne, index) => {
       stmtLigne.run(
         factureId,
-        ligne.produit_id,
+        Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
         ligne.designation,
         ligne.unite,
         ligne.quantite,
         ligne.prix_unitaire,
         ligne.montant,
-        index
+        index,
+        ligne.section_titre || '',
+        ligne.description || ''
       );
     });
     
@@ -581,15 +1937,93 @@ ipcMain.handle('factures:createFromProforma', (event, proformaId) => {
     return { id: factureId, numero };
   });
   
-  return transaction(proformaId);
+  return transaction.immediate(proformaId);
+});
+
+// Modification d'une facture (date, objet, montants, lignes).
+// Le numéro et le client restent inchangés.
+// Interdit si la facture est payée ou engagée dans un versement de TVA :
+// le document remis au client et les montants déclarés à l'OTR ne doivent
+// plus changer. Les situations déjà émises sont recalculées (refus si l'une
+// d'elles est payée et que son montant changerait).
+ipcMain.handle('factures:update', (event, id, data) => {
+  const existing = db.prepare('SELECT * FROM factures WHERE id = ?').get(id);
+  if (!existing) {
+    throw new Error('Facture introuvable.');
+  }
+
+  const transaction = db.transaction((payload) => {
+    if (existing.statut_paiement === 'payee') {
+      throw new Error("Impossible de modifier une facture payée. Annulez d'abord son paiement.");
+    }
+    assertFactureSansEngagementTva(id);
+    assertFactureSansAvoir(id, 'de modifier cette facture');
+    const proforma = existing.proforma_id
+      ? db.prepare('SELECT tva_applicable FROM proformas WHERE id = ?').get(existing.proforma_id)
+      : null;
+    const tvaApplicable = proforma ? proforma.tva_applicable !== 0 : existing.tva > 0;
+    const calcul = calculerDocument(payload, tauxTvaDocument(existing), tvaApplicable);
+    db.prepare(`
+      UPDATE factures
+      SET date = ?, objet = ?, total_materiel_ht = ?, prestations = ?, remise = ?,
+          total_ht = ?, tva = ?, total_ttc = ?, tva_taux = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      payload.date,
+      payload.objet,
+      calcul.total_materiel_ht,
+      calcul.prestations,
+      calcul.remise,
+      calcul.total_ht,
+      calcul.tva,
+      calcul.total_ttc,
+      calcul.tva_taux,
+      id
+    );
+
+    // Remplacer les lignes
+    db.prepare('DELETE FROM facture_lignes WHERE facture_id = ?').run(id);
+    const stmtLigne = db.prepare(`
+      INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre, description)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    calcul.lignes.forEach((ligne, index) => {
+      stmtLigne.run(
+        id,
+        Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
+        ligne.designation,
+        ligne.unite,
+        ligne.quantite,
+        ligne.prix_unitaire,
+        ligne.montant,
+        index,
+        ligne.section_titre || '',
+        ligne.description || ''
+      );
+    });
+
+    if (db.prepare('SELECT 1 FROM facture_situations WHERE facture_id = ?').get(id)) {
+      recalculerMontantsSituations(id);
+      recalculerStatutFacture(id);
+    }
+    return { success: true };
+  });
+
+  return transaction.immediate(data);
 });
 
 ipcMain.handle('factures:delete', (event, id) => {
-  const facture = db.prepare('SELECT bordereau_id, proforma_id FROM factures WHERE id = ?').get(id);
-  if (facture && facture.bordereau_id) {
-    throw new Error('Impossible de supprimer cette facture : un bordereau de livraison y est rattaché. Supprimez d\'abord le bordereau.');
-  }
   const transaction = db.transaction((factureId) => {
+    const facture = db.prepare('SELECT bordereau_id, proforma_id FROM factures WHERE id = ?').get(factureId);
+    if (!facture) throw new Error('Facture introuvable.');
+    assertFactureSansEngagementTva(factureId);
+    assertFactureSansAvoir(factureId, 'de supprimer cette facture');
+    if (facture.bordereau_id || db.prepare('SELECT 1 FROM bordereaux WHERE facture_id = ?').get(factureId)) {
+      throw new Error('Impossible de supprimer cette facture : un bordereau de livraison y est rattaché. Supprimez d\'abord le bordereau.');
+    }
+    if (db.prepare("SELECT 1 FROM facture_situations WHERE facture_id = ? AND statut_paiement = 'payee'").get(factureId)) {
+      throw new Error("Annulez d'abord le paiement des situations avant de supprimer cette facture.");
+    }
     // Réinitialiser la proforma liée pour qu'elle puisse être reconvertie
     if (facture && facture.proforma_id) {
       db.prepare('UPDATE proformas SET statut = ?, facture_id = NULL WHERE id = ?').run('en_attente', facture.proforma_id);
@@ -601,86 +2035,578 @@ ipcMain.handle('factures:delete', (event, id) => {
 });
 
 // PAIEMENT DES FACTURES
-ipcMain.handle('factures:markPaid', (event, id) => {
+const normalizePaymentDate = (value) => {
+  const date = String(value || aujourdhui()).trim();
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(`${date}T00:00:00.000Z`) : null;
+  if (!parsed || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+    throw new Error('Date de paiement invalide.');
+  }
+  return date;
+};
+
+ipcMain.handle('factures:markPaid', (event, id, date) => {
   const facture = db.prepare('SELECT statut_paiement FROM factures WHERE id = ?').get(id);
   if (!facture) {
     throw new Error('Facture introuvable.');
   }
+  const situations = db.prepare('SELECT COUNT(*) AS nb FROM facture_situations WHERE facture_id = ?').get(id);
+  if (situations.nb > 0) {
+    throw new Error('Cette facture est réglée par situations. Validez ses situations séparément.');
+  }
+  const montant = db.prepare('SELECT total_ttc FROM factures WHERE id = ?').get(id).total_ttc;
+  if (totalAvoirs(id) >= montant - 0.5) {
+    throw new Error('Cette facture est entièrement annulée par avoir : il ne reste rien à payer.');
+  }
+  const datePaiement = normalizePaymentDate(date);
   db.prepare(
-    "UPDATE factures SET statut_paiement = 'payee', date_paiement = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-  ).run(new Date().toISOString().split('T')[0], id);
+    "UPDATE factures SET statut_paiement = 'payee', tva_declenchee = 1, date_paiement = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+  ).run(datePaiement, id);
   return { success: true };
 });
 
 ipcMain.handle('factures:markUnpaid', (event, id) => {
-  const facture = db.prepare('SELECT tva_versee FROM factures WHERE id = ?').get(id);
-  if (!facture) {
-    throw new Error('Facture introuvable.');
-  }
-  if (facture.tva_versee) {
-    throw new Error('Impossible d\'annuler le paiement : la TVA de cette facture a déjà été versée à l\'OTR.');
-  }
-  db.prepare(
-    "UPDATE factures SET statut_paiement = 'non_payee', date_paiement = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-  ).run(id);
+  const transaction = db.transaction(() => {
+    const facture = db.prepare('SELECT id FROM factures WHERE id = ?').get(id);
+    if (!facture) throw new Error('Facture introuvable.');
+    assertFactureSansEngagementTva(id);
+    const situations = db.prepare('SELECT COUNT(*) AS nb FROM facture_situations WHERE facture_id = ?').get(id);
+    if (situations.nb > 0) {
+      throw new Error('Cette facture est réglée par situations. Annulez le paiement de chaque situation séparément.');
+    }
+    db.prepare(
+      "UPDATE factures SET statut_paiement = 'non_payee', tva_declenchee = 0, date_paiement = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    ).run(id);
+  });
+  transaction.immediate();
   return { success: true };
 });
 
-// SUIVI DE LA TVA (OTR)
+// FACTURATION PAR SITUATION (paiement partiel par pourcentage du TTC du marché)
+ipcMain.handle('factureSituations:getByFacture', (event, factureId) => {
+  return db.prepare(
+    'SELECT * FROM facture_situations WHERE facture_id = ? ORDER BY created_at, id'
+  ).all(factureId);
+});
+
+ipcMain.handle('factureSituations:create', (event, factureId, taux, modeTva) => {
+  const facture = db.prepare('SELECT * FROM factures WHERE id = ?').get(factureId);
+  if (!facture) throw new Error('Facture introuvable.');
+  const t = Number(taux);
+  if (!t || t <= 0 || t > 100) throw new Error('Taux invalide (doit être compris entre 0 et 100).');
+  if (modeTva !== undefined && !['premiere', 'prorata'].includes(modeTva)) {
+    throw new Error('Méthode de calcul de la TVA invalide.');
+  }
+
+  assertFactureSansAvoir(factureId, 'de facturer par situations');
+
+  const transaction = db.transaction(() => {
+    const dejaEmis = db.prepare(
+      'SELECT COALESCE(SUM(taux), 0) AS total FROM facture_situations WHERE facture_id = ?'
+    ).get(factureId).total;
+    if (dejaEmis + t > 100.01) {
+      throw new Error(`Taux refusé : ${dejaEmis}% déjà facturé(s), il ne reste que ${Math.max(0, 100 - dejaEmis)}% disponible(s).`);
+    }
+    const precedentes = db.prepare(
+      'SELECT COUNT(*) AS nb, COALESCE(SUM(montant_ttc), 0) AS ttc, COALESCE(SUM(tva), 0) AS tva, COALESCE(SUM(tva_a_verser), 0) AS tva_a_verser FROM facture_situations WHERE facture_id = ?'
+    ).get(factureId);
+    if (precedentes.nb === 0 && facture.statut_paiement === 'payee') {
+      throw new Error("Annulez d'abord le paiement global de cette facture avant de créer des situations.");
+    }
+    const modeEnregistre = facture.mode_tva_situations === 'prorata' ? 'prorata' : 'premiere';
+    if (precedentes.nb > 0 && modeTva && modeTva !== modeEnregistre) {
+      throw new Error('La méthode de TVA est déjà fixée par la première situation.');
+    }
+    const mode = precedentes.nb > 0 ? modeEnregistre : (modeTva || modeEnregistre);
+    if (precedentes.nb === 0) {
+      db.prepare('UPDATE factures SET mode_tva_situations = ? WHERE id = ?').run(mode, factureId);
+    }
+    const montant = calculerMontantSituation(
+      { ...facture, mode_tva_situations: mode }, t, { ...precedentes, taux: dejaEmis }
+    );
+    const { montant_ht: montantHt, tva, tva_a_verser: tvaAverser, montant_ttc: montantTtc } = montant;
+
+    let suffixe = String(Math.round(t)).padStart(2, '0');
+    let numero = `${facture.numero}/${suffixe}`;
+    let n = 2;
+    while (db.prepare('SELECT 1 FROM facture_situations WHERE numero = ?').get(numero)) {
+      numero = `${facture.numero}/${suffixe}-${n}`;
+      n += 1;
+    }
+
+    const result = db.prepare(`
+      INSERT INTO facture_situations (facture_id, numero, taux, montant_ht, tva, tva_a_verser, montant_ttc, date)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(factureId, numero, t, montantHt, tva, tvaAverser, montantTtc, aujourdhui());
+
+    return { id: result.lastInsertRowid, numero, taux: t, montant_ht: montantHt, tva, tva_a_verser: tvaAverser, montant_ttc: montantTtc, mode_tva_situations: mode };
+  });
+  return { success: true, ...transaction() };
+});
+
+ipcMain.handle('factureSituations:markPaid', (event, id, date) => {
+  const situation = db.prepare('SELECT * FROM facture_situations WHERE id = ?').get(id);
+  if (!situation) throw new Error('Situation introuvable.');
+  const datePaiement = normalizePaymentDate(date);
+  const transaction = db.transaction(() => {
+    if (situation.statut_paiement === 'payee' && situation.date_paiement !== datePaiement) {
+      assertFactureSansEngagementTva(situation.facture_id);
+    }
+    db.prepare(
+      "UPDATE facture_situations SET statut_paiement = 'payee', date_paiement = ? WHERE id = ?"
+    ).run(datePaiement, id);
+
+    recalculerStatutFacture(situation.facture_id);
+  });
+  transaction();
+  return { success: true };
+});
+
+ipcMain.handle('factureSituations:markUnpaid', (event, id) => {
+  const situation = db.prepare('SELECT * FROM facture_situations WHERE id = ?').get(id);
+  if (!situation) throw new Error('Situation introuvable.');
+  const transaction = db.transaction(() => {
+    assertFactureSansEngagementTva(situation.facture_id);
+    db.prepare(
+      "UPDATE facture_situations SET statut_paiement = 'non_payee', date_paiement = NULL WHERE id = ?"
+    ).run(id);
+    recalculerStatutFacture(situation.facture_id);
+  });
+  transaction();
+  return { success: true };
+});
+
+ipcMain.handle('factureSituations:delete', (event, id) => {
+  const transaction = db.transaction(() => {
+    const situation = db.prepare('SELECT * FROM facture_situations WHERE id = ?').get(id);
+    if (!situation) throw new Error('Situation introuvable.');
+    assertFactureSansEngagementTva(situation.facture_id);
+    if (situation.statut_paiement === 'payee') {
+      throw new Error("Annulez d'abord le paiement de cette situation avant de la supprimer.");
+    }
+    db.prepare('DELETE FROM facture_situations WHERE id = ?').run(id);
+    recalculerMontantsSituations(situation.facture_id);
+    recalculerStatutFacture(situation.facture_id);
+  });
+  transaction();
+  return { success: true };
+});
+
+
+// SUIVI DE LA TVA (OTR) — la TVA à verser à l'OTR vaut 50 % de la TVA collectée
+// Listes de valeurs réutilisables (catégories : technicien, site_service…)
+ipcMain.handle('listes:get', (event, categorie) => {
+  return db.prepare('SELECT valeur FROM listes_choix WHERE categorie = ? ORDER BY valeur COLLATE NOCASE')
+    .all(categorie).map((r) => r.valeur);
+});
+
+ipcMain.handle('listes:add', (event, categorie, valeur) => {
+  const v = String(valeur || '').trim();
+  if (!v) return { success: false };
+  db.prepare('INSERT OR IGNORE INTO listes_choix (categorie, valeur) VALUES (?, ?)').run(categorie, v);
+  return { success: true };
+});
+
 ipcMain.handle('tva:getStats', () => {
   const nonVersee = db.prepare(
-    "SELECT COALESCE(SUM(tva), 0) as total, COUNT(*) as count FROM factures WHERE statut_paiement = 'payee' AND tva_versee = 0"
+    "SELECT COALESCE(SUM(tva), 0) as total, COUNT(*) as count FROM factures WHERE tva_declenchee = 1 AND tva_versee = 0 AND tva > 0"
   ).get();
   const versee = db.prepare(
-    "SELECT COALESCE(SUM(tva), 0) as total, COUNT(*) as count FROM factures WHERE tva_versee = 1"
+    "SELECT COALESCE(SUM(tva), 0) as total, COUNT(*) as count FROM factures WHERE tva_versee = 1 AND tva > 0"
   ).get();
 
-  // Factures payées dont la TVA n'est pas encore versée
+  // Factures dont la TVA est déclenchée (payée à 100 %, ou 1ère situation payée) et pas encore versée ni dans un lot en cours
   const aVerser = db.prepare(`
-    SELECT f.id, f.numero, f.date, f.date_paiement, f.tva, f.total_ttc, c.nom as client_nom
+    SELECT f.id, f.numero, f.date, f.date_paiement, f.tva, f.tva / 2.0 AS tva_a_verser, f.total_ttc, c.nom as client_nom
     FROM factures f
     LEFT JOIN clients c ON f.client_id = c.id
-    WHERE f.statut_paiement = 'payee' AND f.tva_versee = 0
+    WHERE f.tva_declenchee = 1 AND f.tva_versee = 0 AND f.tva > 0
+      AND f.id NOT IN (SELECT facture_id FROM tva_versement_factures)
     ORDER BY f.date_paiement
   `).all();
 
   // Factures dont la TVA a été versée
   const verseesListe = db.prepare(`
-    SELECT f.id, f.numero, f.date, f.date_versement_tva, f.tva, f.total_ttc, c.nom as client_nom
+    SELECT f.id, f.numero, f.date, f.date_versement_tva, f.tva, f.tva / 2.0 AS tva_a_verser, f.total_ttc, c.nom as client_nom,
+      (SELECT v.numero FROM tva_versements v
+        JOIN tva_versement_factures vf ON vf.versement_id = v.id
+        WHERE vf.facture_id = f.id) AS numero_versement
     FROM factures f
     LEFT JOIN clients c ON f.client_id = c.id
-    WHERE f.tva_versee = 1
+    WHERE f.tva_versee = 1 AND f.tva > 0
     ORDER BY f.date_versement_tva DESC
   `).all();
 
+  // Lots de versement avec payé / reste / historique des paiements
+  const versements = db.prepare(`
+    SELECT v.id, v.numero, v.date, v.total_du, v.note,
+      COALESCE((SELECT SUM(p.montant) FROM tva_paiements p WHERE p.versement_id = v.id), 0) AS paye,
+      (SELECT COUNT(*) FROM tva_versement_factures vf WHERE vf.versement_id = v.id) AS nb_factures,
+      COALESCE((SELECT SUM(vf.tva) FROM tva_versement_factures vf WHERE vf.versement_id = v.id), 0) AS total_tva
+    FROM tva_versements v
+    ORDER BY v.id DESC
+  `).all().map((v) => ({
+    ...v,
+    quittance: Math.max(0, v.total_tva - v.total_du),
+    reste: Math.max(0, v.total_du - v.paye),
+    solde: v.paye >= v.total_du - 0.5 ? 1 : 0,
+    factures: db.prepare(`
+      SELECT f.id, f.numero, f.tva, c.nom AS client_nom
+      FROM tva_versement_factures vf
+      JOIN factures f ON f.id = vf.facture_id
+      LEFT JOIN clients c ON f.client_id = c.id
+      WHERE vf.versement_id = ?
+    `).all(v.id),
+    paiements: db.prepare(
+      'SELECT id, date, montant, quittance, mode, note FROM tva_paiements WHERE versement_id = ? ORDER BY date, id'
+    ).all(v.id),
+  }));
+
+  // Avoirs avec TVA : à déduire des prochains versements (non intégrés
+  // automatiquement aux lots OTR, à reporter avec le comptable)
+  const avoirs = db.prepare(`
+    SELECT a.id, a.numero, a.date, a.tva, ROUND(a.tva / 2.0) AS tva_a_deduire, a.total_ttc,
+      f.numero AS facture_numero, c.nom AS client_nom
+    FROM avoirs a
+    LEFT JOIN factures f ON f.id = a.facture_id
+    LEFT JOIN clients c ON c.id = a.client_id
+    WHERE a.tva > 0
+    ORDER BY a.date DESC, a.id DESC
+  `).all();
+
   return {
-    tvaNonVersee: nonVersee.total,
+    avoirs,
+    tvaAvoirs: avoirs.reduce((somme, a) => somme + a.tva, 0),
+    tvaAVerser: nonVersee.total / 2,
     nbNonVersee: nonVersee.count,
     tvaVersee: versee.total,
     nbVersee: versee.count,
     aVerser,
-    versees: verseesListe
+    versees: verseesListe,
+    versements
   };
 });
 
+// Crée un lot de versement OTR : dû = 50 % de la TVA des factures sélectionnées
 ipcMain.handle('tva:verser', (event, ids) => {
   if (!Array.isArray(ids) || ids.length === 0) {
     throw new Error('Aucune facture sélectionnée.');
   }
-  const dateVersement = new Date().toISOString().split('T')[0];
   const transaction = db.transaction((factureIds) => {
-    const stmt = db.prepare(
-      "UPDATE factures SET tva_versee = 1, date_versement_tva = ? WHERE id = ? AND statut_paiement = 'payee' AND tva_versee = 0"
-    );
+    const sel = db.prepare(`
+      SELECT id, tva FROM factures
+      WHERE id = ? AND tva_declenchee = 1 AND tva_versee = 0 AND tva > 0
+        AND id NOT IN (SELECT facture_id FROM tva_versement_factures)
+    `);
+    const rows = factureIds.map((id) => sel.get(id)).filter(Boolean);
+    if (rows.length === 0) {
+      throw new Error('Aucune facture éligible (déjà versée ou déjà dans un versement).');
+    }
+    const totalTva = rows.reduce((s, r) => s + (r.tva || 0), 0);
+    const numero = numeroSequentiel('tva_versements', 'VT', 'versement_tva_compteur');
+    const res = db.prepare(
+      'INSERT INTO tva_versements (numero, date, total_du) VALUES (?, ?, ?)'
+    ).run(numero, aujourdhui(), Math.round(totalTva / 2));
+    const vid = Number(res.lastInsertRowid);
+    const ins = db.prepare('INSERT INTO tva_versement_factures (versement_id, facture_id, tva) VALUES (?, ?, ?)');
+    rows.forEach((r) => ins.run(vid, r.id, r.tva));
+    return { id: vid, numero, count: rows.length, totalDu: Math.round(totalTva / 2) };
+  });
+  const out = transaction(ids);
+  return { success: true, ...out };
+});
+
+ipcMain.handle('tva:annuler', (event, ids) => {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw new Error('Aucune facture sélectionnée.');
+  }
+  const transaction = db.transaction((factureIds) => {
+    // Les factures gérées via un lot s'annulent par le lot, pas ici
+    const stmt = db.prepare(`
+      UPDATE factures SET tva_versee = 0, date_versement_tva = NULL
+      WHERE id = ? AND tva_versee = 1
+        AND id NOT IN (SELECT facture_id FROM tva_versement_factures)
+    `);
     let count = 0;
     factureIds.forEach((id) => {
-      const res = stmt.run(dateVersement, id);
+      const res = stmt.run(id);
       count += res.changes;
     });
     return count;
   });
   const count = transaction(ids);
   return { success: true, count };
+});
+
+// Enregistre un paiement partiel ; lot soldé => factures marquées TVA versée
+ipcMain.handle('tva:ajouterPaiement', (event, versementId, paiement) => {
+  const v = db.prepare('SELECT * FROM tva_versements WHERE id = ?').get(versementId);
+  if (!v) throw new Error('Versement introuvable.');
+  const montant = Number(paiement && paiement.montant);
+  if (!montant || montant <= 0) throw new Error('Montant du paiement invalide.');
+  const datePaiement = (paiement && paiement.date) || aujourdhui();
+  const transaction = db.transaction(() => {
+    db.prepare(
+      'INSERT INTO tva_paiements (versement_id, date, montant, quittance, mode, note) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(versementId, datePaiement, montant, paiement.quittance || '', paiement.mode || '', paiement.note || '');
+    const paye = db.prepare(
+      'SELECT COALESCE(SUM(montant), 0) AS t FROM tva_paiements WHERE versement_id = ?'
+    ).get(versementId).t;
+    const solde = paye >= v.total_du - 0.5;
+    if (solde) {
+      db.prepare(`
+        UPDATE factures SET tva_versee = 1, date_versement_tva = ?
+        WHERE id IN (SELECT facture_id FROM tva_versement_factures WHERE versement_id = ?)
+      `).run(datePaiement, versementId);
+    }
+    return { paye, reste: Math.max(0, v.total_du - paye), solde };
+  });
+  return { success: true, ...transaction() };
+});
+
+ipcMain.handle('tva:supprimerPaiement', (event, paiementId) => {
+  const p = db.prepare('SELECT * FROM tva_paiements WHERE id = ?').get(paiementId);
+  if (!p) throw new Error('Paiement introuvable.');
+  const transaction = db.transaction(() => {
+    db.prepare('DELETE FROM tva_paiements WHERE id = ?').run(paiementId);
+    const v = db.prepare('SELECT total_du FROM tva_versements WHERE id = ?').get(p.versement_id);
+    const paye = db.prepare(
+      'SELECT COALESCE(SUM(montant), 0) AS t FROM tva_paiements WHERE versement_id = ?'
+    ).get(p.versement_id).t;
+    if (v && paye < v.total_du - 0.5) {
+      db.prepare(`
+        UPDATE factures SET tva_versee = 0, date_versement_tva = NULL
+        WHERE id IN (SELECT facture_id FROM tva_versement_factures WHERE versement_id = ?)
+      `).run(p.versement_id);
+    }
+  });
+  transaction();
+  return { success: true };
+});
+
+// Supprime le lot : paiements effacés, factures de nouveau « à reverser »
+ipcMain.handle('tva:annulerVersement', (event, versementId) => {
+  const v = db.prepare('SELECT id FROM tva_versements WHERE id = ?').get(versementId);
+  if (!v) throw new Error('Versement introuvable.');
+  const transaction = db.transaction(() => {
+    db.prepare(`
+      UPDATE factures SET tva_versee = 0, date_versement_tva = NULL
+      WHERE id IN (SELECT facture_id FROM tva_versement_factures WHERE versement_id = ?)
+    `).run(versementId);
+    db.prepare('DELETE FROM tva_paiements WHERE versement_id = ?').run(versementId);
+    db.prepare('DELETE FROM tva_versement_factures WHERE versement_id = ?').run(versementId);
+    db.prepare('DELETE FROM tva_versements WHERE id = ?').run(versementId);
+  });
+  transaction();
+  return { success: true };
+});
+
+// APPELS D'OFFRE
+ipcMain.handle('appelsOffres:getAll', () => {
+  return db.prepare(`
+    SELECT a.*, c.nom as client_nom 
+    FROM appels_offres a
+    LEFT JOIN clients c ON a.client_id = c.id
+    ORDER BY a.created_at DESC
+  `).all();
+});
+
+ipcMain.handle('appelsOffres:getById', (event, id) => {
+  const ao = db.prepare(`
+    SELECT a.*, c.nom as client_nom, c.adresse as client_adresse,
+           c.telephone as client_telephone, c.email as client_email, c.nif as client_nif
+    FROM appels_offres a
+    LEFT JOIN clients c ON a.client_id = c.id
+    WHERE a.id = ?
+  `).get(id);
+  if (ao) {
+    ao.lignes = db.prepare(
+      'SELECT * FROM appel_offre_lignes WHERE appel_offre_id = ? ORDER BY ordre'
+    ).all(id);
+  }
+  return ao;
+});
+
+ipcMain.handle('appelsOffres:create', (event, appelOffre) => {
+  const transaction = db.transaction((data) => {
+    const annee = anneeDe(data.date);
+    const calcul = calculerDocument(data, lireTauxTva(), data.tva_applicable !== false);
+    const { numero, compteur } = genererNumero('appels_offres', 'appel_offre_compteur', annee, 'AO-');
+
+    const stmt = db.prepare(`
+      INSERT INTO appels_offres (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut, avec_cachet, tva_applicable, reference_externe, autorite, autorite_adresse, validite_offre, delai_execution, tva_taux)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const result = stmt.run(
+      numero,
+      data.date,
+      data.client_id,
+      data.objet,
+      calcul.total_materiel_ht,
+      calcul.prestations,
+      calcul.remise,
+      calcul.total_ht,
+      calcul.tva,
+      calcul.total_ttc,
+      'en_attente',
+      data.avec_cachet ? 1 : 0,
+      data.tva_applicable === false ? 0 : 1,
+      data.reference_externe || '',
+      data.autorite || '',
+      data.autorite_adresse || '',
+      parseInt(data.validite_offre, 10) || 90,
+      data.delai_execution || '',
+      calcul.tva_taux
+    );
+    const appelOffreId = result.lastInsertRowid;
+
+    const stmtLigne = db.prepare(`
+      INSERT INTO appel_offre_lignes (appel_offre_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    calcul.lignes.forEach((ligne, index) => {
+      stmtLigne.run(
+        appelOffreId,
+        Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
+        ligne.designation,
+        ligne.unite,
+        ligne.quantite,
+        ligne.prix_unitaire,
+        ligne.montant,
+        index
+      );
+    });
+
+    db.prepare('UPDATE parametres SET valeur = ? WHERE cle = ?').run(compteur.toString(), 'appel_offre_compteur');
+
+    return { id: appelOffreId, numero };
+  });
+  return transaction(appelOffre);
+});
+
+ipcMain.handle('appelsOffres:update', (event, id, data) => {
+  const existing = db.prepare('SELECT statut FROM appels_offres WHERE id = ?').get(id);
+  if (!existing) {
+    throw new Error("Appel d'offre introuvable.");
+  }
+  if (existing.statut === 'transformee') {
+    throw new Error("Cet appel d'offre a déjà été transformé en proforma et ne peut plus être modifié.");
+  }
+  const transaction = db.transaction(() => {
+    const calcul = calculerDocument(data, lireTauxTva(), data.tva_applicable !== false);
+    db.prepare(`
+      UPDATE appels_offres
+      SET date = ?, client_id = ?, objet = ?, total_materiel_ht = ?, prestations = ?, remise = ?,
+          total_ht = ?, tva = ?, total_ttc = ?, avec_cachet = ?, tva_applicable = ?,
+          reference_externe = ?, autorite = ?, autorite_adresse = ?, validite_offre = ?, delai_execution = ?,
+          tva_taux = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      data.date,
+      data.client_id,
+      data.objet,
+      calcul.total_materiel_ht,
+      calcul.prestations,
+      calcul.remise,
+      calcul.total_ht,
+      calcul.tva,
+      calcul.total_ttc,
+      data.avec_cachet ? 1 : 0,
+      data.tva_applicable === false ? 0 : 1,
+      data.reference_externe || '',
+      data.autorite || '',
+      data.autorite_adresse || '',
+      parseInt(data.validite_offre, 10) || 90,
+      data.delai_execution || '',
+      calcul.tva_taux,
+      id
+    );
+
+    db.prepare('DELETE FROM appel_offre_lignes WHERE appel_offre_id = ?').run(id);
+    const stmtLigne = db.prepare(`
+      INSERT INTO appel_offre_lignes (appel_offre_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    calcul.lignes.forEach((ligne, index) => {
+      stmtLigne.run(
+        id,
+        Number.isInteger(ligne.produit_id) ? ligne.produit_id : null,
+        ligne.designation,
+        ligne.unite,
+        ligne.quantite,
+        ligne.prix_unitaire,
+        ligne.montant,
+        index
+      );
+    });
+    return { success: true };
+  });
+  return transaction();
+});
+
+ipcMain.handle('appelsOffres:delete', (event, id) => {
+  db.prepare('DELETE FROM appels_offres WHERE id = ?').run(id);
+  return { success: true };
+});
+
+// Transformer un appel d'offre en proforma
+ipcMain.handle('appelsOffres:transformerEnProforma', (event, id) => {
+  const transaction = db.transaction((aoId) => {
+    const ao = db.prepare('SELECT * FROM appels_offres WHERE id = ?').get(aoId);
+    if (!ao) {
+      throw new Error("Appel d'offre introuvable.");
+    }
+    if (ao.statut === 'transformee') {
+      throw new Error("Cet appel d'offre a déjà été transformé en proforma.");
+    }
+
+    const annee = new Date().getFullYear();
+    const { numero, compteur } = genererNumero('proformas', 'proforma_compteur', annee);
+
+    const result = db.prepare(`
+      INSERT INTO proformas (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, statut, avec_cachet, tva_applicable, tva_taux)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      numero,
+      aujourdhui(),
+      ao.client_id,
+      ao.objet,
+      ao.total_materiel_ht || 0,
+      ao.prestations || 0,
+      ao.remise || 0,
+      ao.total_ht,
+      ao.tva,
+      ao.total_ttc,
+      'en_attente',
+      ao.avec_cachet || 0,
+      ao.tva_applicable === 0 ? 0 : 1,
+      tauxTvaDocument(ao)
+    );
+    const proformaId = result.lastInsertRowid;
+
+    const lignes = db.prepare('SELECT * FROM appel_offre_lignes WHERE appel_offre_id = ? ORDER BY ordre').all(aoId);
+    const stmtLigne = db.prepare(`
+      INSERT INTO proforma_lignes (proforma_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    lignes.forEach((ligne, index) => {
+      stmtLigne.run(
+        proformaId,
+        ligne.produit_id,
+        ligne.designation,
+        ligne.unite,
+        ligne.quantite,
+        ligne.prix_unitaire,
+        ligne.montant,
+        index
+      );
+    });
+
+    db.prepare('UPDATE parametres SET valeur = ? WHERE cle = ?').run(compteur.toString(), 'proforma_compteur');
+    db.prepare("UPDATE appels_offres SET statut = 'transformee', proforma_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(proformaId, aoId);
+
+    return { proformaId, proformaNumero: numero };
+  });
+  return transaction(id);
 });
 
 // BORDEREAUX
@@ -694,9 +2620,88 @@ ipcMain.handle('bordereaux:getAll', () => {
   return bordereaux;
 });
 
+// Création d'un bordereau autonome (sans proforma ni facture)
+ipcMain.handle('bordereaux:create', (event, data) => {
+  const transaction = db.transaction((b) => {
+    if (!b || !b.client_id) {
+      throw new Error('Client requis.');
+    }
+    const lignes = Array.isArray(b.lignes)
+      ? b.lignes.filter((l) => l.designation && String(l.designation).trim())
+      : [];
+    if (lignes.length === 0) {
+      throw new Error('Ajoutez au moins une ligne au bordereau.');
+    }
+
+    const dateBordereau = b.date || aujourdhui();
+    const { numero, compteur } = genererNumero('bordereaux', 'bordereau_compteur', anneeDe(dateBordereau));
+    const result = db.prepare(`
+      INSERT INTO bordereaux (numero, date, client_id, facture_id)
+      VALUES (?, ?, ?, NULL)
+    `).run(
+      numero,
+      dateBordereau,
+      b.client_id
+    );
+    const bordereauId = result.lastInsertRowid;
+
+    const stmtLigne = db.prepare(`
+      INSERT INTO bordereau_lignes (bordereau_id, designation, quantite, ordre)
+      VALUES (?, ?, ?, ?)
+    `);
+    lignes.forEach((ligne, index) => {
+      stmtLigne.run(bordereauId, String(ligne.designation).trim(), Number(ligne.quantite) || 0, index);
+    });
+
+    db.prepare('UPDATE parametres SET valeur = ? WHERE cle = ?').run(compteur.toString(), 'bordereau_compteur');
+
+    return { id: bordereauId, numero };
+  });
+  return transaction(data);
+});
+
+// Modification d'un bordereau (date, client, lignes)
+ipcMain.handle('bordereaux:update', (event, id, data) => {
+  const existing = db.prepare('SELECT id FROM bordereaux WHERE id = ?').get(id);
+  if (!existing) {
+    throw new Error('Bordereau introuvable.');
+  }
+  const lignes = Array.isArray(data.lignes)
+    ? data.lignes.filter((l) => l.designation && String(l.designation).trim())
+    : [];
+  if (lignes.length === 0) {
+    throw new Error('Le bordereau doit contenir au moins une ligne.');
+  }
+
+  const transaction = db.transaction(() => {
+    db.prepare(`
+      UPDATE bordereaux
+      SET date = ?, client_id = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      data.date || aujourdhui(),
+      data.client_id,
+      id
+    );
+
+    db.prepare('DELETE FROM bordereau_lignes WHERE bordereau_id = ?').run(id);
+    const stmtLigne = db.prepare(`
+      INSERT INTO bordereau_lignes (bordereau_id, designation, quantite, ordre)
+      VALUES (?, ?, ?, ?)
+    `);
+    lignes.forEach((ligne, index) => {
+      stmtLigne.run(id, String(ligne.designation).trim(), Number(ligne.quantite) || 0, index);
+    });
+
+    return { success: true };
+  });
+  return transaction();
+});
+
 ipcMain.handle('bordereaux:getById', (event, id) => {
   const bordereau = db.prepare(`
-    SELECT b.*, c.nom as client_nom, c.adresse as client_adresse
+    SELECT b.*, c.nom as client_nom, c.adresse as client_adresse,
+           c.telephone as client_telephone, c.email as client_email, c.nif as client_nif
     FROM bordereaux b
     LEFT JOIN clients c ON b.client_id = c.id
     WHERE b.id = ?
@@ -716,12 +2721,13 @@ ipcMain.handle('bordereaux:createFromFacture', (event, factureId) => {
   const transaction = db.transaction((fId) => {
     // Récupérer la facture
     const facture = db.prepare('SELECT * FROM factures WHERE id = ?').get(fId);
+    if (!facture) {
+      throw new Error('Facture introuvable.');
+    }
     const lignes = db.prepare('SELECT * FROM facture_lignes WHERE facture_id = ?').all(fId);
     
-    // Générer le numéro de bordereau (année courante)
-    const params = db.prepare('SELECT valeur FROM parametres WHERE cle = ?').get('bordereau_compteur');
-    const compteur = parseInt(params.valeur) + 1;
-    const numero = `${new Date().getFullYear()}/${compteur.toString().padStart(5, '0')}-ITS`;
+    // Générer le numéro de bordereau (année courante), en sautant les numéros déjà utilisés.
+    const { numero, compteur } = genererNumero('bordereaux', 'bordereau_compteur', new Date().getFullYear());
     
     // Créer le bordereau
     const stmt = db.prepare(`
@@ -730,7 +2736,7 @@ ipcMain.handle('bordereaux:createFromFacture', (event, factureId) => {
     `);
     const result = stmt.run(
       numero,
-      new Date().toISOString().split('T')[0],
+      aujourdhui(),
       facture.client_id,
       fId
     );
@@ -739,8 +2745,8 @@ ipcMain.handle('bordereaux:createFromFacture', (event, factureId) => {
     
     // Insérer les lignes
     const stmtLigne = db.prepare(`
-      INSERT INTO bordereau_lignes (bordereau_id, designation, quantite, ordre)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO bordereau_lignes (bordereau_id, designation, quantite, ordre, section_titre)
+      VALUES (?, ?, ?, ?, ?)
     `);
     
     lignes.forEach((ligne, index) => {
@@ -748,7 +2754,8 @@ ipcMain.handle('bordereaux:createFromFacture', (event, factureId) => {
         bordereauId,
         ligne.designation,
         ligne.quantite,
-        index
+        index,
+        ligne.section_titre || ''
       );
     });
     
@@ -764,14 +2771,120 @@ ipcMain.handle('bordereaux:createFromFacture', (event, factureId) => {
   return transaction(factureId);
 });
 
+ipcMain.handle('bordereaux:createFromProforma', (event, proformaId, createFacture) => {
+  const transaction = db.transaction((pId, withFacture) => {
+    const proforma = db.prepare('SELECT * FROM proformas WHERE id = ?').get(pId);
+    if (!proforma) {
+      throw new Error('Proforma introuvable.');
+    }
+
+    let factureResult = null;
+    if (withFacture) {
+      assertProformaConvertible(proforma);
+      const { numero: factureNumero, compteur: factureCompteur } = genererNumero('factures', 'facture_compteur', new Date().getFullYear());
+      const factureStmt = db.prepare(`
+        INSERT INTO factures (numero, date, client_id, objet, total_materiel_ht, prestations, remise, total_ht, tva, total_ttc, proforma_id, tva_taux)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const factureInsert = factureStmt.run(
+        factureNumero,
+        aujourdhui(),
+        proforma.client_id,
+        proforma.objet,
+        proforma.total_materiel_ht || 0,
+        proforma.prestations || 0,
+        proforma.remise || 0,
+        proforma.total_ht,
+        proforma.tva,
+        proforma.total_ttc,
+        pId,
+        tauxTvaDocument(proforma)
+      );
+      const factureId = factureInsert.lastInsertRowid;
+
+      const factureLignes = db.prepare('SELECT * FROM proforma_lignes WHERE proforma_id = ?').all(pId);
+      const factLigneStmt = db.prepare(`
+        INSERT INTO facture_lignes (facture_id, produit_id, designation, unite, quantite, prix_unitaire, montant, ordre, section_titre, description)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      factureLignes.forEach((ligne, index) => {
+        factLigneStmt.run(
+          factureId,
+          ligne.produit_id,
+          ligne.designation,
+          ligne.unite,
+          ligne.quantite,
+          ligne.prix_unitaire,
+          ligne.montant,
+          index,
+          ligne.section_titre || '',
+          ligne.description || ''
+        );
+      });
+
+      db.prepare('UPDATE proformas SET statut = ?, facture_id = ? WHERE id = ?').run('facturee', factureId, pId);
+      db.prepare('UPDATE parametres SET valeur = ? WHERE cle = ?').run(factureCompteur.toString(), 'facture_compteur');
+      factureResult = { id: factureId, numero: factureNumero };
+    }
+
+    const { numero: bordereauNumero, compteur: bordereauCompteur } = genererNumero('bordereaux', 'bordereau_compteur', new Date().getFullYear());
+    const bordereauStmt = db.prepare(`
+      INSERT INTO bordereaux (numero, date, client_id, facture_id)
+      VALUES (?, ?, ?, ?)
+    `);
+    // Lier le bordereau à la facture nouvellement créée, ou à la facture
+    // existante si la proforma a déjà été facturée (bordereaux multiples).
+    const factureLieeId = factureResult ? factureResult.id : (proforma.facture_id || null);
+    const bordereauInsert = bordereauStmt.run(
+      bordereauNumero,
+      aujourdhui(),
+      proforma.client_id,
+      factureLieeId
+    );
+    const bordereauId = bordereauInsert.lastInsertRowid;
+
+    const bordereauLigneStmt = db.prepare(`
+      INSERT INTO bordereau_lignes (bordereau_id, designation, quantite, ordre, section_titre)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    const proformaLignes = db.prepare('SELECT * FROM proforma_lignes WHERE proforma_id = ?').all(pId);
+    proformaLignes.forEach((ligne, index) => {
+      bordereauLigneStmt.run(
+        bordereauId,
+        ligne.designation,
+        ligne.quantite,
+        index,
+        ligne.section_titre || ''
+      );
+    });
+
+    if (factureResult) {
+      db.prepare('UPDATE factures SET bordereau_id = ? WHERE id = ?').run(bordereauId, factureResult.id);
+    }
+
+    db.prepare('UPDATE parametres SET valeur = ? WHERE cle = ?').run(bordereauCompteur.toString(), 'bordereau_compteur');
+
+    return {
+      bordereauId,
+      bordereauNumero,
+      factureId: factureResult ? factureResult.id : null,
+      factureNumero: factureResult ? factureResult.numero : null
+    };
+  });
+
+  return transaction.immediate(proformaId, createFacture);
+});
+
 ipcMain.handle('bordereaux:delete', (event, id) => {
   const bordereau = db.prepare('SELECT facture_id FROM bordereaux WHERE id = ?').get(id);
   const transaction = db.transaction((bordereauId) => {
-    // Détacher le bordereau de sa facture
-    if (bordereau && bordereau.facture_id) {
-      db.prepare('UPDATE factures SET bordereau_id = NULL WHERE id = ?').run(bordereau.facture_id);
-    }
     db.prepare('DELETE FROM bordereaux WHERE id = ?').run(bordereauId);
+    // Une facture peut avoir plusieurs bordereaux : elle reste liée au plus
+    // récent de ceux qui restent, et n'est détachée que s'il n'en reste aucun.
+    if (bordereau && bordereau.facture_id) {
+      const restant = db.prepare('SELECT MAX(id) AS id FROM bordereaux WHERE facture_id = ?').get(bordereau.facture_id);
+      db.prepare('UPDATE factures SET bordereau_id = ? WHERE id = ?').run(restant.id, bordereau.facture_id);
+    }
   });
   transaction(id);
   return { success: true };
@@ -795,9 +2908,15 @@ ipcMain.handle('stats:getCounts', () => {
 ipcMain.handle('stats:getDashboard', () => {
   const annee = new Date().getFullYear();
 
-  const caTotal = db.prepare('SELECT COALESCE(SUM(total_ttc), 0) as total FROM factures').get().total;
+  // Chiffre d'affaires net : factures moins avoirs (à la date de l'avoir)
+  const mouvements = `(
+    SELECT date, client_id, total_ttc AS montant FROM factures
+    UNION ALL
+    SELECT date, client_id, -total_ttc AS montant FROM avoirs
+  )`;
+  const caTotal = db.prepare(`SELECT COALESCE(SUM(montant), 0) as total FROM ${mouvements}`).get().total;
   const caAnnee = db.prepare(
-    "SELECT COALESCE(SUM(total_ttc), 0) as total FROM factures WHERE strftime('%Y', date) = ?"
+    `SELECT COALESCE(SUM(montant), 0) as total FROM ${mouvements} WHERE strftime('%Y', date) = ?`
   ).get(String(annee)).total;
   const proformasEnAttente = db.prepare(
     "SELECT COUNT(*) as count FROM proformas WHERE statut = 'en_attente'"
@@ -805,7 +2924,7 @@ ipcMain.handle('stats:getDashboard', () => {
 
   // Chiffre d'affaires par mois pour l'année courante
   const rows = db.prepare(
-    "SELECT strftime('%m', date) as mois, COALESCE(SUM(total_ttc), 0) as total FROM factures WHERE strftime('%Y', date) = ? GROUP BY mois"
+    `SELECT strftime('%m', date) as mois, COALESCE(SUM(montant), 0) as total FROM ${mouvements} WHERE strftime('%Y', date) = ? GROUP BY mois`
   ).all(String(annee));
   const caParMois = Array(12).fill(0);
   rows.forEach((r) => {
@@ -815,10 +2934,10 @@ ipcMain.handle('stats:getDashboard', () => {
 
   // Top 5 clients par chiffre d'affaires
   const topClients = db.prepare(`
-    SELECT c.nom as nom, COALESCE(SUM(f.total_ttc), 0) as total
-    FROM factures f
-    LEFT JOIN clients c ON f.client_id = c.id
-    GROUP BY f.client_id
+    SELECT c.nom as nom, COALESCE(SUM(m.montant), 0) as total
+    FROM ${mouvements} m
+    LEFT JOIN clients c ON m.client_id = c.id
+    GROUP BY m.client_id
     ORDER BY total DESC
     LIMIT 5
   `).all();
@@ -829,8 +2948,109 @@ ipcMain.handle('stats:getDashboard', () => {
 
 // ===== SAUVEGARDE / RESTAURATION DE LA BASE =====
 
+let expectedDatabaseSchema;
+function getExpectedDatabaseSchema() {
+  if (!expectedDatabaseSchema) {
+    const reference = new Database(':memory:');
+    try {
+      migrateDatabase(reference);
+      expectedDatabaseSchema = Object.fromEntries(reference.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+      ).all().map(({ name }) => [name, reference.prepare(`PRAGMA table_info(${name})`).all().map((col) => col.name)]));
+    } finally {
+      reference.close();
+    }
+  }
+  return expectedDatabaseSchema;
+}
+
+function validateBackupDatabase(database, legacy = false) {
+  const schema = getExpectedDatabaseSchema();
+  // Les anciennes sauvegardes peuvent omettre uniquement les tables et
+  // colonnes que migrateDatabase sait créer, jamais les données de base.
+  const migratableColumns = {
+    clients: ['tva_applicable'],
+    proformas: ['avec_cachet', 'tva_applicable', 'tva_taux'],
+    proforma_lignes: ['section_titre', 'description'],
+    factures: ['statut_paiement', 'date_paiement', 'tva_versee', 'date_versement_tva', 'tva_declenchee', 'mode_tva_situations', 'tva_taux'],
+    facture_lignes: ['section_titre', 'description'],
+    bordereau_lignes: ['section_titre'],
+  };
+  const tables = legacy
+    ? ['clients', 'produits', 'proformas', 'proforma_lignes', 'factures', 'facture_lignes', 'bordereaux', 'bordereau_lignes', 'parametres']
+    : Object.keys(schema);
+  for (const table of tables) {
+    const actual = new Set(database.prepare(`PRAGMA table_info(${table})`).all().map((col) => col.name));
+    const required = schema[table].filter((col) => !legacy || !(migratableColumns[table] || []).includes(col));
+    const missing = required.filter((col) => !actual.has(col));
+    if (missing.length) throw new Error(`Table ${table} absente ou colonnes manquantes : ${missing.join(', ')}.`);
+  }
+  if (database.pragma('quick_check').some((row) => row.quick_check !== 'ok')) {
+    throw new Error('La base SQLite est endommagée.');
+  }
+  if (database.pragma('foreign_key_check').length) {
+    throw new Error('La base contient des références vers des données absentes.');
+  }
+}
+
+async function restoreDatabase(source) {
+  const dbPath = path.join(app.getPath('userData'), 'facturation.db');
+  const stagingDir = fs.mkdtempSync(path.join(app.getPath('userData'), 'restore-'));
+  const stagedPath = path.join(stagingDir, 'validated.db');
+  const previousPath = path.join(stagingDir, 'previous.db');
+  let candidate;
+  let staged;
+  let preserveRecovery = false;
+  try {
+    try {
+      candidate = new Database(source, { readonly: true, fileMustExist: true });
+      validateBackupDatabase(candidate, true);
+      // L'API SQLite inclut les écritures d'un éventuel journal WAL.
+      await candidate.backup(stagedPath);
+      candidate.close();
+      candidate = null;
+      staged = new Database(stagedPath);
+      migrateDatabase(staged);
+      validateBackupDatabase(staged);
+      staged.close();
+      staged = null;
+    } catch (error) {
+      throw new Error(`Sauvegarde invalide ou incompatible : ${error.message}`);
+    }
+
+    // Aucun await pendant le remplacement : les autres appels IPC ne peuvent
+    // pas utiliser une connexion fermée. La base précédente permet un retour
+    // arrière même si le déplacement ou l'ouverture de la nouvelle échoue.
+    db.close();
+    let previousMoved = false;
+    try {
+      fs.renameSync(dbPath, previousPath);
+      previousMoved = true;
+      fs.renameSync(stagedPath, dbPath);
+      db = new Database(dbPath);
+    } catch (error) {
+      try {
+        if (previousMoved) fs.renameSync(previousPath, dbPath);
+        db = new Database(dbPath);
+      } catch (recoveryError) {
+        preserveRecovery = true;
+        throw new Error(`Restauration interrompue. Copie de récupération conservée dans ${previousMoved ? previousPath : dbPath}. ${recoveryError.message}`);
+      }
+      throw new Error(`La restauration a échoué ; la base précédente a été conservée. ${error.message}`);
+    }
+    return { success: true };
+  } finally {
+    if (candidate?.open) candidate.close();
+    if (staged?.open) staged.close();
+    if (!preserveRecovery) {
+      try { fs.rmSync(stagingDir, { recursive: true, force: true }); }
+      catch (error) { console.error('Nettoyage de la restauration impossible :', error); }
+    }
+  }
+}
+
 ipcMain.handle('database:backup', async () => {
-  const defaultName = `sauvegarde-facturation-${new Date().toISOString().split('T')[0]}.db`;
+  const defaultName = `sauvegarde-facturation-${aujourdhui()}.db`;
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
     title: 'Enregistrer la sauvegarde',
     defaultPath: defaultName,
@@ -845,6 +3065,61 @@ ipcMain.handle('database:backup', async () => {
   return { success: true, path: filePath };
 });
 
+// État des sauvegardes automatiques, affiché dans les Paramètres.
+ipcMain.handle('database:getStatutSauvegarde', () => {
+  const principal = dossierSauvegardePrincipal();
+  const secondaire = dossierSauvegardeSecondaire();
+  let accessible = false;
+  if (secondaire) {
+    try {
+      fs.accessSync(path.dirname(secondaire), fs.constants.W_OK);
+      accessible = true;
+    } catch {
+      accessible = false;
+    }
+  }
+  return {
+    principal: { dossier: principal, derniere: derniereSauvegarde(principal) },
+    secondaire: secondaire
+      ? { dossier: secondaire, accessible, derniere: derniereSauvegarde(secondaire) }
+      : null,
+  };
+});
+
+// Choix du second dossier : vérifie qu'on peut y écrire, puis y fait
+// immédiatement une première copie.
+ipcMain.handle('database:choisirDossierSauvegarde', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choisir un second dossier de sauvegarde (clé USB, Google Drive, OneDrive…)',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (canceled || !filePaths || filePaths.length === 0) {
+    return { success: false, canceled: true };
+  }
+  const choisi = filePaths[0];
+  const cible = path.join(choisi, DOSSIER_SAUVEGARDES);
+  const principal = path.resolve(dossierSauvegardePrincipal());
+  if (path.resolve(cible) === principal || path.resolve(choisi).startsWith(principal)) {
+    throw new Error('Choisissez un autre dossier que celui des sauvegardes principales (Documents).');
+  }
+  try {
+    fs.mkdirSync(cible, { recursive: true });
+    await db.backup(path.join(cible, 'facturation-autosave.db'));
+  } catch (e) {
+    throw new Error(`Impossible d'écrire dans ce dossier : ${e.message}`);
+  }
+  db.prepare(`
+    INSERT INTO parametres (cle, valeur) VALUES ('sauvegarde_dossier_secondaire', ?)
+    ON CONFLICT(cle) DO UPDATE SET valeur = excluded.valeur
+  `).run(choisi);
+  return { success: true, dossier: choisi };
+});
+
+ipcMain.handle('database:retirerDossierSauvegarde', () => {
+  db.prepare("DELETE FROM parametres WHERE cle = 'sauvegarde_dossier_secondaire'").run();
+  return { success: true };
+});
+
 ipcMain.handle('database:restore', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
     title: 'Choisir une sauvegarde à restaurer',
@@ -856,23 +3131,79 @@ ipcMain.handle('database:restore', async () => {
     return { success: false, canceled: true };
   }
 
-  const source = filePaths[0];
+  return restoreDatabase(filePaths[0]);
+});
 
-  // Vérifier que le fichier est une base SQLite valide avant de remplacer
-  try {
-    const test = new Database(source, { readonly: true });
-    test.prepare('SELECT COUNT(*) FROM parametres').get();
-    test.close();
-  } catch (e) {
-    throw new Error('Le fichier sélectionné n\'est pas une sauvegarde valide.');
+// ===== SECURITE (mot de passe de l'application) =====
+
+// Renvoie l'état : le mot de passe est-il activé ?
+ipcMain.handle('security:getStatus', () => {
+  const s = getSecurite();
+  return {
+    enabled: s.enabled === '1',
+    hasPassword: !!(s.hash && s.salt)
+  };
+});
+
+// Définit (ou redéfinit) le mot de passe et active la protection.
+// Si un mot de passe existe déjà, l'ancien doit être fourni et correct.
+ipcMain.handle('security:setPassword', (event, { currentPassword, newPassword }) => {
+  if (!newPassword || String(newPassword).length < 4) {
+    throw new Error('Le mot de passe doit contenir au moins 4 caractères.');
   }
 
-  const dbPath = path.join(app.getPath('userData'), 'facturation.db');
+  const s = getSecurite();
+  const hasPassword = !!(s.hash && s.salt);
 
-  // Fermer la base courante, remplacer le fichier puis rouvrir
-  db.close();
-  fs.copyFileSync(source, dbPath);
-  db = new Database(dbPath);
+  // Vérifier l'ancien mot de passe si un mot de passe est déjà défini
+  if (hasPassword) {
+    if (!currentPassword) {
+      throw new Error('Veuillez saisir le mot de passe actuel.');
+    }
+    if (!verifierMotDePasse(currentPassword, s)) {
+      throw new Error('Le mot de passe actuel est incorrect.');
+    }
+  }
+
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = hashPassword(newPassword, salt);
+
+  setSecurite('salt', salt);
+  setSecurite('hash', hash);
+  setSecurite('enabled', '1');
+
+  return { success: true };
+});
+
+// Vérifie un mot de passe (écran de verrouillage).
+ipcMain.handle('security:verify', (event, password) => {
+  const s = getSecurite();
+  if (!(s.hash && s.salt)) {
+    return { success: true }; // pas de mot de passe défini
+  }
+  if (!verifierMotDePasse(password, s)) {
+    throw new Error('Mot de passe incorrect.');
+  }
+  return { success: true };
+});
+
+// Désactive (et supprime) le mot de passe après vérification.
+ipcMain.handle('security:disable', (event, currentPassword) => {
+  const s = getSecurite();
+  const hasPassword = !!(s.hash && s.salt);
+
+  if (hasPassword) {
+    if (!currentPassword) {
+      throw new Error('Veuillez saisir le mot de passe actuel.');
+    }
+    if (!verifierMotDePasse(currentPassword, s)) {
+      throw new Error('Le mot de passe actuel est incorrect.');
+    }
+  }
+
+  setSecurite('enabled', '0');
+  setSecurite('hash', '');
+  setSecurite('salt', '');
 
   return { success: true };
 });
